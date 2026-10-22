@@ -1,6 +1,7 @@
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
+import { isProcurementAuthorized } from "@/lib/permissions/procurement";
 import { redirect, notFound } from "next/navigation";
 import { SupplierDetail } from "./supplier-detail";
 
@@ -12,7 +13,10 @@ export default async function SupplierDetailPage({ params }: SupplierDetailPageP
   const { id } = await params;
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
-  if (!hasPermission({ permissions: context.permissions }, "suppliers.view")) redirect("/suppliers?error=forbidden");
+  if (!isProcurementAuthorized(context, "suppliers.view")) {
+    const isManager = context.roleKey === "manager" || context.role?.name?.toLowerCase().includes("manager");
+    redirect(isManager ? "/manager/dashboard?error=forbidden" : "/suppliers?error=forbidden");
+  }
 
   const supabase = await createServerSupabaseClient();
   if (!supabase) redirect("/suppliers?error=auth_unconfigured");

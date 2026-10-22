@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import type { AppRole, AppUser, BusinessStatus } from "@/types/business";
 import { hasPermission } from "@/lib/permissions/authorization";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 
 export type AuthContext = {
   authUserId: string;
@@ -22,7 +23,10 @@ export async function getAuthContext(): Promise<AuthContext | null> {
   const { data: authData, error: authError } = await supabase.auth.getUser();
   if (authError || !authData.user) return null;
 
-  const { data: profileData, error: profileError } = await supabase
+  // Use server admin client to resolve role & permissions for the authenticated user
+  const admin = createAdminSupabaseClient() || supabase;
+
+  const { data: profileData, error: profileError } = await admin
     .from("users")
     .select("id, business_id, auth_user_id, name, email, phone, status, created_at, updated_at")
     .eq("auth_user_id", authData.user.id)
@@ -31,7 +35,7 @@ export async function getAuthContext(): Promise<AuthContext | null> {
   if (profileError || !profileData) return null;
 
   const profile = profileData as AppUser;
-  const { data: businessData, error: businessError } = await supabase
+  const { data: businessData, error: businessError } = await admin
     .from("businesses")
     .select("status")
     .eq("id", profile.business_id)
@@ -45,7 +49,7 @@ export async function getAuthContext(): Promise<AuthContext | null> {
     return null;
   }
 
-  const { data: assignmentData, error: assignmentError } = await supabase
+  const { data: assignmentData, error: assignmentError } = await admin
     .from("user_roles")
     .select("role_id")
     .eq("user_id", profile.id)
@@ -54,7 +58,7 @@ export async function getAuthContext(): Promise<AuthContext | null> {
   const roleId = (assignmentData as { role_id?: string } | null)?.role_id;
   if (assignmentError || !roleId) return null;
 
-  const { data: roleData, error: roleError } = await supabase
+  const { data: roleData, error: roleError } = await admin
     .from("roles")
     .select("id, business_id, name, description, created_at, updated_at")
     .eq("id", roleId)
@@ -66,7 +70,7 @@ export async function getAuthContext(): Promise<AuthContext | null> {
   const role = roleData as AppRole;
   let permissions: string[] = [];
 
-  const { data: rolePermissionData, error: rolePermissionError } = await supabase
+  const { data: rolePermissionData, error: rolePermissionError } = await admin
     .from("role_permissions")
     .select("permission_id")
     .eq("role_id", role.id);
@@ -76,7 +80,7 @@ export async function getAuthContext(): Promise<AuthContext | null> {
     (entry) => (entry as { permission_id: string }).permission_id,
   );
   if (rolePermissionIds.length > 0) {
-    const { data: permissionData, error: permissionError } = await supabase
+    const { data: permissionData, error: permissionError } = await admin
       .from("permissions")
       .select("module, action")
       .in("id", rolePermissionIds);
@@ -87,7 +91,7 @@ export async function getAuthContext(): Promise<AuthContext | null> {
     });
   }
 
-  const { data: userPermissionData, error: userPermissionError } = await supabase
+  const { data: userPermissionData, error: userPermissionError } = await admin
     .from("user_permissions")
     .select("allowed, permission:permissions(module, action)")
     .eq("user_id", profile.id);
@@ -133,6 +137,24 @@ export async function requirePermission(
   permission: string,
 ): Promise<void> {
   if (!hasPermission({ permissions: context.permissions }, permission)) {
-    redirect("/");
+    redirect("/?error=forbidden");
   }
+}
+
+export async function requireManagerAuthContext(): Promise<AuthContext> {
+  const context = await getAuthContext();
+  if (!context) {
+    const supabase = await createServerSupabaseClient();
+    await supabase?.auth.signOut();
+    redirect("/manager/login?error=account_unavailable");
+  }
+
+  const roleNameLower = context.role?.name?.toLowerCase() ?? "";
+  const isManager = context.roleKey === "manager" || roleNameLower.includes("manager");
+
+  if (!isManager) {
+    redirect("/manager/login?error=manager_role_required");
+  }
+
+  return context;
 }

@@ -1,9 +1,15 @@
 import Link from "next/link";
 import { requireAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
+import { AlertCircle } from "lucide-react";
 
-export default async function AccountPage() {
+export default async function AccountPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ error?: string }>;
+}) {
   const context = await requireAuthContext();
+  const params = searchParams ? await searchParams : undefined;
   const canManageUsers = hasPermission(
     { permissions: context.permissions },
     "users.manage",
@@ -11,6 +17,12 @@ export default async function AccountPage() {
 
   return (
     <section className="max-w-3xl">
+      {params?.error === "forbidden" && (
+        <div className="mb-6 rounded-md bg-amber-50 border border-amber-200 p-4 text-sm text-amber-800 flex items-center gap-2">
+          <AlertCircle className="w-5 h-5 shrink-0 text-amber-600" />
+          <span>Access denied: You do not have permission to access that resource.</span>
+        </div>
+      )}
       <p className="text-xs font-semibold uppercase text-[var(--accent)]">
         Account access
       </p>

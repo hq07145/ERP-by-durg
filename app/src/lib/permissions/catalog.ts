@@ -36,6 +36,16 @@ export const PERMISSION_CATALOG = [
   ["reports", "view"],
   ["reports", "export"],
   ["users", "manage"],
+  ["settings", "view"],
+  ["settings", "edit"],
+  ["calendar", "view"],
+  ["calendar", "edit"],
+  ["delivery", "view"],
+  ["delivery", "create"],
+  ["delivery", "update"],
+  ["delivery", "dispatch"],
+  ["delivery", "complete"],
+  ["delivery", "cancel"],
 ] as const satisfies ReadonlyArray<readonly [string, string]>;
 
 export type PermissionName = `${(typeof PERMISSION_CATALOG)[number][0]}.${(typeof PERMISSION_CATALOG)[number][1]}`;
@@ -79,6 +89,12 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionName[]> = {
     "reports.view",
     "reports.export",
     "users.manage",
+    "delivery.view",
+    "delivery.create",
+    "delivery.update",
+    "delivery.dispatch",
+    "delivery.complete",
+    "delivery.cancel",
   ],
   admin: [
     "products.view",
@@ -106,6 +122,12 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionName[]> = {
     "reports.view",
     "reports.export",
     "users.manage",
+    "delivery.view",
+    "delivery.create",
+    "delivery.update",
+    "delivery.dispatch",
+    "delivery.complete",
+    "delivery.cancel",
   ],
   manager: [
     "products.view",
@@ -123,6 +145,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, PermissionName[]> = {
     "payments.view",
     "reports.view",
     "users.manage",
+    "delivery.view",
+    "delivery.create",
+    "delivery.update",
+    "delivery.dispatch",
   ],
 };
 

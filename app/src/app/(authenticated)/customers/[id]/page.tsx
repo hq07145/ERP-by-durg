@@ -6,14 +6,42 @@ import { hasPermission } from "@/lib/permissions/authorization";
 import { setCustomerStatusAction } from "@/lib/customers/actions";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import type { Customer, CustomerAddress } from "@/types/customer";
+import { getCustomerSummary, getCustomerLedger, getCustomerPayments } from "@/lib/payments/actions";
+import { CustomerLedger } from "@/components/payments/customer-ledger";
+import { format } from "date-fns";
+import {
+  getOrderPaymentStatus,
+  ORDER_PAYMENT_STATUS_COLORS,
+  ORDER_PAYMENT_STATUS_LABELS,
+} from "@/types/order";
+import {
+  Users,
+  ChevronRight,
+  Edit,
+  Building2,
+  Phone,
+  Mail,
+  Receipt,
+  CreditCard,
+  MapPin,
+  Calendar,
+  CheckCircle2,
+  AlertCircle,
+  Wallet,
+  ShoppingBag,
+  ArrowLeft,
+  Clock,
+  Plus,
+} from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
 const notices: Record<string, string> = {
-  customer_created: "Customer created.",
-  customer_updated: "Customer updated.",
+  customer_created: "Customer account created successfully.",
+  customer_updated: "Customer details updated successfully.",
   customer_deactivated: "Customer deactivated. Existing references remain intact.",
-  customer_activated: "Customer activated.",
+  customer_activated: "Customer activated successfully.",
+  payment_recorded: "Payment transaction recorded and ledger updated successfully.",
 };
 
 export default async function CustomerProfilePage({
@@ -28,9 +56,13 @@ export default async function CustomerProfilePage({
   if (!hasPermission({ permissions: context.permissions }, "customers.view")) redirect("/");
   const { id } = await params;
   const supabase = await createServerSupabaseClient();
-  if (!supabase) return <p className="text-sm text-[var(--signal)]">Supabase is not configured.</p>;
+  if (!supabase) return <p className="text-sm text-rose-600">Database client unavailable.</p>;
 
-  const [{ data: customerData, error: customerError }, { data: addressData, error: addressError }] = await Promise.all([
+  const [
+    { data: customerData, error: customerError },
+    { data: addressData, error: addressError },
+    { data: customerOrdersData },
+  ] = await Promise.all([
     supabase
       .from("customers")
       .select("*")
@@ -42,109 +74,524 @@ export default async function CustomerProfilePage({
       .select("*")
       .eq("customer_id", id)
       .order("created_at"),
+    supabase
+      .from("orders")
+      .select("id, order_number, order_date, priority, status, total_amount, paid_amount, due_amount, created_at")
+      .eq("business_id", context.user.business_id)
+      .eq("customer_id", id)
+      .order("order_date", { ascending: false }),
   ]);
+
   if (customerError || !customerData) notFound();
-  if (addressError) return <p className="text-sm text-[var(--signal)]">Customer addresses could not be loaded.</p>;
+  if (addressError) return <p className="text-sm text-rose-600">Customer addresses could not be loaded.</p>;
 
   const customer = customerData as Customer;
   const addresses = (addressData ?? []) as CustomerAddress[];
+  const customerOrders = customerOrdersData ?? [];
+
   const canEdit = hasPermission({ permissions: context.permissions }, "customers.edit");
   const canDeactivate = hasPermission({ permissions: context.permissions }, "customers.delete");
+  const canAddPayment = hasPermission({ permissions: context.permissions }, "payments.add");
+
   const paramsValue = await searchParams;
   const notice = paramsValue.notice ? notices[paramsValue.notice] : null;
 
+  // Fetch payment-related data
+  const [summary, ledgerEntries, payments] = await Promise.all([
+    getCustomerSummary(id),
+    getCustomerLedger(id, 20, 0),
+    getCustomerPayments(id, 10, 0),
+  ]);
+
+  const initials = (customer.name || "C")
+    .split(" ")
+    .map((p) => p[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+
   return (
-    <div>
-      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[var(--line)] pb-5">
-        <div>
-          <Link className="text-sm font-medium text-[var(--accent)] hover:underline" href="/customers">Customers</Link>
-          <h1 className="mt-2 text-3xl font-semibold">{customer.name}</h1>
-          <p className="mt-2 text-sm text-[var(--muted)]">{customer.company_name || "Individual customer"}</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className={`border px-2.5 py-1.5 text-xs font-semibold ${customer.status === "ACTIVE" ? "border-[#b8d7c7] bg-[#eef5f0] text-[var(--accent-strong)]" : "border-[#e6c5b9] bg-[#fbf0ec] text-[var(--signal)]"}`}>
-            {customer.status === "ACTIVE" ? "Active" : "Inactive"}
+    <div className="space-y-6">
+      {/* ============================================================== */}
+      {/* 1. BREADCRUMBS & TOP HEADER                                    */}
+      {/* ============================================================== */}
+      <div className="border-b border-[#E2E8F0] pb-5">
+        <nav className="flex items-center gap-1.5 text-xs text-[#64748B] mb-2" aria-label="Breadcrumb">
+          <Link href="/customers" className="hover:text-[#0F766E] transition-colors flex items-center gap-1">
+            <Users className="w-3.5 h-3.5" />
+            <span>Customers</span>
+          </Link>
+          <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+          <span className="font-semibold text-slate-900 truncate max-w-[200px]">
+            {customer.name}
           </span>
-          {canEdit && <Link className="rounded-sm bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--accent-strong)]" href={`/customers/${customer.id}/edit`}>Edit customer</Link>}
-          {customer.status === "ACTIVE" && canDeactivate && (
-            <ConfirmSubmit
-              action={setCustomerStatusAction}
-              fieldName="customer_id"
-              fieldValue={customer.id}
-              hiddenFields={{ status: "INACTIVE" }}
-              label="Deactivate"
-              confirmation={`Deactivate ${customer.name}? Customer history and references will be retained.`}
-              className="rounded-sm border border-[var(--line)] px-3 py-2 text-sm font-medium hover:bg-white"
-            />
-          )}
-          {customer.status === "INACTIVE" && canEdit && (
-            <ConfirmSubmit
-              action={setCustomerStatusAction}
-              fieldName="customer_id"
-              fieldValue={customer.id}
-              hiddenFields={{ status: "ACTIVE" }}
-              label="Reactivate"
-              confirmation={`Reactivate ${customer.name}?`}
-              className="rounded-sm border border-[var(--line)] px-3 py-2 text-sm font-medium hover:bg-white"
-            />
+        </nav>
+
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between pt-1">
+          <div className="flex items-center gap-3.5">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-slate-100 font-bold text-sm text-[#142B3B] border border-slate-200 shadow-2xs">
+              {initials}
+            </div>
+            <div>
+              <div className="flex items-center gap-2.5">
+                <h1 className="text-2xl font-bold tracking-tight text-[#0F172A]">{customer.name}</h1>
+                <span
+                  className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                    customer.status === "ACTIVE"
+                      ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                      : "bg-slate-100 text-slate-600 border border-slate-200"
+                  }`}
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      customer.status === "ACTIVE" ? "bg-emerald-500" : "bg-slate-400"
+                    }`}
+                  />
+                  <span>{customer.status === "ACTIVE" ? "Active" : "Inactive"}</span>
+                </span>
+              </div>
+              <p className="text-xs text-[#64748B] mt-0.5 flex items-center gap-1.5">
+                <Building2 className="w-3.5 h-3.5 text-[#94A3B8]" />
+                <span>{customer.company_name || "Individual Customer Account"}</span>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              href="/customers"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[#E2E8F0] bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Back</span>
+            </Link>
+
+            {canAddPayment && (
+              <Link
+                href={`/payments/new?customerId=${customer.id}`}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#0F766E] px-3.5 py-2 text-xs font-semibold text-white shadow-2xs hover:bg-[#0D655E] transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Record Payment</span>
+              </Link>
+            )}
+
+            {canEdit && (
+              <Link
+                href={`/customers/${customer.id}/edit`}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                <Edit className="w-3.5 h-3.5" />
+                <span>Edit Profile</span>
+              </Link>
+            )}
+
+            {customer.status === "ACTIVE" && canDeactivate && (
+              <ConfirmSubmit
+                action={setCustomerStatusAction}
+                fieldName="customer_id"
+                fieldValue={customer.id}
+                hiddenFields={{ status: "INACTIVE" }}
+                label="Deactivate Account"
+                confirmation={`Deactivate ${customer.name}? All historical orders and ledgers will be preserved.`}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-rose-200 bg-rose-50/50 text-xs font-semibold text-rose-700 hover:bg-rose-100 transition-colors"
+              />
+            )}
+
+            {customer.status === "INACTIVE" && canEdit && (
+              <ConfirmSubmit
+                action={setCustomerStatusAction}
+                fieldName="customer_id"
+                fieldValue={customer.id}
+                hiddenFields={{ status: "ACTIVE" }}
+                label="Reactivate Account"
+                confirmation={`Reactivate ${customer.name}?`}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50/50 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 transition-colors"
+              />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Notice Message */}
+      {notice && (
+        <div className="flex items-start gap-3 rounded-xl border border-teal-200 bg-teal-50 p-4 text-sm text-teal-800" role="status">
+          <CheckCircle2 className="w-5 h-5 shrink-0 text-[#0F766E]" />
+          <p className="font-medium">{notice}</p>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* 2. EXECUTIVE FINANCIAL SUMMARY CARDS                           */}
+      {/* ============================================================== */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {/* Total Invoiced (Lifetime Purchases) */}
+        <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-2xs">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider text-[#64748B]">
+              Total Purchases
+            </span>
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-[#142B3B]">
+              <ShoppingBag className="w-4 h-4" />
+            </div>
+          </div>
+          <p className="mt-2 text-xl font-bold tracking-tight text-[#0F172A]">
+            ₹{Number(summary?.total_purchases ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </p>
+          <p className="text-[11px] text-[#64748B] mt-1">Lifetime gross purchases</p>
+        </div>
+
+        {/* Total Paid */}
+        <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-2xs">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider text-[#64748B]">
+              Amount Paid
+            </span>
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600">
+              <CheckCircle2 className="w-4 h-4" />
+            </div>
+          </div>
+          <p className="mt-2 text-xl font-bold tracking-tight text-emerald-700">
+            ₹{Number(summary?.total_paid ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </p>
+          <p className="text-[11px] text-[#64748B] mt-1">Cleared receipts to date</p>
+        </div>
+
+        {/* Current Balance / Due */}
+        <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-2xs">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider text-[#64748B]">
+              Outstanding Due
+            </span>
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-rose-50 text-rose-600">
+              <Wallet className="w-4 h-4" />
+            </div>
+          </div>
+          <p className="mt-2 text-xl font-bold tracking-tight text-rose-700">
+            ₹{Number(summary?.total_due ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </p>
+          <p className="text-[11px] text-[#64748B] mt-1">Unpaid receivables balance</p>
+        </div>
+
+        {/* Credit Limit & Terms */}
+        <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-2xs">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider text-[#64748B]">
+              Credit Limit
+            </span>
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-teal-50 text-[#0F766E]">
+              <CreditCard className="w-4 h-4" />
+            </div>
+          </div>
+          <p className="mt-2 text-xl font-bold tracking-tight text-[#0F172A]">
+            ₹{Number(customer.credit_limit ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </p>
+          <p className="text-[11px] text-[#64748B] mt-1 truncate">
+            Terms: {customer.payment_terms || "Standard (Immediate)"}
+          </p>
+        </div>
+      </div>
+
+      {/* ============================================================== */}
+      {/* 3. PROFILE DETAILS & ADDRESSES (2 Columns)                     */}
+      {/* ============================================================== */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        {/* Account Details (2 Cols) */}
+        <div className="lg:col-span-2 rounded-xl border border-[#E2E8F0] bg-white p-5 sm:p-6 shadow-2xs">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-[#64748B] border-b border-[#E2E8F0] pb-3 mb-4">
+            Account Specifications
+          </h2>
+          <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 text-sm">
+            <div className="p-3 rounded-lg bg-slate-50/70 border border-slate-100">
+              <dt className="text-xs font-medium text-[#64748B]">Account Name</dt>
+              <dd className="mt-1 font-semibold text-[#0F172A]">{customer.name}</dd>
+            </div>
+            <div className="p-3 rounded-lg bg-slate-50/70 border border-slate-100">
+              <dt className="text-xs font-medium text-[#64748B]">Company Entity</dt>
+              <dd className="mt-1 font-semibold text-[#0F172A]">{customer.company_name || "-"}</dd>
+            </div>
+            <div className="p-3 rounded-lg bg-slate-50/70 border border-slate-100">
+              <dt className="text-xs font-medium text-[#64748B]">Telephone</dt>
+              <dd className="mt-1 font-semibold text-[#0F172A] flex items-center gap-1.5">
+                <Phone className="w-3.5 h-3.5 text-[#0F766E]" />
+                <span>{customer.phone || "-"}</span>
+              </dd>
+            </div>
+            <div className="p-3 rounded-lg bg-slate-50/70 border border-slate-100">
+              <dt className="text-xs font-medium text-[#64748B]">Email Address</dt>
+              <dd className="mt-1 font-semibold text-[#0F172A] break-all flex items-center gap-1.5">
+                <Mail className="w-3.5 h-3.5 text-[#0F766E]" />
+                <span>{customer.email || "-"}</span>
+              </dd>
+            </div>
+            <div className="p-3 rounded-lg bg-slate-50/70 border border-slate-100">
+              <dt className="text-xs font-medium text-[#64748B]">GSTIN Registration</dt>
+              <dd className="mt-1 font-mono font-semibold text-[#0F172A]">{customer.gst_number || "-"}</dd>
+            </div>
+            <div className="p-3 rounded-lg bg-slate-50/70 border border-slate-100">
+              <dt className="text-xs font-medium text-[#64748B]">Payment Terms</dt>
+              <dd className="mt-1 font-semibold text-[#0F172A]">{customer.payment_terms || "None"}</dd>
+            </div>
+          </dl>
+        </div>
+
+        {/* Addresses Column (1 Col) */}
+        <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 sm:p-6 shadow-2xs flex flex-col">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-[#64748B] border-b border-[#E2E8F0] pb-3 mb-4 flex items-center gap-1.5">
+            <MapPin className="w-4 h-4 text-[#0F766E]" />
+            <span>Shipping / Billing Address</span>
+          </h2>
+          {addresses.length > 0 ? (
+            <div className="space-y-3 flex-1">
+              {addresses.map((address) => (
+                <div key={address.id} className="p-3.5 rounded-lg bg-slate-50 border border-slate-200/80 text-xs text-[#0F172A] space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-slate-800 uppercase tracking-wider text-[10px] bg-white px-2 py-0.5 rounded border border-slate-200">
+                      {address.address_type}
+                    </span>
+                  </div>
+                  {address.address && <p className="font-medium pt-1 text-slate-700">{address.address}</p>}
+                  <p className="text-slate-500 font-medium">
+                    {[address.city, address.district, address.state, address.postal_code].filter(Boolean).join(", ") || "No city/state details"}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="py-8 text-center text-slate-400 text-xs flex-1 flex flex-col items-center justify-center">
+              <MapPin className="w-8 h-8 text-slate-300 mb-2" />
+              <p>No address recorded for this client.</p>
+            </div>
           )}
         </div>
       </div>
 
-      {notice && <p className="mt-5 border-l-2 border-[var(--accent)] bg-[#eef5f0] px-3 py-2 text-sm text-[var(--accent-strong)]" role="status">{notice}</p>}
-
-      <section className="mt-8 border-b border-[var(--line)] pb-8">
-        <h2 className="text-lg font-semibold">Basic information</h2>
-        <dl className="mt-5 grid gap-x-10 gap-y-5 sm:grid-cols-2 lg:grid-cols-3">
-          <div><dt className="text-xs font-semibold uppercase text-[var(--muted)]">Name</dt><dd className="mt-1 text-sm font-medium">{customer.name}</dd></div>
-          <div><dt className="text-xs font-semibold uppercase text-[var(--muted)]">Company</dt><dd className="mt-1 text-sm">{customer.company_name || "-"}</dd></div>
-          <div><dt className="text-xs font-semibold uppercase text-[var(--muted)]">Phone</dt><dd className="mt-1 text-sm">{customer.phone || "-"}</dd></div>
-          <div><dt className="text-xs font-semibold uppercase text-[var(--muted)]">Email</dt><dd className="mt-1 break-all text-sm">{customer.email || "-"}</dd></div>
-          <div><dt className="text-xs font-semibold uppercase text-[var(--muted)]">GST number</dt><dd className="mt-1 text-sm">{customer.gst_number || "-"}</dd></div>
-          <div><dt className="text-xs font-semibold uppercase text-[var(--muted)]">Payment terms</dt><dd className="mt-1 text-sm">{customer.payment_terms || "-"}</dd></div>
-          <div><dt className="text-xs font-semibold uppercase text-[var(--muted)]">Credit limit</dt><dd className="mt-1 text-sm tabular-nums">{customer.credit_limit}</dd></div>
-        </dl>
-      </section>
-
-      <section className="mt-8 border-b border-[var(--line)] pb-8">
-        <h2 className="text-lg font-semibold">Addresses</h2>
-        {addresses.length > 0 ? (
-          <div className="mt-4 grid gap-5 sm:grid-cols-2">
-            {addresses.map((address) => (
-              <address className="not-italic text-sm leading-6 text-[var(--muted)]" key={address.id}>
-                <p className="font-semibold text-[var(--foreground)]">{address.address_type}</p>
-                {address.address && <p>{address.address}</p>}
-                <p>{[address.city, address.state, address.postal_code].filter(Boolean).join(", ") || "-"}</p>
-              </address>
-            ))}
+      {/* ============================================================== */}
+      {/* 4. CUSTOMER ORDER HISTORY (Requirement 8)                      */}
+      {/* ============================================================== */}
+      <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 sm:p-6 shadow-2xs space-y-4">
+        <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-3">
+          <div>
+            <h2 className="text-base font-semibold text-[#0F172A] flex items-center gap-2">
+              <ShoppingBag className="w-4 h-4 text-[#0F766E]" />
+              <span>Customer Order History ({customerOrders.length})</span>
+            </h2>
+            <p className="text-xs text-[#64748B]">Complete record of orders, fulfillment, and payment statuses</p>
           </div>
-        ) : <p className="mt-3 text-sm text-[var(--muted)]">No address on file.</p>}
-      </section>
-
-      <section className="mt-8 border-b border-[var(--line)] pb-8">
-        <h2 className="text-lg font-semibold">Business summary</h2>
-        <p className="mt-1 text-sm text-[var(--muted)]">These values are not calculated until Orders and Payments are implemented.</p>
-        <dl className="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-          {[["Total orders", "Not calculated"], ["Total sales", "Not calculated"], ["Total received", "Not calculated"], ["Total due", "Not calculated"]].map(([label, value]) => (
-            <div key={label}>
-              <dt className="text-xs font-semibold uppercase text-[var(--muted)]">{label}</dt>
-              <dd className="mt-1 text-sm font-medium">{value}</dd>
-            </div>
-          ))}
-        </dl>
-      </section>
-
-      <section className="mt-8">
-        <h2 className="text-lg font-semibold">History</h2>
-        <div className="mt-4 grid gap-5 sm:grid-cols-3">
-          {[["Orders", "Order history will appear when Orders is implemented."], ["Payments", "Payment history will appear when Payments is implemented."], ["Ledger", "Customer ledger will appear when its module is implemented."]].map(([title, description]) => (
-            <div className="border-t border-[var(--line)] pt-3" key={title}>
-              <h3 className="text-sm font-semibold">{title}</h3>
-              <p className="mt-1 text-sm text-[var(--muted)]">{description}</p>
-            </div>
-          ))}
+          {canAddPayment && customerOrders.some((o) => Number(o.due_amount) > 0) && (
+            <Link
+              href={`/payments/new?customerId=${customer.id}`}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0F766E] text-white text-xs font-semibold hover:bg-[#0D655E] transition"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Pay Outstanding Due</span>
+            </Link>
+          )}
         </div>
-      </section>
+
+        {customerOrders.length > 0 ? (
+          <div className="overflow-x-auto rounded-lg border border-[#E2E8F0]">
+            <table className="w-full text-left text-sm" role="table">
+              <thead className="bg-slate-50 text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
+                <tr>
+                  <th className="px-4 py-3">Order #</th>
+                  <th className="px-4 py-3">Order Date</th>
+                  <th className="px-4 py-3 text-right">Total</th>
+                  <th className="px-4 py-3 text-right">Paid</th>
+                  <th className="px-4 py-3 text-right">Due</th>
+                  <th className="px-4 py-3">Payment Status</th>
+                  <th className="px-4 py-3">Order Status</th>
+                  <th className="px-4 py-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#E2E8F0] text-xs">
+                {customerOrders.map((ord) => {
+                  const payStatus = getOrderPaymentStatus(ord.total_amount, ord.paid_amount, ord.due_amount);
+                  return (
+                    <tr key={ord.id} className="hover:bg-slate-50/70 transition-colors">
+                      <td className="px-4 py-3">
+                        <Link
+                          href={`/orders/${ord.id}`}
+                          className="font-mono font-bold text-[#0F766E] hover:underline"
+                        >
+                          {ord.order_number}
+                        </Link>
+                      </td>
+                      <td className="px-4 py-3 text-[#64748B]">
+                        {format(new Date(ord.order_date), "MMM d, yyyy")}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">
+                        ₹{Number(ord.total_amount).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono font-medium text-emerald-700">
+                        ₹{Number(ord.paid_amount).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono font-bold text-rose-700">
+                        ₹{Number(ord.due_amount).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border ${
+                            ORDER_PAYMENT_STATUS_COLORS[payStatus]
+                          }`}
+                        >
+                          {ORDER_PAYMENT_STATUS_LABELS[payStatus]}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+                            ord.status === "CONFIRMED"
+                              ? "bg-sky-50 text-sky-700 border border-sky-200"
+                              : ord.status === "DRAFT"
+                              ? "bg-slate-100 text-slate-700 border border-slate-200"
+                              : "bg-rose-50 text-rose-700 border border-rose-200"
+                          }`}
+                        >
+                          {ord.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <Link
+                            href={`/orders/${ord.id}`}
+                            className="px-2.5 py-1 rounded border border-slate-200 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 transition"
+                          >
+                            View
+                          </Link>
+                          {Number(ord.due_amount) > 0 && ord.status !== "CANCELLED" && canAddPayment && (
+                            <Link
+                              href={`/payments/new?orderId=${ord.id}&customerId=${customer.id}`}
+                              className="px-2 py-1 rounded bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0D655E] transition"
+                            >
+                              Pay
+                            </Link>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-[#64748B] italic py-2">No customer orders recorded yet.</p>
+        )}
+      </div>
+
+      {/* ============================================================== */}
+      {/* 5. CUSTOMER LEDGER SECTION                                     */}
+      {/* ============================================================== */}
+      <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 sm:p-6 shadow-2xs space-y-4">
+        <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-3">
+          <div>
+            <h2 className="text-base font-semibold text-[#0F172A] flex items-center gap-2">
+              <Receipt className="w-4 h-4 text-[#0F766E]" />
+              <span>Account Ledger & Financial Audit Trail</span>
+            </h2>
+            <p className="text-xs text-[#64748B]">Double-entry chronological record of invoices, credits, and receipts</p>
+          </div>
+        </div>
+        <CustomerLedger
+          customer={
+            summary ?? {
+              customer_id: id,
+              customer_name: customer.name,
+              customer_company: customer.company_name,
+              total_purchases: 0,
+              total_paid: 0,
+              total_due: 0,
+              last_payment_date: null,
+              last_payment_amount: null,
+            }
+          }
+          ledgerEntries={ledgerEntries}
+          canView={true}
+        />
+      </div>
+
+      {/* ============================================================== */}
+      {/* 6. RECENT PAYMENTS LOG                                         */}
+      {/* ============================================================== */}
+      <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 sm:p-6 shadow-2xs space-y-4">
+        <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-3">
+          <div>
+            <h2 className="text-base font-semibold text-[#0F172A] flex items-center gap-2">
+              <CreditCard className="w-4 h-4 text-[#0F766E]" />
+              <span>Payment Receipts History ({payments.length})</span>
+            </h2>
+            <p className="text-xs text-[#64748B]">Historical record of recorded payment transactions and reversals</p>
+          </div>
+          {canAddPayment && (
+            <Link
+              href={`/payments/new?customerId=${customer.id}`}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>New Receipt</span>
+            </Link>
+          )}
+        </div>
+
+        {payments.length > 0 ? (
+          <div className="overflow-x-auto rounded-lg border border-[#E2E8F0]">
+            <table className="w-full text-left text-sm" role="table">
+              <thead className="bg-slate-50 text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
+                <tr>
+                  <th className="px-4 py-3">Receipt #</th>
+                  <th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3 text-right">Amount</th>
+                  <th className="px-4 py-3">Method</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#E2E8F0] text-xs">
+                {payments.map((p) => (
+                  <tr key={p.id} className="hover:bg-slate-50/70 transition-colors">
+                    <td className="px-4 py-3">
+                      <Link href={`/payments/${p.id}`} className="font-mono text-xs font-bold text-[#0F766E] hover:underline">
+                        {p.payment_number}
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3 text-[#64748B]">
+                      {format(new Date(p.payment_date), "MMM d, yyyy")}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono font-bold text-slate-900">
+                      ₹{Number(p.amount).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                    <td className="px-4 py-3 text-[#64748B]">{p.payment_method}</td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+                          p.status === "SUCCESS"
+                            ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                            : p.status === "PENDING"
+                            ? "bg-amber-50 text-amber-700 border border-amber-200"
+                            : "bg-rose-50 text-rose-700 border border-rose-200"
+                        }`}
+                      >
+                        {p.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <Link
+                        href={`/payments/${p.id}`}
+                        className="px-2.5 py-1 rounded border border-slate-200 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 transition"
+                      >
+                        View
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-[#64748B] italic py-2">No cleared payment receipts on record.</p>
+        )}
+      </div>
     </div>
   );
 }

@@ -1,19 +1,27 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f3f6f2;
-  --foreground: #182521;
-  --muted: #5c6c65;
-  --line: #d9e2dc;
-  --surface: #ffffff;
-  --accent: #176b57;
-  --accent-strong: #105541;
-  --signal: #b65337;
+  --background: #F7F9FC;
+  --foreground: #0F172A;
+  --muted: #64748B;
+  --line: #E2E8F0;
+  --surface: #FFFFFF;
+  --accent: #0F766E;
+  --accent-strong: #0D655E;
+  --navy: #142B3B;
+  --navy-dark: #0E1F2B;
+  --navy-light: #1D3D52;
+  --navy-muted: #94A3B8;
+  --signal: #DC2626;
+  --signal-success: #059669;
+  --signal-warning: #D97706;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-navy: var(--navy);
+  --color-teal: var(--accent);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -254,4 +262,23 @@ body {
   .auth-eyebrow {
     margin-top: 42px;
   }
+}
+
+/* Sidebar sleek scrollbar styling (navy/teal theme) */
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #1D3D52 transparent;
+}
+.sidebar-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: #1D3D52;
+  border-radius: 9999px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: #2A536F;
 }

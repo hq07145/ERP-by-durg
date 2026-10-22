@@ -1,6 +1,7 @@
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
+import { isProcurementAuthorized } from "@/lib/permissions/procurement";
 import { redirect, notFound } from "next/navigation";
 import { PurchaseDetail } from "./purchase-detail";
 
@@ -12,7 +13,10 @@ export default async function PurchaseDetailPage({ params }: PurchaseDetailPageP
   const { id } = await params;
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
-  if (!hasPermission({ permissions: context.permissions }, "purchases.view")) redirect("/purchases?error=forbidden");
+  if (!isProcurementAuthorized(context, "purchases.view")) {
+    const isManager = context.roleKey === "manager" || context.role?.name?.toLowerCase().includes("manager");
+    redirect(isManager ? "/manager/dashboard?error=forbidden" : "/purchases?error=forbidden");
+  }
 
   const supabase = await createServerSupabaseClient();
   if (!supabase) redirect("/purchases?error=auth_unconfigured");

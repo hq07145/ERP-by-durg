@@ -1,0 +1,154 @@
+export type DeliveryStatus =
+  | "NOT_READY"
+  | "READY"
+  | "PACKED"
+  | "DISPATCHED"
+  | "IN_TRANSIT"
+  | "DELIVERED"
+  | "CANCELLED";
+
+export interface Delivery {
+  id: string;
+  business_id: string;
+  order_id: string;
+  delivery_number: string;
+  status: DeliveryStatus;
+  expected_delivery_date: string | null;
+  tracking_number: string | null;
+  vehicle: string | null;
+  driver: string | null;
+  dispatched_at: string | null;
+  delivered_at: string | null;
+  proof_document_url: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DeliveryWithDetails extends Delivery {
+  order_number: string;
+  customer_name: string | null;
+  items: DeliveryItem[];
+}
+
+export interface DeliveryListItem {
+  id: string;
+  business_id: string;
+  order_id: string;
+  order_number: string;
+  customer_name: string | null;
+  delivery_number: string;
+  status: DeliveryStatus;
+  expected_delivery_date: string | null;
+  tracking_number: string | null;
+  vehicle: string | null;
+  driver: string | null;
+  dispatched_at: string | null;
+  delivered_at: string | null;
+  created_at: string;
+}
+
+export interface DeliveryItem {
+  id: string;
+  business_id: string;
+  delivery_id: string;
+  order_item_id: string;
+  product_id: string;
+  product_name: string;
+  product_sku: string | null;
+  ordered_quantity: string | number;
+  delivered_quantity: string | number;
+  unit: string;
+}
+
+export interface DeliveryStatusHistory {
+  id: string;
+  business_id: string;
+  delivery_id: string;
+  old_status: string | null;
+  new_status: DeliveryStatus;
+  changed_by: string;
+  reason: string | null;
+  created_at: string;
+}
+
+export interface CreateDeliveryFormValues {
+  order_id: string;
+  delivery_number: string;
+  notes?: string;
+}
+
+export interface PackDeliveryFormValues {
+  delivery_id: string;
+  notes?: string;
+}
+
+export interface DispatchDeliveryFormValues {
+  delivery_id: string;
+  vehicle?: string;
+  driver?: string;
+  tracking_number?: string;
+  notes?: string;
+}
+
+export interface InTransitDeliveryFormValues {
+  delivery_id: string;
+  notes?: string;
+}
+
+export interface CompleteDeliveryFormValues {
+  delivery_id: string;
+  proof_document_url?: string | null;
+  notes?: string;
+}
+
+export interface CancelDeliveryFormValues {
+  delivery_id: string;
+  reason: string;
+}
+
+export const DELIVERY_STATUS_COLORS: Record<DeliveryStatus, string> = {
+  NOT_READY: "bg-gray-100 text-gray-800",
+  READY: "bg-blue-100 text-blue-800",
+  PACKED: "bg-indigo-100 text-indigo-800",
+  DISPATCHED: "bg-purple-100 text-purple-800",
+  IN_TRANSIT: "bg-orange-100 text-orange-800",
+  DELIVERED: "bg-green-100 text-green-800",
+  CANCELLED: "bg-red-100 text-red-800",
+};
+
+export const DELIVERY_STATUS_LABELS: Record<DeliveryStatus, string> = {
+  NOT_READY: "Not Ready",
+  READY: "Ready",
+  PACKED: "Packed",
+  DISPATCHED: "Dispatched",
+  IN_TRANSIT: "In Transit",
+  DELIVERED: "Delivered",
+  CANCELLED: "Cancelled",
+};
+
+export const DELIVERY_STATUS_TRANSITIONS: Record<DeliveryStatus, DeliveryStatus[]> = {
+  NOT_READY: ["READY", "CANCELLED"],
+  READY: ["PACKED", "DISPATCHED", "CANCELLED"],
+  PACKED: ["DISPATCHED", "READY", "CANCELLED"],
+  DISPATCHED: ["IN_TRANSIT", "DELIVERED", "CANCELLED"],
+  IN_TRANSIT: ["DELIVERED", "CANCELLED"],
+  DELIVERED: [],
+  CANCELLED: [],
+};
+
+export interface EligibleDeliveryOrder {
+  id: string;
+  order_number: string;
+  customer_name: string | null;
+  order_date: string;
+  expected_delivery_date: string | null;
+  items: {
+    id: string;
+    product_id: string;
+    product_name: string;
+    product_sku: string | null;
+    quantity: number;
+    unit: string;
+  }[];
+}

@@ -145,9 +145,26 @@ export default function ProductForm({
           {disabledByPermission(canChangePrice) && <span className={hintClass}>Requires products.change_price to edit.</span>}
         </label>
         <label className={labelClass}>
-          Tax rate (%)
-          <input className={inputClass} inputMode="decimal" max="100" min="0" name="tax_rate" onChange={(event) => setValue("tax_rate", event.target.value, event)} readOnly={disabledByPermission(canChangePrice)} required step="0.01" type="number" value={values.tax_rate} />
-          {disabledByPermission(canChangePrice) && <span className={hintClass}>Tax rate is part of pricing and requires products.change_price to edit.</span>}
+          GST Rate (%)
+          <div className="flex gap-1.5 mt-1 mb-1">
+            {[0, 5, 12, 18, 28].map((slab) => (
+              <button
+                key={slab}
+                type="button"
+                disabled={disabledByPermission(canChangePrice)}
+                onClick={() => setValue("tax_rate", String(slab))}
+                className={`px-2 py-0.5 text-xs font-semibold rounded border transition ${
+                  Number(values.tax_rate) === slab
+                    ? "bg-[#0F766E] text-white border-[#0F766E]"
+                    : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+                }`}
+              >
+                {slab === 0 ? "0% (Exempt)" : `${slab}%`}
+              </button>
+            ))}
+          </div>
+          <input className={inputClass} inputMode="decimal" max="100" min="0" name="tax_rate" onChange={(event) => setValue("tax_rate", event.target.value, event)} readOnly={disabledByPermission(canChangePrice)} required step="0.01" type="number" value={values.tax_rate} placeholder="Enter applicable GST rate (0 to 100)" />
+          {disabledByPermission(canChangePrice) && <span className={hintClass}>GST rate is part of pricing and requires products.change_price to edit.</span>}
         </label>
       </fieldset>
 

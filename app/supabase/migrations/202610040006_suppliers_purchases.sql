@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS public.purchase_orders (
   notes TEXT CHECK (notes IS NULL OR length(notes) <= 1000),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT purchase_orders_business_po_unique UNIQUE (business_id, upper(btrim(po_number)))
+  CONSTRAINT purchase_orders_business_po_unique UNIQUE (business_id, po_number)
 );
 
 -- Purchase Order Items table
@@ -452,6 +452,9 @@ DECLARE
   actor_id UUID;
   remaining_qty NUMERIC(14, 3);
   new_received_qty NUMERIC(14, 3);
+  ordered_qty NUMERIC(14, 3);
+  current_received NUMERIC(14, 3);
+  material_id UUID;
 BEGIN
   IF NOT public.is_business_member(target_business_id) OR NOT public.has_business_permission(target_business_id, 'purchases.receive') THEN
     RAISE EXCEPTION 'FORBIDDEN: purchases.receive' USING ERRCODE = '42501';
@@ -599,7 +602,7 @@ BEGIN
   ELSE required_permission := 'purchases.edit'; END IF;
 
   IF NOT public.has_business_permission(target_business_id, required_permission) THEN
-    RAISE EXCEPTION 'FORBIDDEN: ' || required_permission USING ERRCODE = '42501';
+    RAISE EXCEPTION 'FORBIDDEN: %', required_permission USING ERRCODE = '42501';
   END IF;
 
   UPDATE public.purchase_orders SET status = target_status WHERE id = target_po_id AND business_id = target_business_id;

@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
+import { isProcurementAuthorized } from "@/lib/permissions/procurement";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { type SupplierFormValues } from "@/types/supplier";
 
@@ -37,7 +38,10 @@ function validateSupplier(values: SupplierFormValues): string | null {
 async function authorized(permission: string) {
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
-  if (!hasPermission({ permissions: context.permissions }, permission)) redirect("/suppliers?error=forbidden");
+  if (!isProcurementAuthorized(context, permission)) {
+    const isManager = context.roleKey === "manager" || context.role?.name?.toLowerCase().includes("manager");
+    redirect(isManager ? "/manager/dashboard?error=forbidden" : "/suppliers?error=forbidden");
+  }
   const supabase = await createServerSupabaseClient();
   return supabase ? { context, supabase } : null;
 }
@@ -89,8 +93,9 @@ export async function setSupplierStatusAction(formData: FormData): Promise<never
   const supplierId = String(formData.get("supplier_id") ?? "");
   const status = String(formData.get("status") ?? "");
   const permission = status === "INACTIVE" ? "suppliers.delete" : "suppliers.edit";
-  if ((status !== "ACTIVE" && status !== "INACTIVE") || !hasPermission({ permissions: context.permissions }, permission)) {
-    redirect("/suppliers?error=forbidden");
+  if ((status !== "ACTIVE" && status !== "INACTIVE") || !isProcurementAuthorized(context, permission)) {
+    const isManager = context.roleKey === "manager" || context.role?.name?.toLowerCase().includes("manager");
+    redirect(isManager ? "/manager/dashboard?error=forbidden" : "/suppliers?error=forbidden");
   }
   const supabase = await createServerSupabaseClient();
   if (!supabase) redirect("/suppliers?error=auth_unconfigured");

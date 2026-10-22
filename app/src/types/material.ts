@@ -57,6 +57,7 @@ export interface InventoryTransaction {
   quantity: string | number;
   reference_type: string;
   reference_id: string | null;
+  batch_number?: string | null;
   notes: string | null;
   created_by: string;
   created_at: string;

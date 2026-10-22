@@ -11,6 +11,7 @@ export const EMPTY_CUSTOMER_FORM_VALUES: CustomerFormValues = {
   address_id: "",
   address: "",
   city: "",
+  district: "",
   state: "",
   postal_code: "",
 };
@@ -32,6 +33,7 @@ export function customerToFormValues(
     address_id: address?.id ?? "",
     address: address?.address ?? "",
     city: address?.city ?? "",
+    district: address?.district ?? "",
     state: address?.state ?? "",
     postal_code: address?.postal_code ?? "",
   };

@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
+import { isProcurementAuthorized } from "@/lib/permissions/procurement";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import {
   type PurchaseOrderFormValues,
@@ -55,7 +56,10 @@ function validatePo(values: PurchaseOrderFormValues): string | null {
 async function authorized(permission: string) {
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
-  if (!hasPermission({ permissions: context.permissions }, permission)) redirect("/purchases?error=forbidden");
+  if (!isProcurementAuthorized(context, permission)) {
+    const isManager = context.roleKey === "manager" || context.role?.name?.toLowerCase().includes("manager");
+    redirect(isManager ? "/manager/dashboard?error=forbidden" : "/purchases?error=forbidden");
+  }
   const supabase = await createServerSupabaseClient();
   return supabase ? { context, supabase } : null;
 }
@@ -97,7 +101,10 @@ export async function updatePurchaseOrderStatusAction(formData: FormData): Promi
   const poId = String(formData.get("purchase_order_id") ?? "");
   const status = String(formData.get("status") ?? "");
   const requiredPermission = status === "CANCELLED" ? "purchases.delete" : "purchases.edit";
-  if (!hasPermission({ permissions: context.permissions }, requiredPermission)) redirect("/purchases?error=forbidden");
+  if (!isProcurementAuthorized(context, requiredPermission)) {
+    const isManager = context.roleKey === "manager" || context.role?.name?.toLowerCase().includes("manager");
+    redirect(isManager ? "/manager/dashboard?error=forbidden" : "/purchases?error=forbidden");
+  }
 
   const supabase = await createServerSupabaseClient();
   if (!supabase) redirect("/purchases?error=auth_unconfigured");
@@ -118,7 +125,10 @@ export async function updatePurchaseOrderStatusAction(formData: FormData): Promi
 export async function receivePurchaseOrderItemsAction(formData: FormData): Promise<never> {
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
-  if (!hasPermission({ permissions: context.permissions }, "purchases.receive")) redirect("/purchases?error=forbidden");
+  if (!isProcurementAuthorized(context, "purchases.receive")) {
+    const isManager = context.roleKey === "manager" || context.role?.name?.toLowerCase().includes("manager");
+    redirect(isManager ? "/manager/dashboard?error=forbidden" : "/purchases?error=forbidden");
+  }
 
   const poId = String(formData.get("purchase_order_id") ?? "");
   const itemsJson = String(formData.get("items") ?? "[]");

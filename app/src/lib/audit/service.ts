@@ -198,6 +198,72 @@ export async function logUserAccountUpdated(
 }
 
 /**
+ * Logs a direct user creation audit entry.
+ */
+export async function logUserCreated(
+  context: AuthContext,
+  createdUserId: string,
+  details: { name: string; email: string; roleId: string; roleName: string }
+): Promise<{ success: boolean; error?: string }> {
+  return logAudit(context, {
+    action: "USER_CREATED",
+    entityType: "user",
+    entityId: createdUserId,
+    newData: details,
+  });
+}
+
+/**
+ * Logs a user permission changes audit entry with actor, target Manager, old/new permissions, and timestamp.
+ */
+export async function logUserPermissionsUpdated(
+  context: AuthContext,
+  targetUserId: string,
+  details: {
+    actor?: { id: string; name?: string; email?: string };
+    targetManager?: { id: string; name?: string; email?: string };
+    oldPermissions?: Record<string, boolean>;
+    newPermissions?: Record<string, boolean>;
+    targetName?: string;
+    targetEmail?: string;
+    overridesCount: number;
+    grantedCount: number;
+    revokedCount: number;
+    overridesSummary?: Record<string, boolean>;
+    timestamp?: string;
+  }
+): Promise<{ success: boolean; error?: string }> {
+  const actor = details.actor ?? {
+    id: context.user.id,
+    email: context.user.email,
+  };
+  const targetManager = details.targetManager ?? {
+    id: targetUserId,
+    name: details.targetName,
+    email: details.targetEmail,
+  };
+
+  return logAudit(context, {
+    action: "USER_PERMISSIONS_UPDATED",
+    entityType: "user",
+    entityId: targetUserId,
+    oldData: {
+      targetManager,
+      permissions: details.oldPermissions ?? {},
+    },
+    newData: {
+      actor,
+      targetManager,
+      permissions: details.newPermissions ?? details.overridesSummary ?? {},
+      overridesCount: details.overridesCount,
+      grantedCount: details.grantedCount,
+      revokedCount: details.revokedCount,
+      timestamp: details.timestamp ?? new Date().toISOString(),
+    },
+  });
+}
+
+/**
  * Logs a business settings update audit entry.
  */
 export async function logBusinessSettingsUpdated(
@@ -212,5 +278,69 @@ export async function logBusinessSettingsUpdated(
     entityId: key,
     oldData: { key, value: oldValue },
     newData: { key, value: newValue },
+  });
+}
+
+/**
+ * Logs a password reset request or direct update without logging passwords or secrets.
+ */
+export async function logPasswordReset(
+  context: AuthContext,
+  targetUserId: string,
+  details: {
+    targetEmail: string;
+    targetName?: string;
+    mode: "direct" | "recovery_email";
+  }
+): Promise<{ success: boolean; error?: string }> {
+  return logAudit(context, {
+    action: "PASSWORD_RESET_REQUESTED",
+    entityType: "user",
+    entityId: targetUserId,
+    newData: {
+      actorId: context.user.id,
+      actorEmail: context.user.email,
+      targetUserId,
+      targetEmail: details.targetEmail,
+      mode: details.mode,
+      timestamp: new Date().toISOString(),
+    },
+  });
+}
+
+/**
+ * Logs an account deletion / deactivation audit entry with actor, target user, strategy, and reason.
+ */
+export async function logUserDeleted(
+  context: AuthContext,
+  targetUserId: string,
+  details: {
+    targetName: string;
+    targetEmail: string;
+    targetRole?: string;
+    deletionStrategy: "hard_delete" | "soft_delete";
+    reason?: string;
+  }
+): Promise<{ success: boolean; error?: string }> {
+  return logAudit(context, {
+    action: details.deletionStrategy === "hard_delete" ? "USER_DELETED" : "USER_DEACTIVATED",
+    entityType: "user",
+    entityId: targetUserId,
+    oldData: {
+      name: details.targetName,
+      email: details.targetEmail,
+      role: details.targetRole,
+    },
+    newData: {
+      actorId: context.user.id,
+      actorEmail: context.user.email,
+      targetUserId,
+      targetName: details.targetName,
+      targetEmail: details.targetEmail,
+      targetRole: details.targetRole,
+      deletionStrategy: details.deletionStrategy,
+      reason: details.reason || "Admin account deletion",
+      timestamp: new Date().toISOString(),
+    },
   });
 }

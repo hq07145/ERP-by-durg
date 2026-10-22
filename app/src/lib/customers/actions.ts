@@ -27,6 +27,7 @@ function normalizeForm(formData: FormData) {
     addressId: String(formData.get("address_id") ?? ""),
     address: String(formData.get("address") ?? "").trim(),
     city: String(formData.get("city") ?? "").trim(),
+    district: String(formData.get("district") ?? "").trim(),
     state: String(formData.get("state") ?? "").trim(),
     postalCode: String(formData.get("postal_code") ?? "").trim(),
   };
@@ -43,7 +44,7 @@ function normalizeForm(formData: FormData) {
     return { error: "invalid_credit_limit" as const };
   }
   if (values.address.length > 2000) return { error: "invalid_address" as const };
-  if (values.city.length > 120 || values.state.length > 120) return { error: "invalid_location" as const };
+  if (values.city.length > 120 || values.district.length > 120 || values.state.length > 120) return { error: "invalid_location" as const };
   if (values.postalCode.length > 20) return { error: "invalid_postal_code" as const };
   return { values };
 }
@@ -93,6 +94,7 @@ export async function saveCustomerAction(
       target_city: values.city || null,
       target_state: values.state || null,
       target_postal_code: values.postalCode || null,
+      target_district: values.district || null,
     });
     if (error) return { error: error.code === "42501" ? "forbidden" : "customer_save_failed" };
 
@@ -114,6 +116,7 @@ export async function saveCustomerAction(
     target_city: values.city || null,
     target_state: values.state || null,
     target_postal_code: values.postalCode || null,
+    target_district: values.district || null,
   });
   if (error || !createdId) {
     return { error: error?.code === "42501" ? "forbidden" : "customer_save_failed" };
@@ -121,6 +124,26 @@ export async function saveCustomerAction(
 
   revalidatePath("/customers");
   redirect(`/customers/${createdId}?notice=customer_created`);
+}
+
+import type { Customer } from "@/types/customer";
+
+export async function getCustomers(): Promise<Customer[]> {
+  const context = await getAuthContext();
+  if (!context) return [];
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from("customers")
+    .select("*")
+    .eq("business_id", context.user.business_id)
+    .eq("status", "ACTIVE")
+    .order("name");
+
+  if (error) return [];
+  return (data ?? []) as Customer[];
 }
 
 export async function setCustomerStatusAction(formData: FormData): Promise<never> {

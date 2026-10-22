@@ -286,6 +286,15 @@ export async function saveProductAction(
   const savedId = result.data?.id;
   if (!savedId) return { error: "product_not_found" };
 
+  if (existingProduct) {
+    try {
+      const { scheduleProductionQueue } = await import("@/lib/production/scheduler");
+      await scheduleProductionQueue(supabase, context.user.business_id);
+    } catch {
+      // Non-fatal if queue is empty
+    }
+  }
+
   revalidatePath("/products");
   revalidatePath(`/products/${savedId}`);
   redirect(existingProduct ? `/products/${savedId}?notice=product_updated` : `/products/${savedId}?notice=product_created`);

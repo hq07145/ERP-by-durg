@@ -18,7 +18,11 @@ export default async function LoginPage({
 }: {
   searchParams: Promise<{ error?: string; notice?: string }>;
 }) {
-  if (await getAuthContext()) redirect("/");
+  const existingContext = await getAuthContext();
+  if (existingContext) {
+    if (existingContext.roleKey === "manager") redirect("/manager/dashboard");
+    redirect("/");
+  }
   const params = await searchParams;
   const error = params.error ? errorMessages[params.error] : null;
 
@@ -38,8 +42,8 @@ export default async function LoginPage({
 
         <form action={signInAction} className="auth-form">
           <label>
-            Email address
-            <input autoComplete="email" name="email" required type="email" />
+            Email address or Username
+            <input autoComplete="username" name="email" required type="text" />
           </label>
           <label>
             Password
@@ -48,6 +52,15 @@ export default async function LoginPage({
           <button type="submit">Continue</button>
         </form>
         <Link className="auth-link" href="/forgot-password">Forgot password?</Link>
+        <div className="mt-5 pt-4 border-t border-[var(--line)] flex items-center justify-between text-xs">
+          <span className="text-[var(--muted)]">Are you a Manager?</span>
+          <Link
+            href="/manager/login"
+            className="font-semibold text-[var(--accent)] hover:underline flex items-center gap-1"
+          >
+            Manager Portal Login &rarr;
+          </Link>
+        </div>
         <p className="auth-footnote">Access is provisioned by your administrator. Public registration is disabled.</p>
       </section>
       <div className="auth-side" aria-hidden="true">

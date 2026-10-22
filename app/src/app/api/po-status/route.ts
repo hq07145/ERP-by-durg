@@ -1,6 +1,7 @@
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
+import { isProcurementAuthorized } from "@/lib/permissions/procurement";
 import { NextResponse } from "next/server";
 
 export async function POST(request: Request) {
@@ -18,8 +19,8 @@ export async function POST(request: Request) {
   }
 
   const requiredPermission = status === "CANCELLED" ? "purchases.delete" : "purchases.edit";
-  if (!hasPermission({ permissions: context.permissions }, requiredPermission)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!isProcurementAuthorized(context, requiredPermission)) {
+    return NextResponse.json({ error: "Forbidden: Procurement access is restricted for Manager role" }, { status: 403 });
   }
 
   const supabase = await createServerSupabaseClient();

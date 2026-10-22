@@ -23,6 +23,7 @@ export interface CustomerAddress {
   city: string | null;
   state: string | null;
   postal_code: string | null;
+  district: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -38,6 +39,7 @@ export interface CustomerFormValues {
   address_id: string;
   address: string;
   city: string;
+  district: string;
   state: string;
   postal_code: string;
 }
