@@ -93,14 +93,16 @@ export default async function CustomerProfilePage({
   const canDeactivate = hasPermission({ permissions: context.permissions }, "customers.delete");
   const canAddPayment = hasPermission({ permissions: context.permissions }, "payments.add");
 
+  const canViewPayments = hasPermission({ permissions: context.permissions }, "payments.view");
+
   const paramsValue = await searchParams;
   const notice = paramsValue.notice ? notices[paramsValue.notice] : null;
 
-  // Fetch payment-related data
+  // Fetch payment-related data safely
   const [summary, ledgerEntries, payments] = await Promise.all([
-    getCustomerSummary(id),
-    getCustomerLedger(id, 20, 0),
-    getCustomerPayments(id, 10, 0),
+    canViewPayments ? getCustomerSummary(id) : Promise.resolve(null),
+    canViewPayments ? getCustomerLedger(id, 20, 0) : Promise.resolve([]),
+    canViewPayments ? getCustomerPayments(id, 10, 0) : Promise.resolve([]),
   ]);
 
   const initials = (customer.name || "C")

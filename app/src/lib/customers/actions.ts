@@ -14,8 +14,13 @@ function emailIsValid(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function normalizeForm(formData: FormData) {
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
+  const rawCreditLimit = String(formData.get("credit_limit") ?? "").trim();
+  const creditLimit = rawCreditLimit === "" ? "0" : rawCreditLimit;
+
   const values = {
     name: String(formData.get("name") ?? "").trim(),
     companyName: String(formData.get("company_name") ?? "").trim(),
@@ -23,8 +28,8 @@ function normalizeForm(formData: FormData) {
     email,
     gstNumber: String(formData.get("gst_number") ?? "").trim().toUpperCase(),
     paymentTerms: String(formData.get("payment_terms") ?? "").trim(),
-    creditLimit: String(formData.get("credit_limit") ?? "").trim(),
-    addressId: String(formData.get("address_id") ?? ""),
+    creditLimit,
+    addressId: String(formData.get("address_id") ?? "").trim(),
     address: String(formData.get("address") ?? "").trim(),
     city: String(formData.get("city") ?? "").trim(),
     district: String(formData.get("district") ?? "").trim(),
@@ -57,7 +62,11 @@ export async function saveCustomerAction(
   _previousState: CustomerActionState,
   formData: FormData,
 ): Promise<CustomerActionState> {
-  const customerId = String(formData.get("customer_id") ?? "");
+  const customerId = String(formData.get("customer_id") ?? "").trim();
+  if (customerId && !UUID_REGEX.test(customerId)) {
+    return { error: "customer_not_found" };
+  }
+
   const permission = customerId ? "customers.edit" : "customers.create";
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
@@ -70,19 +79,48 @@ export async function saveCustomerAction(
   if ("error" in parsed) return parsed;
   const { values } = parsed;
 
-  if (customerId) {
-    const { data: customer, error: customerError } = await supabase
-      .from("customers")
-      .select("id")
-      .eq("id", customerId)
-      .eq("business_id", context.user.business_id)
-      .maybeSingle();
-    if (customerError || !customer) return { error: "customer_not_found" };
+  const targetAddressId = values.addressId && UUID_REGEX.test(values.addressId) ? values.addressId : null;
 
-    const { error } = await supabase.rpc("update_customer_with_address", {
+  try {
+    if (customerId) {
+      const { data: customer, error: customerError } = await supabase
+        .from("customers")
+        .select("id")
+        .eq("id", customerId)
+        .eq("business_id", context.user.business_id)
+        .maybeSingle();
+      if (customerError || !customer) return { error: "customer_not_found" };
+
+      const { error } = await supabase.rpc("update_customer_with_address", {
+        target_business_id: context.user.business_id,
+        target_customer_id: customerId,
+        target_address_id: targetAddressId,
+        target_name: values.name,
+        target_company_name: values.companyName || null,
+        target_phone: values.phone || null,
+        target_email: values.email || null,
+        target_gst_number: values.gstNumber || null,
+        target_payment_terms: values.paymentTerms || null,
+        target_credit_limit: values.creditLimit,
+        target_address: values.address || null,
+        target_city: values.city || null,
+        target_state: values.state || null,
+        target_postal_code: values.postalCode || null,
+        target_district: values.district || null,
+      });
+
+      if (error) {
+        console.error("update_customer_with_address error:", error.message || error);
+        return { error: error.code === "42501" ? "forbidden" : "customer_save_failed" };
+      }
+
+      revalidatePath("/customers");
+      revalidatePath(`/customers/${customerId}`);
+      redirect(`/customers/${customerId}?notice=customer_updated`);
+    }
+
+    const { data: createdId, error } = await supabase.rpc("create_customer_with_address", {
       target_business_id: context.user.business_id,
-      target_customer_id: customerId,
-      target_address_id: values.addressId || null,
       target_name: values.name,
       target_company_name: values.companyName || null,
       target_phone: values.phone || null,
@@ -96,34 +134,21 @@ export async function saveCustomerAction(
       target_postal_code: values.postalCode || null,
       target_district: values.district || null,
     });
-    if (error) return { error: error.code === "42501" ? "forbidden" : "customer_save_failed" };
+
+    if (error || !createdId) {
+      console.error("create_customer_with_address error:", error?.message || error);
+      return { error: error?.code === "42501" ? "forbidden" : "customer_save_failed" };
+    }
 
     revalidatePath("/customers");
-    revalidatePath(`/customers/${customerId}`);
-    redirect(`/customers/${customerId}?notice=customer_updated`);
+    redirect(`/customers/${createdId}?notice=customer_created`);
+  } catch (err) {
+    if (err && typeof err === "object" && "digest" in err && typeof (err as any).digest === "string" && (err as any).digest.startsWith("NEXT_REDIRECT")) {
+      throw err;
+    }
+    console.error("saveCustomerAction unexpected error:", err);
+    return { error: "customer_save_failed" };
   }
-
-  const { data: createdId, error } = await supabase.rpc("create_customer_with_address", {
-    target_business_id: context.user.business_id,
-    target_name: values.name,
-    target_company_name: values.companyName || null,
-    target_phone: values.phone || null,
-    target_email: values.email || null,
-    target_gst_number: values.gstNumber || null,
-    target_payment_terms: values.paymentTerms || null,
-    target_credit_limit: values.creditLimit,
-    target_address: values.address || null,
-    target_city: values.city || null,
-    target_state: values.state || null,
-    target_postal_code: values.postalCode || null,
-    target_district: values.district || null,
-  });
-  if (error || !createdId) {
-    return { error: error?.code === "42501" ? "forbidden" : "customer_save_failed" };
-  }
-
-  revalidatePath("/customers");
-  redirect(`/customers/${createdId}?notice=customer_created`);
 }
 
 import type { Customer } from "@/types/customer";

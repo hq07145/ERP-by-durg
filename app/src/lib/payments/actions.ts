@@ -257,52 +257,105 @@ export async function getCustomerLedger(
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
   if (!hasPermission({ permissions: context.permissions }, "payments.view")) {
-    throw new Error("Forbidden: payments.view");
+    return [];
   }
 
   const supabase = await createServerSupabaseClient();
-  if (!supabase) throw new Error("Supabase client not available");
+  if (!supabase) return [];
 
-  const { data, error } = await supabase.rpc("get_customer_ledger", {
-    p_business_id: context.user.business_id,
-    p_customer_id: customerId,
-    p_limit: limit,
-    p_offset: offset,
-  });
+  try {
+    const { data, error } = await supabase.rpc("get_customer_ledger", {
+      p_business_id: context.user.business_id,
+      p_customer_id: customerId,
+      p_limit: limit,
+      p_offset: offset,
+    });
 
-  if (error) throw error;
-  return (data ?? []) as CustomerLedgerEntryWithDetails[];
+    if (error) {
+      console.warn("get_customer_ledger RPC error:", error.message || error);
+      return [];
+    }
+    return (data ?? []) as CustomerLedgerEntryWithDetails[];
+  } catch (err) {
+    console.warn("getCustomerLedger exception:", err);
+    return [];
+  }
 }
 
 export async function getCustomerSummary(customerId: string): Promise<CustomerSummary | null> {
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
   if (!hasPermission({ permissions: context.permissions }, "payments.view")) {
-    throw new Error("Forbidden: payments.view");
+    return null;
   }
 
   const supabase = await createServerSupabaseClient();
-  if (!supabase) throw new Error("Supabase client not available");
+  if (!supabase) return null;
 
-  const { data, error } = await supabase.rpc("get_customer_summary", {
-    p_business_id: context.user.business_id,
-    p_customer_id: customerId,
-  });
+  try {
+    const { data, error } = await supabase.rpc("get_customer_summary", {
+      p_business_id: context.user.business_id,
+      p_customer_id: customerId,
+    });
 
-  if (error) throw error;
-  if (!data || data.length === 0) return null;
+    if (!error && data && data.length > 0) {
+      const s = data[0];
+      return {
+        customer_id: s.customer_id,
+        customer_name: s.customer_name,
+        customer_company: s.customer_company,
+        total_purchases: Number(s.total_purchases) || 0,
+        total_paid: Number(s.total_paid) || 0,
+        total_due: Number(s.total_due) || 0,
+        last_payment_date: s.last_payment_date,
+        last_payment_amount: s.last_payment_amount ? Number(s.last_payment_amount) : null,
+      };
+    }
 
-  const s = data[0];
-  return {
-    customer_id: s.customer_id,
-    customer_name: s.customer_name,
-    customer_company: s.customer_company,
-    total_purchases: Number(s.total_purchases) || 0,
-    total_paid: Number(s.total_paid) || 0,
-    total_due: Number(s.total_due) || 0,
-    last_payment_date: s.last_payment_date,
-    last_payment_amount: s.last_payment_amount ? Number(s.last_payment_amount) : null,
-  };
+    if (error) {
+      console.warn("get_customer_summary RPC warning:", error.message || error);
+    }
+
+    // Direct fallback calculation
+    const { data: customer } = await supabase
+      .from("customers")
+      .select("name, company_name")
+      .eq("id", customerId)
+      .eq("business_id", context.user.business_id)
+      .maybeSingle();
+
+    if (!customer) return null;
+
+    const { data: ledger } = await supabase
+      .from("customer_ledger")
+      .select("entry_type, debit, credit, entry_date")
+      .eq("customer_id", customerId)
+      .eq("business_id", context.user.business_id);
+
+    const entries = ledger ?? [];
+    const total_purchases = entries
+      .filter((e) => e.entry_type === "INVOICE")
+      .reduce((sum, e) => sum + (Number(e.debit) || 0), 0);
+    const total_paid = entries
+      .filter((e) => e.entry_type === "PAYMENT")
+      .reduce((sum, e) => sum + (Number(e.credit) || 0), 0);
+    const paymentEntries = entries.filter((e) => e.entry_type === "PAYMENT");
+    const lastPayment = paymentEntries[paymentEntries.length - 1];
+
+    return {
+      customer_id: customerId,
+      customer_name: customer.name,
+      customer_company: customer.company_name,
+      total_purchases,
+      total_paid,
+      total_due: Math.max(0, total_purchases - total_paid),
+      last_payment_date: lastPayment?.entry_date ?? null,
+      last_payment_amount: lastPayment ? Number(lastPayment.credit) || 0 : null,
+    };
+  } catch (err) {
+    console.warn("getCustomerSummary exception:", err);
+    return null;
+  }
 }
 
 export async function getCustomerPayments(
@@ -313,23 +366,31 @@ export async function getCustomerPayments(
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
   if (!hasPermission({ permissions: context.permissions }, "payments.view")) {
-    throw new Error("Forbidden: payments.view");
+    return [];
   }
 
   const supabase = await createServerSupabaseClient();
-  if (!supabase) throw new Error("Supabase client not available");
+  if (!supabase) return [];
 
-  const { data, error } = await supabase.rpc("list_payments", {
-    p_business_id: context.user.business_id,
-    p_customer_id: customerId,
-    p_status: null,
-    p_order_id: null,
-    p_limit: limit,
-    p_offset: offset,
-  });
+  try {
+    const { data, error } = await supabase.rpc("list_payments", {
+      p_business_id: context.user.business_id,
+      p_customer_id: customerId,
+      p_status: null,
+      p_order_id: null,
+      p_limit: limit,
+      p_offset: offset,
+    });
 
-  if (error) throw error;
-  return (data ?? []) as PaymentListItem[];
+    if (error) {
+      console.warn("list_payments RPC error:", error.message || error);
+      return [];
+    }
+    return (data ?? []) as PaymentListItem[];
+  } catch (err) {
+    console.warn("getCustomerPayments exception:", err);
+    return [];
+  }
 }
 
 export async function getOrdersForCustomer(customerId: string) {
