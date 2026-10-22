@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ReportFilters as ReportFiltersComponent } from "@/components/reports/report-filters";
 import { DistrictSalesSummary } from "@/components/reports/district-sales-summary";
 import { ReportTable } from "@/components/reports/report-table";
-import { getReportPreview, getDistrictSalesSummary, exportReport } from "@/lib/reports/actions";
+import { getSalesReportBundle, exportReport } from "@/lib/reports/actions";
 import { triggerDownload } from "@/lib/reports/export-client";
 import {
   REPORT_CONFIGS,
@@ -34,7 +34,7 @@ export function SalesReportClient() {
   const [totalCount, setTotalCount] = useState(0);
   const isInitialMount = useRef(true);
 
-  // Initialize filters from URL
+  // Initialize filters from URL with reference preservation to avoid duplicate fetches
   const initializeFromSearchParams = useCallback(() => {
     const params: SalesReportFilters = {};
     if (searchParams.get("dateRange")) params.dateRange = searchParams.get("dateRange") as SalesReportFilters["dateRange"];
@@ -44,9 +44,18 @@ export function SalesReportClient() {
     if (searchParams.get("customerId")) params.customerId = searchParams.get("customerId")!;
     if (searchParams.get("productId")) params.productId = searchParams.get("productId")!;
     if (searchParams.get("status")) params.status = searchParams.get("status") as SalesReportFilters["status"];
-    if (searchParams.get("page")) setCurrentPage(Number(searchParams.get("page")!));
-    setFilters(params);
-  }, [searchParams]);
+    const pageVal = Number(searchParams.get("page") || "1");
+    if (pageVal !== currentPage) setCurrentPage(pageVal);
+
+    setFilters((prev) => {
+      const keysA = Object.keys(prev) as (keyof SalesReportFilters)[];
+      const keysB = Object.keys(params) as (keyof SalesReportFilters)[];
+      if (keysA.length === keysB.length && keysA.every((k) => prev[k] === params[k])) {
+        return prev;
+      }
+      return params;
+    });
+  }, [searchParams, currentPage]);
 
   useEffect(() => {
     if (isInitialMount.current) {
@@ -56,33 +65,39 @@ export function SalesReportClient() {
     initializeFromSearchParams();
   }, [initializeFromSearchParams]);
 
-  // Fetch data when filters change
+  // Fetch data in ONE single unified bundle call
   useEffect(() => {
+    let isCancelled = false;
     const fetchData = async () => {
       setIsLoading(true);
       setError(null);
       try {
-        const [{ rows: data, totalCount: total }, summaryData] = await Promise.all([
-          getReportPreview(
-            reportType,
-            filters,
-            50,
-            (currentPage - 1) * 50
-          ),
-          getDistrictSalesSummary(filters),
-        ]);
-        setRows(data as SalesReportRow[]);
-        setTotalCount(total);
-        setDistrictSummary(summaryData.summary);
-        setDistrictTotals(summaryData.totals);
+        const bundle = await getSalesReportBundle(
+          filters,
+          50,
+          (currentPage - 1) * 50
+        );
+        if (!isCancelled) {
+          setRows(bundle.rows);
+          setTotalCount(bundle.totalCount);
+          setDistrictSummary(bundle.summary);
+          setDistrictTotals(bundle.totals);
+        }
       } catch (err: any) {
-        console.error("Failed to fetch sales report:", err);
-        setError(err.message || "Failed to load sales report data.");
+        if (!isCancelled) {
+          console.error("Failed to fetch sales report:", err);
+          setError(err.message || "Failed to load sales report data.");
+        }
       } finally {
-        setIsLoading(false);
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
       }
     };
     fetchData();
+    return () => {
+      isCancelled = true;
+    };
   }, [filters, currentPage]);
 
   const handleFiltersChange = (newFilters: SalesReportFilters) => {

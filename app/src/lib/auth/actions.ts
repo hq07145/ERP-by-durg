@@ -1,7 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { getAuthContext } from "@/lib/auth/context";
+import { getAuthContext, normalizeRoleKey } from "@/lib/auth/context";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 
@@ -44,18 +44,7 @@ export async function signInAction(formData: FormData): Promise<never> {
     redirect("/login?error=invalid_credentials");
   }
 
-  // Pre-check: if user exists in public.users but is deactivated/inactive, fail with account_unavailable
-  if (admin) {
-    const { data: userProfile } = await admin
-      .from("users")
-      .select("status, auth_user_id")
-      .eq("email", resolvedEmail)
-      .maybeSingle();
-    if (userProfile && userProfile.status !== "ACTIVE") {
-      redirect("/login?error=account_unavailable");
-    }
-  }
-
+  // Direct GoTrue authentication (single network round trip)
   let { data: authData, error } = await supabase.auth.signInWithPassword({
     email: resolvedEmail,
     password,
@@ -82,19 +71,33 @@ export async function signInAction(formData: FormData): Promise<never> {
         email: resolvedEmail,
         password,
       });
+      authData = retryResult.data;
       error = retryResult.error;
     }
   }
 
-  if (error) redirect("/login?error=invalid_credentials");
+  if (error || !authData?.user) redirect("/login?error=invalid_credentials");
 
-  const context = await getAuthContext();
-  if (!context) {
+  // Fast targeted profile check using authData.user.id (avoids redundant getUser() roundtrip)
+  const dbClient = admin || supabase;
+  const { data: userRecord } = await dbClient
+    .from("users")
+    .select("status, business:businesses(status), user_roles(role:roles(name))")
+    .eq("auth_user_id", authData.user.id)
+    .maybeSingle();
+
+  const business = Array.isArray(userRecord?.business) ? userRecord.business[0] : userRecord?.business;
+  if (!userRecord || userRecord.status !== "ACTIVE" || business?.status !== "ACTIVE") {
     await supabase.auth.signOut();
     redirect("/login?error=account_unavailable");
   }
 
-  if (context.roleKey === "manager") {
+  const userRoleRecord = (Array.isArray(userRecord.user_roles) ? userRecord.user_roles[0] : userRecord.user_roles) as any;
+  const rawRole = userRoleRecord?.role;
+  const roleName = (Array.isArray(rawRole) ? rawRole[0]?.name : rawRole?.name) ?? "";
+  const roleKey = normalizeRoleKey(roleName);
+
+  if (roleKey === "manager") {
     redirect("/manager/dashboard");
   }
 

@@ -33,9 +33,18 @@ export default function OrdersReportPage() {
     if (searchParams.get("customerId")) params.customerId = searchParams.get("customerId")!;
     if (searchParams.get("status")) params.status = searchParams.get("status") as OrdersReportFilters["status"];
     if (searchParams.get("priority")) params.priority = searchParams.get("priority") as OrdersReportFilters["priority"];
-    if (searchParams.get("page")) setCurrentPage(Number(searchParams.get("page")!));
-    setFilters(params);
-  }, [searchParams]);
+    const pageVal = Number(searchParams.get("page") || "1");
+    if (pageVal !== currentPage) setCurrentPage(pageVal);
+
+    setFilters((prev) => {
+      const keysA = Object.keys(prev) as (keyof OrdersReportFilters)[];
+      const keysB = Object.keys(params) as (keyof OrdersReportFilters)[];
+      if (keysA.length === keysB.length && keysA.every((k) => prev[k] === params[k])) {
+        return prev;
+      }
+      return params;
+    });
+  }, [searchParams, currentPage]);
 
   useEffect(() => {
     if (isInitialMount.current) {
@@ -46,6 +55,7 @@ export default function OrdersReportPage() {
   }, [initializeFromSearchParams]);
 
   useEffect(() => {
+    let isCancelled = false;
     const fetchData = async () => {
       setIsLoading(true);
       setError(null);
@@ -56,16 +66,25 @@ export default function OrdersReportPage() {
           50,
           (currentPage - 1) * 50
         );
-        setRows(data as OrdersReportRow[]);
-        setTotalCount(total);
+        if (!isCancelled) {
+          setRows(data as OrdersReportRow[]);
+          setTotalCount(total);
+        }
       } catch (err: any) {
-        console.error("Failed to fetch orders report:", err);
-        setError(err.message || "Failed to load orders report data.");
+        if (!isCancelled) {
+          console.error("Failed to fetch orders report:", err);
+          setError(err.message || "Failed to load orders report data.");
+        }
       } finally {
-        setIsLoading(false);
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
       }
     };
     fetchData();
+    return () => {
+      isCancelled = true;
+    };
   }, [filters, currentPage]);
 
   const handleFiltersChange = (newFilters: OrdersReportFilters) => {

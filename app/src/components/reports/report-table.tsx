@@ -113,35 +113,6 @@ export function ReportTable({
     return String(value);
   };
 
-  if (isLoading) {
-    return (
-      <div className="rounded-lg border border-gray-200 bg-white">
-        <div className="p-12 text-center">
-          <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-[var(--accent)] border-t-transparent" />
-          <p className="mt-3 text-sm font-medium text-gray-600">Loading report data...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (rows.length === 0) {
-    return (
-      <div className="rounded-lg border border-gray-200 bg-white p-12 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-2xl mb-3">
-          📊
-        </div>
-        <h4 className="text-sm font-semibold text-gray-900">
-          {reportType === "sales" ? "No sales data found" : "No records found"}
-        </h4>
-        <p className="mt-1 text-xs text-gray-500">
-          {reportType === "sales"
-            ? "No sales data matches the selected filters. Try selecting another district or broadening your filter range."
-            : "No data matches the selected filters. Try broadening your filter range."}
-        </p>
-      </div>
-    );
-  }
-
   // Generate columns based on report type
   const columns: { key: string; header: string; align?: "left" | "right" }[] = (() => {
     switch (reportType) {
@@ -258,8 +229,45 @@ export function ReportTable({
 
   const hasTotals = Object.keys(totals).length > 0;
 
+  if (isLoading && rows.length === 0) {
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white overflow-hidden shadow-xs">
+        <div className="h-1 w-full bg-teal-100 overflow-hidden">
+          <div className="h-full bg-[#0F766E] animate-pulse w-full" />
+        </div>
+        <div className="p-10 text-center space-y-3">
+          <div className="inline-block animate-spin rounded-full h-7 w-7 border-2 border-[#0F766E] border-t-transparent" />
+          <p className="text-sm font-medium text-slate-600">Loading report data...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isLoading && rows.length === 0) {
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white p-12 text-center">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-2xl mb-3">
+          📊
+        </div>
+        <h4 className="text-sm font-semibold text-gray-900">
+          {reportType === "sales" ? "No sales data found" : "No records found"}
+        </h4>
+        <p className="mt-1 text-xs text-gray-500">
+          {reportType === "sales"
+            ? "No sales data matches the selected filters. Try selecting another district or broadening your filter range."
+            : "No data matches the selected filters. Try broadening your filter range."}
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <div className="rounded-lg border border-gray-200 bg-white overflow-hidden shadow-xs">
+    <div className={`rounded-lg border border-gray-200 bg-white overflow-hidden shadow-xs relative transition-opacity duration-200 ${isLoading ? "opacity-75" : ""}`}>
+      {isLoading && (
+        <div className="absolute top-0 left-0 right-0 z-20 h-1 bg-teal-100 overflow-hidden">
+          <div className="h-full bg-[#0F766E] animate-pulse w-full" />
+        </div>
+      )}
       {/* Table */}
       <div className="overflow-x-auto">
         <table className="w-full text-sm" role="grid">

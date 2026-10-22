@@ -821,12 +821,15 @@ interface DeliveryQueryResult {
 // 1. SALES REPORT & DISTRICT SUMMARY
 // ============================================
 
-export async function getDistrictSalesSummary(
-  filters: SalesReportFilters
+export async function getSalesReportBundle(
+  filters: SalesReportFilters,
+  limit = 50,
+  offset = 0
 ): Promise<{
+  rows: SalesReportRow[];
+  totalCount: number;
   summary: DistrictSalesSummaryItem[];
   totals: DistrictSalesSummaryItem;
-  totalLineItems: number;
 }> {
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
@@ -845,6 +848,7 @@ export async function getDistrictSalesSummary(
     .select(
       `
       id, order_number, order_date, status, subtotal, discount_amount, tax_amount, cgst_amount, sgst_amount, igst_amount, tax_type, total_amount, paid_amount, due_amount, district, place_of_supply,
+      earliest_delivery_date, latest_delivery_date, expected_delivery_date, delivery_status,
       customer:customers!inner(
         id, name, company_name, phone, email,
         customer_addresses(district, state, address_type)
@@ -885,7 +889,7 @@ export async function getDistrictSalesSummary(
     }
   >();
 
-  let totalLineItems = 0;
+  const allRows: SalesReportRow[] = [];
 
   for (const order of (data as unknown as OrderQueryResult[]) ?? []) {
     const addrs = order.customer?.customer_addresses as CustomerAddressQueryResult[] | undefined;
@@ -906,8 +910,6 @@ export async function getDistrictSalesSummary(
 
     if (matchingItems.length === 0) continue;
 
-    totalLineItems += matchingItems.length;
-
     let orderQty = 0;
     let orderTaxable = 0;
     let orderCgst = 0;
@@ -915,27 +917,22 @@ export async function getDistrictSalesSummary(
     let orderIgst = 0;
     let matchingLineTotal = 0;
 
+    const orderPaidAmount = Number(order.paid_amount) || 0;
+    const orderDueAmount = Number(order.due_amount) || 0;
+    const orderTotalLines = matchingItems.reduce((acc, it) => acc + (Number(it.line_total) || 0), 0);
+
     for (const item of matchingItems) {
       const q = Number(item.quantity) || 0;
       const u = Number(item.unit_price) || 0;
-      const discRate = Number(item.discount_rate || 0);
-      const taxRate = Number(item.tax_rate || 0);
+      const discRate = Number(item.discount_rate) || 0;
+      const taxRate = Number(item.tax_rate) || 0;
       const lineTotal = Number(item.line_total) || 0;
+      const itemTaxable = Number(item.taxable_amount != null ? item.taxable_amount : q * u * (1 - discRate / 100));
 
-      orderQty += q;
-      matchingLineTotal += lineTotal;
+      let c = 0;
+      let s = 0;
+      let i = 0;
 
-      let itemTaxable = 0;
-      if (item.taxable_amount != null && Number(item.taxable_amount) > 0) {
-        itemTaxable = Number(item.taxable_amount);
-      } else {
-        const gross = q * u;
-        const disc = gross * (discRate / 100);
-        itemTaxable = Math.max(0, gross - disc);
-      }
-      orderTaxable += itemTaxable;
-
-      let c = 0, s = 0, i = 0;
       if (item.cgst_amount != null && Number(item.cgst_amount) > 0) {
         c = Number(item.cgst_amount);
         s = Number(item.sgst_amount || 0);
@@ -948,9 +945,52 @@ export async function getDistrictSalesSummary(
           s = Math.round(itemTaxable * (taxRate / 200) * 100) / 100;
         }
       }
+
+      orderQty += q;
+      orderTaxable += itemTaxable;
       orderCgst += c;
       orderSgst += s;
       orderIgst += i;
+      matchingLineTotal += lineTotal;
+
+      let itemPaid = 0;
+      let itemDue = 0;
+      if (matchingItems.length === 1) {
+        itemPaid = orderPaidAmount;
+        itemDue = orderDueAmount;
+      } else if (orderTotalLines > 0) {
+        itemPaid = Math.round((lineTotal / orderTotalLines) * orderPaidAmount * 100) / 100;
+        itemDue = Math.round((lineTotal / orderTotalLines) * orderDueAmount * 100) / 100;
+      }
+
+      allRows.push({
+        order_id: order.id,
+        order_number: order.order_number,
+        order_date: order.order_date,
+        customer_id: order.customer?.id ?? "",
+        customer_name: order.customer?.name ?? "",
+        customer_company: order.customer?.company_name ?? null,
+        customer_district: districtName,
+        product_id: item.product?.id ?? "",
+        product_name: item.product?.name ?? "",
+        product_sku: item.product?.sku ?? null,
+        quantity: q,
+        unit_price: u,
+        discount_rate: discRate,
+        tax_rate: taxRate,
+        line_total: lineTotal,
+        gross_amount: itemTaxable,
+        discount_amount: Math.round(q * u * (discRate / 100) * 100) / 100,
+        tax_amount: Math.round((c + s + i) * 100) / 100,
+        cgst_amount: c,
+        sgst_amount: s,
+        igst_amount: i,
+        tax_type: order.tax_type ?? "INTRA_STATE",
+        net_amount: lineTotal,
+        paid_amount: itemPaid,
+        outstanding_amount: itemDue,
+        order_status: order.status as any,
+      });
     }
 
     let orderSales = 0;
@@ -1044,7 +1084,27 @@ export async function getDistrictSalesSummary(
     totals.outstanding_amount = Math.round((totals.outstanding_amount + item.outstanding_amount) * 100) / 100;
   }
 
-  return { summary, totals, totalLineItems };
+  return {
+    rows: allRows.slice(offset, offset + limit),
+    totalCount: allRows.length,
+    summary,
+    totals,
+  };
+}
+
+export async function getDistrictSalesSummary(
+  filters: SalesReportFilters
+): Promise<{
+  summary: DistrictSalesSummaryItem[];
+  totals: DistrictSalesSummaryItem;
+  totalLineItems: number;
+}> {
+  const bundle = await getSalesReportBundle(filters, 0, 0);
+  return {
+    summary: bundle.summary,
+    totals: bundle.totals,
+    totalLineItems: bundle.totalCount,
+  };
 }
 
 export async function getSalesReport(
@@ -1052,147 +1112,8 @@ export async function getSalesReport(
   limit = 10000,
   offset = 0
 ): Promise<SalesReportRow[]> {
-  const context = await getAuthContext();
-  if (!context) redirect("/login?error=account_unavailable");
-  const isAdminOrSuper = context.roleKey === "admin" || context.roleKey === "super_admin";
-  if (!isAdminOrSuper) {
-    throw new Error("Forbidden: Sales report is restricted to Admin and Super Admin");
-  }
-
-  const supabase = await createServerSupabaseClient();
-  if (!supabase) throw new Error("Supabase client not available");
-
-  const { startDate, endDate } = resolveDateRange(filters);
-
-  let query = supabase
-    .from("orders")
-    .select(
-      `
-      id, order_number, order_date, status, subtotal, discount_amount, tax_amount, cgst_amount, sgst_amount, igst_amount, tax_type, total_amount, paid_amount, due_amount, district, place_of_supply,
-      earliest_delivery_date, latest_delivery_date, expected_delivery_date, delivery_status,
-      customer:customers!inner(
-        id, name, company_name, phone, email,
-        customer_addresses(district, state, address_type)
-      ),
-      items:order_items(
-        id, product_id, quantity, unit_price, discount_rate, tax_rate, line_total, taxable_amount, cgst_amount, sgst_amount, igst_amount,
-        product:products!inner(id, name, sku)
-      )
-    `
-    )
-    .eq("business_id", context.user.business_id);
-
-  if (filters.status) {
-    query = query.eq("status", filters.status);
-  } else {
-    query = query.neq("status", "CANCELLED");
-  }
-
-  if (startDate) query = query.gte("order_date", startDate);
-  if (endDate) query = query.lte("order_date", endDate);
-  if (filters.customerId) query = query.eq("customer_id", filters.customerId);
-
-  const { data, error } = await query.order("order_date", { ascending: false });
-  if (error) throw error;
-
-  const rows: SalesReportRow[] = [];
-
-  for (const order of (data as unknown as OrderQueryResult[]) ?? []) {
-    const addrs = order.customer?.customer_addresses as CustomerAddressQueryResult[] | undefined;
-    const primaryAddr = addrs?.find((a) => a.address_type === "PRIMARY") ?? addrs?.[0];
-    const rawDistrict = (order.district && order.district.trim()) || primaryAddr?.district?.trim() || null;
-    const rawState = (order.place_of_supply && order.place_of_supply.trim()) || primaryAddr?.state?.trim() || null;
-
-    if (!matchesDistrict(rawDistrict, rawState, filters.district)) {
-      continue;
-    }
-
-    const districtName = resolveDistrictDisplayName(rawDistrict, rawState);
-
-    const orderTotalAmount = Number(order.total_amount) || 0;
-    const orderPaidAmount = Number(order.paid_amount) || 0;
-    const orderDueAmount = Number(order.due_amount) || 0;
-
-    const items = order.items ?? [];
-    const orderTotalLines = items.reduce((sum, it) => sum + (Number(it.line_total) || 0), 0);
-
-    for (const item of items) {
-      if (filters.productId && item.product_id !== filters.productId) {
-        continue;
-      }
-
-      const q = Number(item.quantity) || 0;
-      const u = Number(item.unit_price) || 0;
-      const discRate = Number(item.discount_rate || 0);
-      const taxRate = Number(item.tax_rate || 0);
-      const lineTotal = Number(item.line_total) || 0;
-
-      let itemTaxable = 0;
-      if (item.taxable_amount != null && Number(item.taxable_amount) > 0) {
-        itemTaxable = Number(item.taxable_amount);
-      } else {
-        const gross = q * u;
-        const disc = gross * (discRate / 100);
-        itemTaxable = Math.max(0, gross - disc);
-      }
-
-      let c = 0, s = 0, i = 0;
-      if (item.cgst_amount != null && Number(item.cgst_amount) > 0) {
-        c = Number(item.cgst_amount);
-        s = Number(item.sgst_amount || 0);
-        i = Number(item.igst_amount || 0);
-      } else if (taxRate > 0) {
-        if (order.tax_type === "INTER_STATE") {
-          i = Math.round(itemTaxable * (taxRate / 100) * 100) / 100;
-        } else {
-          c = Math.round(itemTaxable * (taxRate / 200) * 100) / 100;
-          s = Math.round(itemTaxable * (taxRate / 200) * 100) / 100;
-        }
-      }
-
-      // Proportional distribution of paid and due amount to prevent line item double-counting
-      let itemPaid = 0;
-      let itemDue = 0;
-      if (items.length === 1) {
-        itemPaid = orderPaidAmount;
-        itemDue = orderDueAmount;
-      } else if (orderTotalLines > 0) {
-        itemPaid = Math.round((lineTotal / orderTotalLines) * orderPaidAmount * 100) / 100;
-        itemDue = Math.round((lineTotal / orderTotalLines) * orderDueAmount * 100) / 100;
-      }
-
-      rows.push({
-        order_id: order.id,
-        order_number: order.order_number,
-        order_date: order.order_date,
-        customer_id: order.customer?.id ?? "",
-        customer_name: order.customer?.name ?? "",
-        customer_company: order.customer?.company_name ?? null,
-        customer_district: districtName,
-        product_id: item.product?.id ?? "",
-        product_name: item.product?.name ?? "",
-        product_sku: item.product?.sku ?? null,
-        quantity: q,
-        unit_price: u,
-        discount_rate: discRate,
-        tax_rate: taxRate,
-        line_total: lineTotal,
-        gross_amount: itemTaxable,
-        discount_amount: Math.round(q * u * (discRate / 100) * 100) / 100,
-        tax_amount: Math.round((c + s + i) * 100) / 100,
-        cgst_amount: c,
-        sgst_amount: s,
-        igst_amount: i,
-        tax_type: order.tax_type ?? "INTRA_STATE",
-        net_amount: lineTotal,
-        paid_amount: itemPaid,
-        outstanding_amount: itemDue,
-        order_status: order.status as any,
-      });
-    }
-  }
-
-  return rows.slice(offset, offset + limit);
+  const bundle = await getSalesReportBundle(filters, limit, offset);
+  return bundle.rows;
 }
 
 // ============================================
@@ -1759,9 +1680,9 @@ export async function getReportPreview(
 
   switch (reportType) {
     case "sales": {
-      rows = await getSalesReport(filters as SalesReportFilters, limit, offset);
-      const { totalLineItems } = await getDistrictSalesSummary(filters as SalesReportFilters);
-      totalCount = totalLineItems;
+      const bundle = await getSalesReportBundle(filters as SalesReportFilters, limit, offset);
+      rows = bundle.rows;
+      totalCount = bundle.totalCount;
       break;
     }
     case "orders": {

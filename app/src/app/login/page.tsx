@@ -3,6 +3,8 @@ import { redirect } from "next/navigation";
 import { signInAction } from "@/lib/auth/actions";
 import { getAuthContext } from "@/lib/auth/context";
 
+import { LoginForm } from "@/components/auth/login-form";
+
 export const dynamic = "force-dynamic";
 
 const errorMessages: Record<string, string> = {
@@ -40,17 +42,7 @@ export default async function LoginPage({
         {error && <p className="auth-message auth-message-error" role="alert">{error}</p>}
         {params.notice === "signed_out" && <p className="auth-message" role="status">You have been signed out.</p>}
 
-        <form action={signInAction} className="auth-form">
-          <label>
-            Email address or Username
-            <input autoComplete="username" name="email" required type="text" />
-          </label>
-          <label>
-            Password
-            <input autoComplete="current-password" name="password" required type="password" />
-          </label>
-          <button type="submit">Continue</button>
-        </form>
+        <LoginForm action={signInAction} />
         <Link className="auth-link" href="/forgot-password">Forgot password?</Link>
         <div className="mt-5 pt-4 border-t border-[var(--line)] flex items-center justify-between text-xs">
           <span className="text-[var(--muted)]">Are you a Manager?</span>

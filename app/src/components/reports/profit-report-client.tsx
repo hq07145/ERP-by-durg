@@ -31,9 +31,18 @@ export function ProfitReportClient() {
     if (searchParams.get("startDate")) params.startDate = searchParams.get("startDate")!;
     if (searchParams.get("endDate")) params.endDate = searchParams.get("endDate")!;
     if (searchParams.get("customerId")) params.customerId = searchParams.get("customerId")!;
-    if (searchParams.get("page")) setCurrentPage(Number(searchParams.get("page")!));
-    setFilters(params);
-  }, [searchParams]);
+    const pageVal = Number(searchParams.get("page") || "1");
+    if (pageVal !== currentPage) setCurrentPage(pageVal);
+
+    setFilters((prev) => {
+      const keysA = Object.keys(prev) as (keyof ProfitReportFilters)[];
+      const keysB = Object.keys(params) as (keyof ProfitReportFilters)[];
+      if (keysA.length === keysB.length && keysA.every((k) => prev[k] === params[k])) {
+        return prev;
+      }
+      return params;
+    });
+  }, [searchParams, currentPage]);
 
   useEffect(() => {
     if (isInitialMount.current) {
@@ -44,6 +53,7 @@ export function ProfitReportClient() {
   }, [initializeFromSearchParams]);
 
   useEffect(() => {
+    let isCancelled = false;
     const fetchData = async () => {
       setIsLoading(true);
       setError(null);
@@ -54,16 +64,25 @@ export function ProfitReportClient() {
           50,
           (currentPage - 1) * 50
         );
-        setRows(data as ProfitReportRow[]);
-        setTotalCount(total);
+        if (!isCancelled) {
+          setRows(data as ProfitReportRow[]);
+          setTotalCount(total);
+        }
       } catch (err: any) {
-        console.error("Failed to fetch profit report:", err);
-        setError(err.message || "Failed to load profit report data.");
+        if (!isCancelled) {
+          console.error("Failed to fetch profit report:", err);
+          setError(err.message || "Failed to load profit report data.");
+        }
       } finally {
-        setIsLoading(false);
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
       }
     };
     fetchData();
+    return () => {
+      isCancelled = true;
+    };
   }, [filters, currentPage]);
 
   const handleFiltersChange = (newFilters: ProfitReportFilters) => {

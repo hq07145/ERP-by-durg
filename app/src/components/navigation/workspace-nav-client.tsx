@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useState, useEffect, useMemo } from "react";
 import {
   LayoutDashboard,
@@ -86,9 +86,17 @@ export function WorkspaceNavClient({
   children,
 }: WorkspaceNavClientProps) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isNavigating, setIsNavigating] = useState(false);
+
+  // Auto-clear navigation progress bar after safety timeout so it never hangs
+  useEffect(() => {
+    if (!isNavigating) return;
+    const timer = setTimeout(() => setIsNavigating(false), 3500);
+    return () => clearTimeout(timer);
+  }, [isNavigating]);
 
   // Tablet responsive default: collapse on tablet screens (768px - 1023px), expanded on desktop (>=1024px)
   useEffect(() => {
@@ -116,7 +124,7 @@ export function WorkspaceNavClient({
         sessionStorage.setItem("last_orders_list_url", current);
       }
     }
-  }, [pathname]);
+  }, [pathname, searchParams]);
 
   // Close mobile drawer on Escape key
   useEffect(() => {

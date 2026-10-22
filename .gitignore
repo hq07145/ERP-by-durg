@@ -64,3 +64,7 @@ app/scripts/backups/
 # Operating System files
 .DS_Store
 Thumbs.db
+
+# Supabase local temp files
+app/supabase/.temp/
+app/supabase/setup_*.sql
