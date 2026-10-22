@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
-import type { AppRole, AppUser, BusinessStatus } from "@/types/business";
+import { cache } from "react";
+import type { AppRole, AppUser } from "@/types/business";
 import { hasPermission } from "@/lib/permissions/authorization";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminSupabaseClient } from "@/lib/supabase/admin";
@@ -10,109 +11,108 @@ export type AuthContext = {
   role: AppRole | null;
   roleKey: string | null;
   permissions: string[];
+  businessName?: string;
 };
 
 export function normalizeRoleKey(name: string): string {
   return name.trim().toLowerCase().replace(/[\s-]+/g, "_");
 }
 
-export async function getAuthContext(): Promise<AuthContext | null> {
+export const getAuthContext = cache(async function getAuthContext(): Promise<AuthContext | null> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) return null;
 
   const { data: authData, error: authError } = await supabase.auth.getUser();
   if (authError || !authData.user) return null;
 
-  // Use server admin client to resolve role & permissions for the authenticated user
+  // Use server admin client to resolve role & permissions in a single unified PostgREST query
   const admin = createAdminSupabaseClient() || supabase;
 
-  const { data: profileData, error: profileError } = await admin
+  const { data: unified, error: uError } = await admin
     .from("users")
-    .select("id, business_id, auth_user_id, name, email, phone, status, created_at, updated_at")
+    .select(`
+      id, business_id, auth_user_id, name, email, phone, status, created_at, updated_at,
+      business:businesses(id, status, name, legal_name),
+      user_roles(
+        role:roles(
+          id, business_id, name, description, created_at, updated_at,
+          role_permissions(
+            permission:permissions(module, action)
+          )
+        )
+      ),
+      user_permissions(
+        allowed,
+        permission:permissions(module, action)
+      )
+    `)
     .eq("auth_user_id", authData.user.id)
     .maybeSingle();
 
-  if (profileError || !profileData) return null;
+  if (uError || !unified) return null;
 
-  const profile = profileData as AppUser;
-  const { data: businessData, error: businessError } = await admin
-    .from("businesses")
-    .select("status")
-    .eq("id", profile.business_id)
-    .maybeSingle();
+  const profile: AppUser = {
+    id: unified.id,
+    business_id: unified.business_id,
+    auth_user_id: unified.auth_user_id,
+    name: unified.name,
+    email: unified.email,
+    phone: unified.phone,
+    status: unified.status,
+    created_at: unified.created_at,
+    updated_at: unified.updated_at,
+  };
 
-  if (
-    businessError ||
-    profile.status !== "ACTIVE" ||
-    (businessData as { status?: BusinessStatus } | null)?.status !== "ACTIVE"
-  ) {
+  const business = Array.isArray(unified.business) ? unified.business[0] : unified.business;
+  if (profile.status !== "ACTIVE" || business?.status !== "ACTIVE") {
     return null;
   }
 
-  const { data: assignmentData, error: assignmentError } = await admin
-    .from("user_roles")
-    .select("role_id")
-    .eq("user_id", profile.id)
-    .maybeSingle();
+  const userRoleRecord = Array.isArray(unified.user_roles) ? unified.user_roles[0] : unified.user_roles;
+  const rawRole = userRoleRecord?.role;
+  const roleData = (Array.isArray(rawRole) ? rawRole[0] : rawRole) as {
+    id: string;
+    business_id: string;
+    name: string;
+    description: string | null;
+    created_at: string;
+    updated_at: string;
+    role_permissions?: { permission: { module: string; action: string } | { module: string; action: string }[] | null }[];
+  } | null | undefined;
 
-  const roleId = (assignmentData as { role_id?: string } | null)?.role_id;
-  if (assignmentError || !roleId) return null;
+  const role = roleData
+    ? ({
+        id: roleData.id,
+        business_id: roleData.business_id,
+        name: roleData.name,
+        description: roleData.description,
+        created_at: roleData.created_at,
+        updated_at: roleData.updated_at,
+      } as AppRole)
+    : null;
 
-  const { data: roleData, error: roleError } = await admin
-    .from("roles")
-    .select("id, business_id, name, description, created_at, updated_at")
-    .eq("id", roleId)
-    .eq("business_id", profile.business_id)
-    .maybeSingle();
+  if (!role) return null;
 
-  if (roleError || !roleData) return null;
-
-  const role = roleData as AppRole;
   let permissions: string[] = [];
-
-  const { data: rolePermissionData, error: rolePermissionError } = await admin
-    .from("role_permissions")
-    .select("permission_id")
-    .eq("role_id", role.id);
-  if (rolePermissionError) return null;
-
-  const rolePermissionIds = (rolePermissionData ?? []).map(
-    (entry) => (entry as { permission_id: string }).permission_id,
-  );
-  if (rolePermissionIds.length > 0) {
-    const { data: permissionData, error: permissionError } = await admin
-      .from("permissions")
-      .select("module, action")
-      .in("id", rolePermissionIds);
-    if (permissionError) return null;
-    permissions = (permissionData ?? []).map((entry) => {
-      const permission = entry as { module: string; action: string };
-      return `${permission.module}.${permission.action}`;
-    });
+  const rolePermissions = roleData?.role_permissions ?? [];
+  for (const rp of rolePermissions) {
+    const perm = rp.permission;
+    if (perm && typeof perm === "object" && !Array.isArray(perm)) {
+      permissions.push(`${perm.module}.${perm.action}`);
+    } else if (Array.isArray(perm) && perm[0]) {
+      permissions.push(`${perm[0].module}.${perm[0].action}`);
+    }
   }
 
-  const { data: userPermissionData, error: userPermissionError } = await admin
-    .from("user_permissions")
-    .select("allowed, permission:permissions(module, action)")
-    .eq("user_id", profile.id);
-  if (userPermissionError) return null;
-
-  for (const entry of userPermissionData ?? []) {
-    const override = entry as {
-      allowed: boolean;
-      permission:
-        | { module: string; action: string }
-        | { module: string; action: string }[]
-        | null;
-    };
-    const permission = Array.isArray(override.permission)
-      ? override.permission[0]
-      : override.permission;
-    if (!permission) continue;
-    const key = `${permission.module}.${permission.action}`;
-    permissions = permissions.filter((permission) => permission !== key);
-    if (override.allowed) permissions.push(key);
+  for (const entry of unified.user_permissions ?? []) {
+    const perm = Array.isArray(entry.permission) ? entry.permission[0] : entry.permission;
+    if (!perm) continue;
+    const key = `${perm.module}.${perm.action}`;
+    permissions = permissions.filter((p) => p !== key);
+    if (entry.allowed) permissions.push(key);
   }
+
+  const businessName = business?.legal_name || business?.name || "Development Business Pvt. Ltd.";
 
   return {
     authUserId: authData.user.id,
@@ -120,8 +120,9 @@ export async function getAuthContext(): Promise<AuthContext | null> {
     role,
     roleKey: role ? normalizeRoleKey(role.name) : null,
     permissions: [...new Set(permissions)],
+    businessName,
   };
-}
+});
 
 export async function requireAuthContext(): Promise<AuthContext> {
   const context = await getAuthContext();

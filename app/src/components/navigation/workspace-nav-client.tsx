@@ -88,6 +88,7 @@ export function WorkspaceNavClient({
   const pathname = usePathname();
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [isNavigating, setIsNavigating] = useState(false);
 
   // Tablet responsive default: collapse on tablet screens (768px - 1023px), expanded on desktop (>=1024px)
   useEffect(() => {
@@ -100,9 +101,10 @@ export function WorkspaceNavClient({
     }
   }, []);
 
-  // Close mobile drawer on route change & track route history
+  // Close mobile drawer on route change & track route history & reset navigation progress
   useEffect(() => {
     setMobileDrawerOpen(false);
+    setIsNavigating(false);
     if (typeof window !== "undefined") {
       const current = window.location.pathname + window.location.search;
       const prev = sessionStorage.getItem("current_route");
@@ -412,6 +414,10 @@ export function WorkspaceNavClient({
                       <Link
                         key={item.href}
                         href={item.href}
+                        prefetch={true}
+                        onClick={() => {
+                          if (!active) setIsNavigating(true);
+                        }}
                         className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors group relative ${
                           active
                             ? "bg-[#0F766E] text-white shadow-xs font-semibold"
@@ -544,7 +550,11 @@ export function WorkspaceNavClient({
                           <Link
                             key={item.href}
                             href={item.href}
-                            onClick={() => setMobileDrawerOpen(false)}
+                            prefetch={true}
+                            onClick={() => {
+                              setMobileDrawerOpen(false);
+                              if (!active) setIsNavigating(true);
+                            }}
                             className={`min-h-[44px] flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                               active
                                 ? "bg-[#0F766E] text-white shadow-xs font-semibold"
@@ -591,6 +601,13 @@ export function WorkspaceNavClient({
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Top Instant Navigation Progress Bar */}
+      {isNavigating && (
+        <div className="fixed top-0 left-0 right-0 z-50 h-1 bg-teal-100/60 overflow-hidden pointer-events-none">
+          <div className="h-full bg-teal-600 top-progress-bar rounded-full" />
         </div>
       )}
 

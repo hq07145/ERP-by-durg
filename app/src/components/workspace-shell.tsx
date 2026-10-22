@@ -1,7 +1,6 @@
 import { requireAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
 import { isProcurementAuthorized } from "@/lib/permissions/procurement";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { WorkspaceNavClient } from "@/components/navigation/workspace-nav-client";
 
 export default async function WorkspaceShell({
@@ -10,19 +9,7 @@ export default async function WorkspaceShell({
   children: React.ReactNode;
 }) {
   const context = await requireAuthContext();
-  const supabase = await createServerSupabaseClient();
-
-  let businessName = "Development Business Pvt. Ltd.";
-  if (supabase && context.user?.business_id) {
-    const { data: bData } = await supabase
-      .from("businesses")
-      .select("name, legal_name")
-      .eq("id", context.user.business_id)
-      .maybeSingle();
-    if (bData) {
-      businessName = bData.legal_name || bData.name || businessName;
-    }
-  }
+  const businessName = context.businessName || "Development Business Pvt. Ltd.";
 
   const permissions = {
     canManageUsers: hasPermission(

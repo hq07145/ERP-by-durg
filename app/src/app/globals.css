@@ -282,3 +282,13 @@ body {
 .sidebar-scroll::-webkit-scrollbar-thumb:hover {
   background: #2A536F;
 }
+
+@keyframes top-progress {
+  0% { transform: translateX(-100%); width: 40%; }
+  50% { transform: translateX(30%); width: 60%; }
+  100% { transform: translateX(100%); width: 40%; }
+}
+
+.top-progress-bar {
+  animation: top-progress 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
