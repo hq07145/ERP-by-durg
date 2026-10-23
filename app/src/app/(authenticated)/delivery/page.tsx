@@ -11,6 +11,7 @@ interface PageProps {
     status?: string;
     page?: string;
     pageSize?: string;
+    create?: string;
   }>;
 }
 
@@ -29,12 +30,22 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
   const pageSize = parseInt(params.pageSize || "20", 10);
   const offset = (page - 1) * pageSize;
 
-  const [deliveries, totalResult] = await Promise.all([
+  const supabase = await createServerSupabaseClient();
+  const [deliveries, totalResult, customersRes] = await Promise.all([
     listDeliveries(status, undefined, pageSize, offset),
     getTotalCount(status),
+    supabase
+      ? supabase
+          .from("customers")
+          .select("id, name, company_name, gst_number")
+          .eq("business_id", context.user.business_id)
+          .eq("status", "ACTIVE")
+          .order("name")
+      : Promise.resolve({ data: [] }),
   ]);
 
   const totalCount = totalResult?.count ?? 0;
+  const customers = (customersRes?.data ?? []) as any[];
 
   const canCreate = hasPermission({ permissions: context.permissions }, "delivery.create");
   const canView = hasPermission({ permissions: context.permissions }, "delivery.view");
@@ -53,6 +64,8 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
 
       <DeliveryList
         deliveries={deliveries}
+        customers={customers}
+        initialCreateModalOpen={params.create === "true"}
         canCreate={canCreate}
         canView={canView}
         canDispatch={canDispatch}

@@ -18,7 +18,7 @@ import {
   User,
   Plus,
 } from "lucide-react";
-import type { DeliveryListItem, DeliveryStatus } from "@/types/delivery";
+import type { DeliveryListItem, DeliveryStatus, CustomerDropdownItem } from "@/types/delivery";
 import {
   DELIVERY_STATUS_COLORS,
   DELIVERY_STATUS_LABELS,
@@ -31,9 +31,12 @@ import {
   completeDelivery,
   cancelDelivery,
 } from "@/lib/delivery/actions";
+import { CreateDeliveryModal } from "./create-delivery-modal";
 
 interface DeliveryListProps {
   deliveries: DeliveryListItem[];
+  customers?: CustomerDropdownItem[];
+  initialCreateModalOpen?: boolean;
   canCreate: boolean;
   canView: boolean;
   canDispatch: boolean;
@@ -59,6 +62,8 @@ const STATUS_FILTER_ORDER: DeliveryStatus[] = [
 
 export function DeliveryList({
   deliveries,
+  customers,
+  initialCreateModalOpen = false,
   canCreate,
   canView,
   canDispatch,
@@ -74,6 +79,7 @@ export function DeliveryList({
   const router = useRouter();
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(initialCreateModalOpen);
 
   const handlePageChange = (newPage: number) => {
     if (onPageChange) {
@@ -371,13 +377,14 @@ export function DeliveryList({
         </div>
 
         {canCreate && (
-          <Link
-            href="/delivery/new"
-            className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#0F766E] px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#0D655E] transition shrink-0"
+          <button
+            type="button"
+            onClick={() => setIsCreateModalOpen(true)}
+            className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#0F766E] px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#0D655E] transition shrink-0 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
             <span>Create Delivery</span>
-          </Link>
+          </button>
         )}
       </div>
 
@@ -444,9 +451,15 @@ export function DeliveryList({
                   <div>
                     <span className="text-slate-400 block text-[10px] uppercase">Vehicle / Driver</span>
                     <span className="font-medium text-slate-800 truncate block">
-                      {delivery.vehicle || delivery.driver
-                        ? `${delivery.vehicle ?? ""} ${delivery.driver ? `(${delivery.driver})` : ""}`
-                        : "—"}
+                      {delivery.vehicle || delivery.driver ? (
+                        <>
+                          {delivery.vehicle ?? ""}{" "}
+                          {delivery.driver ? `(${delivery.driver})` : ""}
+                          {delivery.driver_phone ? ` • 📞 ${delivery.driver_phone}` : ""}
+                        </>
+                      ) : (
+                        "—"
+                      )}
                     </span>
                   </div>
                   <div>
@@ -558,6 +571,9 @@ export function DeliveryList({
                         {delivery.vehicle || delivery.driver ? (
                           <span>
                             {delivery.vehicle ?? ""} {delivery.driver ? `(${delivery.driver})` : ""}
+                            {delivery.driver_phone && (
+                              <span className="text-[11px] text-slate-400 block">📞 {delivery.driver_phone}</span>
+                            )}
                           </span>
                         ) : (
                           "—"
@@ -928,6 +944,18 @@ export function DeliveryList({
             </div>
           </div>
         </div>
+      )}
+      {/* Create Delivery Modal */}
+      {canCreate && (
+        <CreateDeliveryModal
+          isOpen={isCreateModalOpen}
+          onClose={() => setIsCreateModalOpen(false)}
+          customers={customers || []}
+          onSuccess={(res) => {
+            setActionSuccess(res.message);
+            router.refresh();
+          }}
+        />
       )}
     </div>
   );

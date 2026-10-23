@@ -10,6 +10,7 @@ interface DistrictSalesSummaryProps {
   selectedDistrict?: string;
   onSelectDistrict: (district: string | undefined) => void;
   isLoading?: boolean;
+  onExportReport?: (variant: "gst_paid_summary" | "sale_details_product_wise", format: "csv" | "excel" | "pdf") => void;
 }
 
 export function DistrictSalesSummary({
@@ -18,6 +19,7 @@ export function DistrictSalesSummary({
   selectedDistrict,
   onSelectDistrict,
   isLoading,
+  onExportReport,
 }: DistrictSalesSummaryProps) {
   const formatCurrency = (val: number) =>
     new Intl.NumberFormat("en-IN", {
@@ -109,20 +111,82 @@ export function DistrictSalesSummary({
           </p>
         </div>
 
-        {selectedDistrict && (
-          <div className="flex items-center gap-2 self-start sm:self-auto bg-teal-50 border border-teal-200 px-2.5 py-1 rounded-lg text-xs font-medium text-[#0F766E]">
-            <Filter className="w-3.5 h-3.5" />
-            <span>Filtered: <strong>{selectedDistrict}</strong></span>
-            <button
-              type="button"
-              onClick={() => onSelectDistrict(undefined)}
-              title="Clear district filter"
-              className="ml-1 text-teal-700 hover:text-teal-900 focus:outline-none"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
+        <div className="flex flex-wrap items-center gap-2.5 self-start sm:self-auto">
+          {selectedDistrict && (
+            <div className="flex items-center gap-2 bg-teal-50 border border-teal-200 px-2.5 py-1 rounded-lg text-xs font-medium text-[#0F766E]">
+              <Filter className="w-3.5 h-3.5" />
+              <span>Filtered: <strong>{selectedDistrict}</strong></span>
+              <button
+                type="button"
+                onClick={() => onSelectDistrict(undefined)}
+                title="Clear district filter"
+                className="ml-1 text-teal-700 hover:text-teal-900 focus:outline-none"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {onExportReport && (
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 shadow-2xs">
+                <span className="text-[11px] font-semibold text-slate-600">GST Paid:</span>
+                <button
+                  type="button"
+                  onClick={() => onExportReport("gst_paid_summary", "csv")}
+                  className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 transition"
+                  title="Export GST Paid / Sales Summary as CSV"
+                >
+                  CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onExportReport("gst_paid_summary", "excel")}
+                  className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 transition"
+                  title="Export GST Paid / Sales Summary as Excel"
+                >
+                  Excel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onExportReport("gst_paid_summary", "pdf")}
+                  className="rounded bg-[#0F766E] px-1.5 py-0.5 text-[11px] font-semibold text-white hover:bg-[#0D655E] transition"
+                  title="Export GST Paid / Sales Summary as PDF"
+                >
+                  PDF
+                </button>
+              </div>
+
+              <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 shadow-2xs">
+                <span className="text-[11px] font-semibold text-slate-600">Sale Details:</span>
+                <button
+                  type="button"
+                  onClick={() => onExportReport("sale_details_product_wise", "csv")}
+                  className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 transition"
+                  title="Export Sale Details / Product-wise as CSV"
+                >
+                  CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onExportReport("sale_details_product_wise", "excel")}
+                  className="rounded px-1.5 py-0.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 transition"
+                  title="Export Sale Details / Product-wise as Excel"
+                >
+                  Excel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onExportReport("sale_details_product_wise", "pdf")}
+                  className="rounded bg-[#0F766E] px-1.5 py-0.5 text-[11px] font-semibold text-white hover:bg-[#0D655E] transition"
+                  title="Export Sale Details / Product-wise as PDF"
+                >
+                  PDF
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Table Container */}

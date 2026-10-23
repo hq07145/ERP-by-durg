@@ -7,6 +7,7 @@ import { hasPermission } from "@/lib/permissions/authorization";
 import { redirect } from "next/navigation";
 import { updateOrderDeliveryDatesFromSchedules, scheduleProductionQueue } from "@/lib/production/scheduler";
 import { notifyDeliveryEvent } from "@/lib/notifications/actions";
+import { validateAndNormalizeVehicleNumber, validateDriverMobile } from "@/lib/delivery/validation";
 import type {
   DeliveryListItem,
   DeliveryWithDetails,
@@ -20,6 +21,9 @@ import type {
   CancelDeliveryFormValues,
   DeliveryStatus,
   EligibleDeliveryOrder,
+  CreateManualDeliveryInput,
+  CustomerOrderForDelivery,
+  CustomerDropdownItem,
 } from "@/types/delivery";
 
 // ============================================
@@ -820,4 +824,619 @@ export async function cancelDelivery(
   }
 
   return { success: true, message: "Delivery cancelled successfully" };
+}
+
+// ============================================
+// MANUAL DELIVERY ENTRY WORKFLOW
+// ============================================
+
+
+export async function getCustomerOrdersForDelivery(
+  customerId: string
+): Promise<CustomerOrderForDelivery[]> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+  if (!hasPermission({ permissions: context.permissions }, "delivery.create")) {
+    throw new Error("Forbidden: delivery.create");
+  }
+
+  if (!customerId || !customerId.trim()) {
+    return [];
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) throw new Error("Supabase client not available");
+
+  const businessId = context.user.business_id;
+
+  // 1. Fetch customer's orders that are not CANCELLED and not already DELIVERED
+  const { data: orders, error: ordersErr } = await supabase
+    .from("orders")
+    .select(`
+      id,
+      order_number,
+      order_date,
+      expected_delivery_date,
+      status,
+      delivery_status,
+      total_amount,
+      paid_amount,
+      due_amount,
+      order_items(
+        id,
+        product_id,
+        quantity,
+        products(name, sku, unit)
+      )
+    `)
+    .eq("business_id", businessId)
+    .eq("customer_id", customerId)
+    .neq("status", "CANCELLED")
+    .neq("delivery_status", "DELIVERED")
+    .order("order_date", { ascending: false });
+
+  if (ordersErr || !orders || orders.length === 0) {
+    return [];
+  }
+
+  const orderIds = orders.map((o) => o.id);
+
+  // 2. Fetch existing active deliveries to flag orders that already have an active delivery parcel
+  const { data: activeDeliveries } = await supabase
+    .from("deliveries")
+    .select("id, order_id, delivery_number, status")
+    .eq("business_id", businessId)
+    .in("order_id", orderIds)
+    .neq("status", "CANCELLED");
+
+  const activeDeliveriesMap = new Map<string, { delivery_number: string; status: string }>();
+  for (const d of activeDeliveries ?? []) {
+    activeDeliveriesMap.set(d.order_id, {
+      delivery_number: d.delivery_number,
+      status: d.status,
+    });
+  }
+
+  // 3. Fetch production orders for these orders
+  const { data: productionOrders } = await supabase
+    .from("production_orders")
+    .select("id, order_id, order_item_id, product_id, status, quantity, completed_quantity")
+    .eq("business_id", businessId)
+    .in("order_id", orderIds);
+
+  // 4. Fetch finished goods inventory
+  const allProductIds = Array.from(
+    new Set(
+      orders.flatMap((o) => (o.order_items || []).map((it: any) => it.product_id))
+    )
+  );
+
+  const { data: inventoryRows } = await supabase
+    .from("inventory")
+    .select("id, item_id, current_stock, available_stock, reserved_stock")
+    .eq("business_id", businessId)
+    .eq("item_type", "finished_good")
+    .in("item_id", allProductIds);
+
+  const inventoryMap = new Map<string, { current: number; available: number; reserved: number }>();
+  for (const inv of inventoryRows ?? []) {
+    inventoryMap.set(inv.item_id, {
+      current: Number(inv.current_stock) || 0,
+      available: Number(inv.available_stock) || 0,
+      reserved: Number(inv.reserved_stock) || 0,
+    });
+  }
+
+  // 5. Evaluate readiness for each order
+  const results: CustomerOrderForDelivery[] = [];
+
+  for (const order of orders) {
+    const activeDel = activeDeliveriesMap.get(order.id);
+    const hasActiveDelivery = !!activeDel;
+
+    const items = (order.order_items || []).map((it: any) => {
+      const prod = Array.isArray(it.products) ? it.products[0] : it.products;
+      const prodId = it.product_id;
+      const requiredQty = Number(it.quantity) || 0;
+
+      // Matching production orders
+      const matchingPOs = (productionOrders ?? []).filter(
+        (po) =>
+          po.order_id === order.id &&
+          (po.order_item_id === it.id || (!po.order_item_id && po.product_id === prodId))
+      );
+
+      const totalCompletedQty = matchingPOs.reduce(
+        (sum, po) => sum + (Number(po.completed_quantity) || 0),
+        0
+      );
+
+      const allPOsDone =
+        matchingPOs.length > 0 &&
+        matchingPOs.every(
+          (po) => po.status === "COMPLETED" || po.status === "READY_FOR_DISPATCH"
+        );
+
+      const inv = inventoryMap.get(prodId) || { current: 0, available: 0, reserved: 0 };
+
+      // Item is ready if production is fully completed for it OR physical finished goods stock covers the required quantity
+      const isReady = (allPOsDone && totalCompletedQty >= requiredQty) || inv.current >= requiredQty;
+
+      let poStatus = "NOT_STARTED";
+      if (matchingPOs.length > 0) {
+        if (allPOsDone) {
+          poStatus = "COMPLETED";
+        } else if (totalCompletedQty > 0) {
+          poStatus = "IN_PROGRESS";
+        } else {
+          poStatus = matchingPOs[0].status;
+        }
+      } else if (inv.current >= requiredQty) {
+        poStatus = "STOCK_AVAILABLE";
+      }
+
+      return {
+        id: it.id,
+        product_id: prodId,
+        product_name: prod?.name || "Product",
+        product_sku: prod?.sku || null,
+        quantity: requiredQty,
+        unit: prod?.unit || "units",
+        production_status: poStatus,
+        completed_quantity: totalCompletedQty,
+        available_stock: inv.available,
+        current_stock: inv.current,
+        is_ready: isReady,
+      };
+    });
+
+    const totalQty = items.reduce((sum, it) => sum + it.quantity, 0);
+
+    const incompleteItems = items.filter((it) => !it.is_ready);
+    let isFullyReady = incompleteItems.length === 0 && !hasActiveDelivery && order.status === "CONFIRMED";
+
+    let notReadyReason: string | null = null;
+    if (order.status !== "CONFIRMED") {
+      notReadyReason = `Order is in ${order.status} status. It must be CONFIRMED before it can be delivered.`;
+    } else if (hasActiveDelivery) {
+      notReadyReason = `An active delivery (${activeDel?.delivery_number}, status: ${activeDel?.status}) already exists for this order.`;
+    } else if (incompleteItems.length > 0) {
+      notReadyReason = `Order cannot be marked fully Delivered: ${incompleteItems
+        .map((it) => `${it.product_name} (${it.completed_quantity}/${it.quantity} completed, warehouse stock: ${it.current_stock})`)
+        .join("; ")}.`;
+    }
+
+    results.push({
+      id: order.id,
+      order_number: order.order_number,
+      order_date: order.order_date,
+      expected_delivery_date: order.expected_delivery_date,
+      status: order.status,
+      delivery_status: order.delivery_status,
+      total_amount: Number(order.total_amount) || 0,
+      paid_amount: Number(order.paid_amount) || 0,
+      due_amount: Number(order.due_amount) || 0,
+      total_quantity: totalQty,
+      items,
+      is_fully_ready: isFullyReady,
+      not_ready_reason: notReadyReason,
+      has_active_delivery: hasActiveDelivery,
+      active_delivery_info: activeDel ? `${activeDel.delivery_number} (${activeDel.status})` : null,
+    });
+  }
+
+  return results;
+}
+
+export async function createManualDelivery(
+  values: CreateManualDeliveryInput
+): Promise<{
+  success: boolean;
+  delivery_id: string;
+  delivery_number: string;
+  order_number: string;
+  message: string;
+}> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+  if (!hasPermission({ permissions: context.permissions }, "delivery.create")) {
+    throw new Error("Forbidden: delivery.create permission required to create delivery records.");
+  }
+
+  const businessId = context.user.business_id;
+
+  // 1. Validate required fields
+  if (!values.customer_id || !values.customer_id.trim()) {
+    throw new Error("Customer selection is required.");
+  }
+  if (!values.order_id || !values.order_id.trim()) {
+    throw new Error("Order selection is required.");
+  }
+  if (!values.delivery_date || !values.delivery_date.trim()) {
+    throw new Error("Delivery date is required.");
+  }
+
+  const deliveryDateObj = new Date(values.delivery_date);
+  if (isNaN(deliveryDateObj.getTime())) {
+    throw new Error("Invalid delivery date format.");
+  }
+
+  // Validate future dates: cannot be more than 30 days in the future
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  const maxFutureDate = new Date(today);
+  maxFutureDate.setDate(maxFutureDate.getDate() + 30);
+  if (deliveryDateObj.getTime() > maxFutureDate.getTime()) {
+    throw new Error("Delivery date cannot be more than 30 days in the future.");
+  }
+
+  // 2. Validate & normalize vehicle number
+  const vehicleValidation = validateAndNormalizeVehicleNumber(values.vehicle_number);
+  if (!vehicleValidation.isValid) {
+    throw new Error(vehicleValidation.error || "Invalid vehicle number.");
+  }
+  const normalizedVehicle = vehicleValidation.normalized;
+
+  // 3. Validate driver mobile if provided
+  const mobileValidation = validateDriverMobile(values.driver_mobile);
+  if (!mobileValidation.isValid) {
+    throw new Error(mobileValidation.error || "Invalid driver mobile number.");
+  }
+  const normalizedDriverMobile = mobileValidation.normalized;
+  const normalizedDriverName = values.driver_name?.trim() || null;
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) throw new Error("Supabase client not available");
+
+  // 4. Verify order belongs to the customer and current business
+  const { data: order, error: orderErr } = await supabase
+    .from("orders")
+    .select(`
+      id,
+      order_number,
+      customer_id,
+      status,
+      delivery_status,
+      total_amount,
+      paid_amount,
+      due_amount,
+      expected_delivery_date,
+      customers(id, name, company_name)
+    `)
+    .eq("id", values.order_id)
+    .eq("business_id", businessId)
+    .maybeSingle();
+
+  if (orderErr || !order) {
+    throw new Error("Order not found or does not belong to your business.");
+  }
+
+  if (order.customer_id !== values.customer_id) {
+    throw new Error("Selected order does not belong to the selected customer.");
+  }
+
+  if (order.status === "CANCELLED") {
+    throw new Error(`Cannot deliver order ${order.order_number}: the order is CANCELLED.`);
+  }
+
+  if (order.delivery_status === "DELIVERED") {
+    throw new Error(`Cannot deliver order ${order.order_number}: the order has already been marked as DELIVERED.`);
+  }
+
+  // Check duplicate active delivery entries
+  const { data: existingDeliveries } = await supabase
+    .from("deliveries")
+    .select("id, delivery_number, status")
+    .eq("order_id", values.order_id)
+    .eq("business_id", businessId)
+    .neq("status", "CANCELLED");
+
+  if (existingDeliveries && existingDeliveries.length > 0) {
+    const active = existingDeliveries[0];
+    throw new Error(`An active delivery (${active.delivery_number}, status: ${active.status}) already exists for this order.`);
+  }
+
+  // 5. Fetch all order items
+  const { data: orderItems, error: itemsErr } = await supabase
+    .from("order_items")
+    .select("id, product_id, quantity, products(name, sku, unit)")
+    .eq("order_id", values.order_id)
+    .eq("business_id", businessId);
+
+  if (itemsErr || !orderItems || orderItems.length === 0) {
+    throw new Error("Cannot create delivery: the order has no items.");
+  }
+
+  // 6. Verify production completion or available finished goods stock (Full delivery check)
+  const { data: productionOrders } = await supabase
+    .from("production_orders")
+    .select("id, order_item_id, product_id, status, quantity, completed_quantity")
+    .eq("order_id", values.order_id)
+    .eq("business_id", businessId);
+
+  const incompleteReasons: string[] = [];
+  const inventoryDeductionPlan: Array<{
+    productId: string;
+    inventoryId: string;
+    quantity: number;
+    originalCurrent: number;
+    originalReserved: number;
+    originalAvailable: number;
+    reservedPortion: number;
+  }> = [];
+
+  for (const item of orderItems) {
+    const requiredQty = Number(item.quantity) || 0;
+    const prod = Array.isArray(item.products) ? item.products[0] : item.products;
+    const prodName = prod?.name || item.product_id;
+    const prodSku = prod?.sku || "";
+
+    const matchingPOs = (productionOrders ?? []).filter(
+      (po) =>
+        po.order_item_id === item.id || (!po.order_item_id && po.product_id === item.product_id)
+    );
+
+    const completedPOQty = matchingPOs.reduce(
+      (sum, po) => sum + (Number(po.completed_quantity) || 0),
+      0
+    );
+    const allPOsDone =
+      matchingPOs.length > 0 &&
+      matchingPOs.every(
+        (po) => po.status === "COMPLETED" || po.status === "READY_FOR_DISPATCH"
+      );
+
+    // Fetch inventory
+    const { data: invRow } = await supabase
+      .from("inventory")
+      .select("id, current_stock, available_stock, reserved_stock")
+      .eq("business_id", businessId)
+      .eq("item_type", "finished_good")
+      .eq("item_id", item.product_id)
+      .maybeSingle();
+
+    const currentStock = Number(invRow?.current_stock) || 0;
+    const reservedStock = Number(invRow?.reserved_stock) || 0;
+    const availableStock = Number(invRow?.available_stock) || 0;
+
+    // Check readiness: either POs completed OR physical finished goods stock available
+    const hasEnoughStockOrPO = (allPOsDone && completedPOQty >= requiredQty) || currentStock >= requiredQty;
+
+    if (!hasEnoughStockOrPO) {
+      incompleteReasons.push(
+        `${prodName} ${prodSku ? `(${prodSku})` : ""}: completed ${completedPOQty}/${requiredQty} in production, physical stock ${currentStock}/${requiredQty}`
+      );
+    }
+
+    if (!invRow) {
+      throw new Error(`Inventory record not found for finished good "${prodName}".`);
+    }
+
+    if (currentStock < requiredQty) {
+      incompleteReasons.push(
+        `Insufficient warehouse stock for "${prodName}": current physical stock is ${currentStock}, required ${requiredQty}.`
+      );
+    }
+
+    // Determine reservation for this specific order
+    const { data: orderTxs } = await supabase
+      .from("inventory_transactions")
+      .select("quantity, reference_type")
+      .eq("business_id", businessId)
+      .eq("reference_id", values.order_id)
+      .eq("item_id", item.product_id)
+      .eq("item_type", "finished_good");
+
+    let activeOrderReservation = 0;
+    (orderTxs ?? []).forEach((tx) => {
+      if (tx.reference_type === "ORDER_RESERVATION") {
+        activeOrderReservation += Number(tx.quantity) || 0;
+      } else if (
+        tx.reference_type === "ORDER_DISPATCH_RELEASE" ||
+        tx.reference_type === "ORDER_CANCELLATION_RELEASE"
+      ) {
+        activeOrderReservation -= Number(tx.quantity) || 0;
+      }
+    });
+    activeOrderReservation = Math.max(0, activeOrderReservation);
+
+    const reservedPortion = Math.min(requiredQty, activeOrderReservation);
+
+    inventoryDeductionPlan.push({
+      productId: item.product_id,
+      inventoryId: invRow.id,
+      quantity: requiredQty,
+      originalCurrent: currentStock,
+      originalReserved: reservedStock,
+      originalAvailable: availableStock,
+      reservedPortion,
+    });
+  }
+
+  if (incompleteReasons.length > 0) {
+    throw new Error(
+      `Cannot mark order as fully Delivered: all required items must be ready or production-complete. Incomplete items: ${incompleteReasons.join("; ")}`
+    );
+  }
+
+  // 7. Generate unique delivery number
+  const datePrefix = values.delivery_date.replace(/-/g, "");
+  const orderSlug = order.order_number.replace(/[^A-Z0-9]/gi, "").slice(-4).toUpperCase();
+  const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
+  let uniqueDeliveryNumber = `DEL-${datePrefix}-${orderSlug}-${randomSuffix}`;
+
+  // Double check uniqueness
+  const { data: dupCheck } = await supabase
+    .from("deliveries")
+    .select("id")
+    .eq("business_id", businessId)
+    .eq("delivery_number", uniqueDeliveryNumber)
+    .maybeSingle();
+
+  if (dupCheck) {
+    uniqueDeliveryNumber = `DEL-${datePrefix}-${orderSlug}-${Date.now().toString(36).slice(-4).toUpperCase()}`;
+  }
+
+  const adminClient = createAdminSupabaseClient();
+  const dbClient = adminClient || supabase;
+
+  const deliveryTimestamp = `${values.delivery_date}T12:00:00.000Z`;
+
+  // 8. Atomically insert delivery record
+  const { data: newDelivery, error: delErr } = await dbClient
+    .from("deliveries")
+    .insert({
+      business_id: businessId,
+      order_id: order.id,
+      delivery_number: uniqueDeliveryNumber,
+      status: "DELIVERED",
+      expected_delivery_date: order.expected_delivery_date || values.delivery_date,
+      vehicle: normalizedVehicle,
+      driver: normalizedDriverName,
+      driver_phone: normalizedDriverMobile,
+      dispatched_at: deliveryTimestamp,
+      delivered_at: deliveryTimestamp,
+      notes: values.notes?.trim() || null,
+    })
+    .select("id")
+    .single();
+
+  if (delErr || !newDelivery) {
+    throw new Error(`Failed to create delivery record: ${delErr?.message || "Database insert error"}`);
+  }
+
+  const deliveryId = newDelivery.id;
+
+  // 9. Insert delivery items
+  const deliveryItemsData = orderItems.map((it) => ({
+    business_id: businessId,
+    delivery_id: deliveryId,
+    order_item_id: it.id,
+    product_id: it.product_id,
+    ordered_quantity: it.quantity,
+    delivered_quantity: it.quantity,
+  }));
+
+  const { error: itemsInsertErr } = await dbClient
+    .from("delivery_items")
+    .insert(deliveryItemsData);
+
+  if (itemsInsertErr) {
+    // Attempt rollback
+    await dbClient.from("deliveries").delete().eq("id", deliveryId);
+    throw new Error(`Failed to save delivery items: ${itemsInsertErr.message}`);
+  }
+
+  // 10. Deduct stock and release reservations exactly once
+  for (const plan of inventoryDeductionPlan) {
+    const newCurrent = Math.max(0, plan.originalCurrent - plan.quantity);
+    const newReserved = Math.max(0, plan.originalReserved - plan.reservedPortion);
+    const newAvailable = Math.max(0, newCurrent - newReserved);
+
+    await dbClient
+      .from("inventory")
+      .update({
+        current_stock: newCurrent,
+        reserved_stock: newReserved,
+        available_stock: newAvailable,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", plan.inventoryId)
+      .eq("business_id", businessId);
+
+    // Record stock deduction transaction
+    await dbClient.from("inventory_transactions").insert({
+      business_id: businessId,
+      item_type: "finished_good",
+      item_id: plan.productId,
+      transaction_type: "STOCK_OUT",
+      quantity: plan.quantity,
+      reference_type: "delivery_dispatch",
+      reference_id: deliveryId,
+      notes: `Delivered via ${uniqueDeliveryNumber} for Order ${order.order_number}`,
+      created_by: context.user.id,
+    });
+
+    // Record reservation release if there was an order reservation
+    if (plan.reservedPortion > 0) {
+      await dbClient.from("inventory_transactions").insert({
+        business_id: businessId,
+        item_type: "finished_good",
+        item_id: plan.productId,
+        transaction_type: "ADJUSTMENT",
+        quantity: plan.reservedPortion,
+        reference_type: "ORDER_DISPATCH_RELEASE",
+        reference_id: order.id,
+        notes: `Released reservation of ${plan.reservedPortion} units upon delivery ${uniqueDeliveryNumber}`,
+        created_by: context.user.id,
+      });
+    }
+  }
+
+  // 11. Atomically update order delivery_status to DELIVERED
+  // Note: preserve existing payment status, paid_amount, due_amount
+  const { error: orderUpdateErr } = await dbClient
+    .from("orders")
+    .update({
+      delivery_status: "DELIVERED",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", order.id)
+    .eq("business_id", businessId);
+
+  if (orderUpdateErr) {
+    console.warn("Could not update order delivery_status:", orderUpdateErr);
+  }
+
+  // 12. Insert status history audit trail
+  await dbClient.from("delivery_status_history").insert({
+    business_id: businessId,
+    delivery_id: deliveryId,
+    old_status: null,
+    new_status: "DELIVERED",
+    changed_by: context.user.id,
+    reason: values.notes?.trim() || "Manual delivery entry recorded",
+  });
+
+  // 13. Audit log
+  await dbClient.from("audit_logs").insert({
+    business_id: businessId,
+    user_id: context.user.id,
+    action: "MANUAL_DELIVERY_CREATED",
+    entity_type: "delivery",
+    entity_id: deliveryId,
+    new_data: {
+      delivery_number: uniqueDeliveryNumber,
+      order_number: order.order_number,
+      order_id: order.id,
+      customer_id: values.customer_id,
+      delivery_date: values.delivery_date,
+      vehicle: normalizedVehicle,
+      driver: normalizedDriverName,
+      driver_phone: normalizedDriverMobile,
+      status: "DELIVERED",
+    },
+  });
+
+  // 14. Recalculate delivery dates and schedule queue
+  try {
+    await updateOrderDeliveryDatesFromSchedules(supabase, businessId, order.id);
+    await scheduleProductionQueue(supabase, businessId);
+  } catch (err) {
+    console.warn("Could not recalculate delivery dates after manual delivery:", err);
+  }
+
+  try {
+    await notifyDeliveryEvent(businessId, deliveryId, order.id, "delivered", context.user.id);
+  } catch {
+    // Non-fatal
+  }
+
+  return {
+    success: true,
+    delivery_id: deliveryId,
+    delivery_number: uniqueDeliveryNumber,
+    order_number: order.order_number,
+    message: `Delivery ${uniqueDeliveryNumber} created successfully for Order ${order.order_number}! Status: Delivered.`,
+  };
 }

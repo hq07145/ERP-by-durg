@@ -135,15 +135,17 @@ export function SalesReportClient() {
     setIsDownloadModalOpen(true);
   };
 
-  const handleConfirmDownload = async () => {
-    if (!selectedReportVariant) return;
+  const handleDirectDownload = async (
+    variant: SalesReportVariant,
+    format: "csv" | "excel" | "pdf"
+  ) => {
     setIsExporting(true);
     setExportError(null);
     try {
       const { content, contentType, filename } = await exportSalesReport(
-        selectedReportVariant,
+        variant,
         filters,
-        selectedFormat
+        format
       );
       triggerDownload(content, contentType, filename);
       setIsDownloadModalOpen(false);
@@ -153,6 +155,11 @@ export function SalesReportClient() {
     } finally {
       setIsExporting(false);
     }
+  };
+
+  const handleConfirmDownload = async () => {
+    if (!selectedReportVariant) return;
+    await handleDirectDownload(selectedReportVariant, selectedFormat);
   };
 
   const handlePageChange = (page: number) => {
@@ -192,6 +199,7 @@ export function SalesReportClient() {
         totals={districtTotals}
         selectedDistrict={filters.district}
         onSelectDistrict={handleDistrictSelect}
+        onExportReport={handleDirectDownload}
         isLoading={isLoading}
       />
 
@@ -245,63 +253,147 @@ export function SalesReportClient() {
             )}
 
             <div className="mt-5 space-y-3" role="radiogroup">
-              {/* Option 1: State-wise Sales & GST Report */}
-              <label
-                className={`flex cursor-pointer items-start gap-3.5 rounded-xl border p-4 transition ${
-                  selectedReportVariant === "state_wise_gst"
+              {/* Option 1: GST Paid / Sales Summary */}
+              <div
+                onClick={() => setSelectedReportVariant("gst_paid_summary")}
+                className={`flex cursor-pointer flex-col sm:flex-row sm:items-start justify-between gap-3.5 rounded-xl border p-4 transition ${
+                  selectedReportVariant === "gst_paid_summary"
                     ? "border-[#0F766E] bg-teal-50/40 ring-1 ring-[#0F766E]"
                     : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50"
                 }`}
               >
-                <input
-                  type="radio"
-                  name="sales_report_variant"
-                  value="state_wise_gst"
-                  checked={selectedReportVariant === "state_wise_gst"}
-                  onChange={() => setSelectedReportVariant("state_wise_gst")}
-                  className="mt-1 h-4 w-4 text-[#0F766E] focus:ring-[#0F766E]"
-                />
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <FileSpreadsheet className="h-4 w-4 text-[#0F766E]" />
-                    <span className="text-sm font-bold text-slate-900">
-                      State-wise Sales &amp; GST Report
-                    </span>
+                <div className="flex items-start gap-3 flex-1">
+                  <input
+                    type="radio"
+                    name="sales_report_variant"
+                    value="gst_paid_summary"
+                    checked={selectedReportVariant === "gst_paid_summary"}
+                    onChange={() => setSelectedReportVariant("gst_paid_summary")}
+                    className="mt-1 h-4 w-4 text-[#0F766E] focus:ring-[#0F766E]"
+                  />
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <FileSpreadsheet className="h-4 w-4 text-[#0F766E]" />
+                      <span className="text-sm font-bold text-slate-900">
+                        GST Paid / Sales Summary
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-600 leading-relaxed">
+                      District and dealer sales breakdown with GST numbers, month of billing, taxable amounts, IGST, CGST, SGST, Cess, invoice totals, amount paid, and amount due.
+                    </p>
                   </div>
-                  <p className="mt-1 text-xs text-slate-600 leading-relaxed">
-                    District and dealer sales breakdown with GST numbers, month of billing, taxable amounts, IGST, CGST, SGST, Cess, and invoice totals.
-                  </p>
                 </div>
-              </label>
+                <div className="flex items-center gap-1.5 self-end sm:self-center shrink-0 pt-2 sm:pt-0">
+                  <span className="text-[10px] font-semibold uppercase text-slate-400 mr-1">Export:</span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDirectDownload("gst_paid_summary", "csv");
+                    }}
+                    disabled={isExporting}
+                    className="rounded border border-slate-200 px-2 py-1 text-[11px] font-semibold bg-white hover:bg-slate-100 disabled:opacity-50 transition shadow-2xs"
+                    title="Download GST Paid / Sales Summary as CSV"
+                  >
+                    CSV
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDirectDownload("gst_paid_summary", "excel");
+                    }}
+                    disabled={isExporting}
+                    className="rounded border border-slate-200 px-2 py-1 text-[11px] font-semibold bg-white hover:bg-slate-100 disabled:opacity-50 transition shadow-2xs"
+                    title="Download GST Paid / Sales Summary as Excel"
+                  >
+                    Excel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDirectDownload("gst_paid_summary", "pdf");
+                    }}
+                    disabled={isExporting}
+                    className="rounded bg-[#0F766E] px-2 py-1 text-[11px] font-semibold text-white hover:bg-[#0D655E] disabled:opacity-50 transition shadow-2xs"
+                    title="Download GST Paid / Sales Summary as PDF"
+                  >
+                    PDF
+                  </button>
+                </div>
+              </div>
 
-              {/* Option 2: Detailed Sales Transactions */}
-              <label
-                className={`flex cursor-pointer items-start gap-3.5 rounded-xl border p-4 transition ${
-                  selectedReportVariant === "detailed_transactions"
+              {/* Option 2: Sale Details / Product-wise */}
+              <div
+                onClick={() => setSelectedReportVariant("sale_details_product_wise")}
+                className={`flex cursor-pointer flex-col sm:flex-row sm:items-start justify-between gap-3.5 rounded-xl border p-4 transition ${
+                  selectedReportVariant === "sale_details_product_wise"
                     ? "border-[#0F766E] bg-teal-50/40 ring-1 ring-[#0F766E]"
                     : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50"
                 }`}
               >
-                <input
-                  type="radio"
-                  name="sales_report_variant"
-                  value="detailed_transactions"
-                  checked={selectedReportVariant === "detailed_transactions"}
-                  onChange={() => setSelectedReportVariant("detailed_transactions")}
-                  className="mt-1 h-4 w-4 text-[#0F766E] focus:ring-[#0F766E]"
-                />
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <FileText className="h-4 w-4 text-[#0F766E]" />
-                    <span className="text-sm font-bold text-slate-900">
-                      Detailed Sales Transactions
-                    </span>
+                <div className="flex items-start gap-3 flex-1">
+                  <input
+                    type="radio"
+                    name="sales_report_variant"
+                    value="sale_details_product_wise"
+                    checked={selectedReportVariant === "sale_details_product_wise"}
+                    onChange={() => setSelectedReportVariant("sale_details_product_wise")}
+                    className="mt-1 h-4 w-4 text-[#0F766E] focus:ring-[#0F766E]"
+                  />
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <FileText className="h-4 w-4 text-[#0F766E]" />
+                      <span className="text-sm font-bold text-slate-900">
+                        Sale Details / Product-wise
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-600 leading-relaxed">
+                      Bill-level dealer sales with district, dealer name & address, GSTIN, bill number, bill date, and separate quantity columns for each product grouped under Sale Details.
+                    </p>
                   </div>
-                  <p className="mt-1 text-xs text-slate-600 leading-relaxed">
-                    Invoice-level records with dealer name, address, GSTIN, bill number, bill date, and separate quantity columns for each product/SKU.
-                  </p>
                 </div>
-              </label>
+                <div className="flex items-center gap-1.5 self-end sm:self-center shrink-0 pt-2 sm:pt-0">
+                  <span className="text-[10px] font-semibold uppercase text-slate-400 mr-1">Export:</span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDirectDownload("sale_details_product_wise", "csv");
+                    }}
+                    disabled={isExporting}
+                    className="rounded border border-slate-200 px-2 py-1 text-[11px] font-semibold bg-white hover:bg-slate-100 disabled:opacity-50 transition shadow-2xs"
+                    title="Download Sale Details / Product-wise as CSV"
+                  >
+                    CSV
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDirectDownload("sale_details_product_wise", "excel");
+                    }}
+                    disabled={isExporting}
+                    className="rounded border border-slate-200 px-2 py-1 text-[11px] font-semibold bg-white hover:bg-slate-100 disabled:opacity-50 transition shadow-2xs"
+                    title="Download Sale Details / Product-wise as Excel"
+                  >
+                    Excel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDirectDownload("sale_details_product_wise", "pdf");
+                    }}
+                    disabled={isExporting}
+                    className="rounded bg-[#0F766E] px-2 py-1 text-[11px] font-semibold text-white hover:bg-[#0D655E] disabled:opacity-50 transition shadow-2xs"
+                    title="Download Sale Details / Product-wise as PDF"
+                  >
+                    PDF
+                  </button>
+                </div>
+              </div>
             </div>
 
             <div className="mt-6 flex items-center justify-end gap-3 border-t border-slate-100 pt-4">

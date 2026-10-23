@@ -290,6 +290,11 @@ export function DeliveryDetail({
             </span>
             <span className="font-semibold text-slate-800 text-sm mt-0.5 block">
               {delivery.driver ?? "—"}
+              {delivery.driver_phone && (
+                <span className="text-xs text-slate-500 font-normal block mt-0.5">
+                  📞 {delivery.driver_phone}
+                </span>
+              )}
             </span>
           </div>
         </div>

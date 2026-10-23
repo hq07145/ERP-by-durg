@@ -236,6 +236,7 @@ export function generateLedgerPDF(data: LedgerReportData): string {
         cellPadding: { top: 3.5, bottom: 3.5, left: 4, right: 4 },
         lineWidth: 0,
         lineColor: [0, 0, 0],
+        overflow: "linebreak",
       },
       headStyles: {
         fontStyle: "bold",
@@ -285,7 +286,8 @@ export function generateLedgerPDF(data: LedgerReportData): string {
     // Footer - Page Number
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8);
-    doc.text(`Page ${p + 1}`, pageWidth - margin, pageHeight - 25, { align: "right" });
+    const pageText = pagesData.length > 1 ? `Page ${p + 1} of ${pagesData.length}` : `Page 1`;
+    doc.text(pageText, pageWidth - margin, pageHeight - 25, { align: "right" });
   }
 
   const buffer = Buffer.from(doc.output("arraybuffer"));
@@ -1189,6 +1191,245 @@ export function generateStateWiseGstPDF(data: StateWiseGstReportData): string {
 }
 
 // ============================================
+// SALE DETAILS / PRODUCT-WISE REPORT FORMATTERS
+// ============================================
+
+export interface SaleDetailsProductWiseData {
+  companyName: string;
+  reportTitle: string;
+  periodStr: string;
+  fixedHeaders: string[]; // ["Sr. No.", "District", "Dealer Name & Address", "GST Number", "Bill No.", "Bill Date"]
+  products: { id: string; name: string; sku: string | null }[];
+  rows: any[][];
+  totals: any[];
+}
+
+export function generateSaleDetailsProductWiseCSV(data: SaleDetailsProductWiseData): string {
+  const BOM = "\uFEFF";
+  const numProducts = data.products.length;
+
+  const topHeader = ["", "", "", "", "", "", "Sale Details", ...new Array(numProducts).fill("")];
+  const subHeader = [
+    "Sr. No.",
+    "District",
+    "Dealer Name & Address",
+    "GST Number",
+    "Bill No.",
+    "Bill Date",
+    ...data.products.map((p) => (p.sku ? `${p.name} (${p.sku})` : p.name)),
+    "Total Qty",
+  ];
+
+  const lines: string[] = [
+    sanitizeCsv(data.companyName),
+    sanitizeCsv(data.reportTitle),
+    sanitizeCsv(data.periodStr),
+    "",
+    topHeader.map(sanitizeCsv).join(","),
+    subHeader.map(sanitizeCsv).join(","),
+  ];
+
+  for (const row of data.rows) {
+    lines.push(row.map(sanitizeCsv).join(","));
+  }
+
+  if (data.totals) {
+    lines.push(data.totals.map(sanitizeCsv).join(","));
+  }
+
+  return BOM + lines.join("\n");
+}
+
+export function generateSaleDetailsProductWiseExcel(data: SaleDetailsProductWiseData): string {
+  const BOM = "\uFEFF";
+  const numProducts = data.products.length;
+
+  let bodyHtml = "";
+  for (const row of data.rows) {
+    bodyHtml += "<tr>";
+    row.forEach((v, idx) => {
+      const isNum = idx >= 6;
+      bodyHtml += `<td class="${isNum ? "num" : ""}">${sanitizeExcel(v)}</td>`;
+    });
+    bodyHtml += "</tr>";
+  }
+
+  if (data.totals) {
+    bodyHtml += '<tr class="total-row">';
+    data.totals.forEach((v, idx) => {
+      const isNum = idx >= 6;
+      bodyHtml += `<td class="${isNum ? "num" : ""}">${sanitizeExcel(v)}</td>`;
+    });
+    bodyHtml += "</tr>";
+  }
+
+  return `${BOM}<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: Calibri, Arial, sans-serif; font-size: 10pt; color: #000000; }
+    h2 { font-size: 14pt; margin: 0; text-align: center; }
+    h3 { font-size: 11pt; margin: 4px 0; text-align: center; }
+    .period { font-size: 9pt; margin: 2px 0 16px 0; text-align: center; color: #333333; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+    th { border-top: 1.5pt solid #000000; border-bottom: 1.5pt solid #000000; font-weight: bold; text-align: left; padding: 6px; }
+    th.num { text-align: right; }
+    th.center { text-align: center; }
+    td { padding: 4px 6px; border-bottom: 0.5pt solid #f0f0f0; }
+    td.num { text-align: right; mso-number-format: "\\#\\,\\#\\#0"; }
+    .total-row { font-weight: bold; border-top: 1pt solid #000000; border-bottom: 2pt double #000000; }
+  </style>
+</head>
+<body>
+  <h2>${sanitizeExcel(data.companyName)}</h2>
+  <h3>${sanitizeExcel(data.reportTitle)}</h3>
+  <p class="period">${sanitizeExcel(data.periodStr)}</p>
+  <table>
+    <thead>
+      <tr>
+        <th rowspan="2">Sr. No.</th>
+        <th rowspan="2">District</th>
+        <th rowspan="2">Dealer Name &amp; Address</th>
+        <th rowspan="2">GST Number</th>
+        <th rowspan="2">Bill No.</th>
+        <th rowspan="2">Bill Date</th>
+        <th colspan="${Math.max(1, numProducts + 1)}" class="center" style="background-color: #f1f5f9;">Sale Details</th>
+      </tr>
+      <tr>
+        ${data.products.map((p) => `<th class="num">${sanitizeExcel(p.sku ? `${p.name} (${p.sku})` : p.name)}</th>`).join("")}
+        <th class="num">Total Qty</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${bodyHtml}
+    </tbody>
+  </table>
+</body>
+</html>`;
+}
+
+export function generateSaleDetailsProductWisePDF(data: SaleDetailsProductWiseData): string {
+  const doc = new jsPDF({
+    orientation: "landscape",
+    unit: "pt",
+    format: "a4",
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 18;
+  const usableWidth = pageWidth - margin * 2; // ~805.89 pt
+
+  const numProducts = data.products.length;
+  const totalCols = 6 + numProducts + 1;
+
+  const fontSize = totalCols > 16 ? 5.8 : totalCols > 12 ? 6.4 : totalCols > 9 ? 6.8 : 7.2;
+
+  const headRow1: any[] = [
+    { content: "Sr. No.", rowSpan: 2, styles: { halign: "center", valign: "middle" } },
+    { content: "District", rowSpan: 2, styles: { valign: "middle" } },
+    { content: "Dealer Name & Address", rowSpan: 2, styles: { valign: "middle" } },
+    { content: "GST Number", rowSpan: 2, styles: { valign: "middle" } },
+    { content: "Bill No.", rowSpan: 2, styles: { valign: "middle" } },
+    { content: "Bill Date", rowSpan: 2, styles: { halign: "center", valign: "middle" } },
+    {
+      content: "Sale Details",
+      colSpan: Math.max(1, numProducts + 1),
+      styles: { halign: "center", valign: "middle", fontStyle: "bold" },
+    },
+  ];
+
+  const headRow2: any[] = [
+    ...data.products.map((p) => {
+      let label = p.sku ? `${p.name}\n(${p.sku})` : p.name;
+      return { content: label, styles: { halign: "right", valign: "bottom" } };
+    }),
+    { content: "Total\nQty", styles: { halign: "right", valign: "bottom", fontStyle: "bold" } },
+  ];
+
+  const srWidth = 24;
+  const distWidth = totalCols > 14 ? 46 : 52;
+  const gstWidth = totalCols > 14 ? 60 : 68;
+  const billNoWidth = totalCols > 14 ? 50 : 56;
+  const billDateWidth = totalCols > 14 ? 40 : 44;
+  const totalQtyWidth = totalCols > 14 ? 38 : 42;
+
+  const fixedNonDealerNonProduct =
+    srWidth + distWidth + gstWidth + billNoWidth + billDateWidth + totalQtyWidth;
+  const remainingForDealerAndProducts = usableWidth - fixedNonDealerNonProduct;
+
+  const productColWidth =
+    numProducts > 0
+      ? Math.max(26, Math.min(65, Math.floor((remainingForDealerAndProducts - 110) / numProducts)))
+      : 0;
+
+  const colStyles: Record<number, any> = {
+    0: { halign: "center", cellWidth: srWidth },
+    1: { cellWidth: distWidth },
+    // Col 2: Dealer Name & Address flexes naturally
+    3: { cellWidth: gstWidth },
+    4: { cellWidth: billNoWidth },
+    5: { halign: "center", cellWidth: billDateWidth },
+  };
+
+  for (let i = 0; i < numProducts; i++) {
+    colStyles[6 + i] = { halign: "right", cellWidth: productColWidth };
+  }
+  colStyles[6 + numProducts] = { halign: "right", cellWidth: totalQtyWidth };
+
+  autoTable(doc, {
+    startY: 85,
+    margin: { left: margin, right: margin, top: 85, bottom: 40 },
+    head: [headRow1, headRow2],
+    body: [...data.rows, data.totals],
+    theme: "plain",
+    showHead: "everyPage",
+    styles: {
+      font: "helvetica",
+      fontSize,
+      textColor: [0, 0, 0],
+      cellPadding: { top: 3, bottom: 3, left: 2.5, right: 2.5 },
+      lineWidth: 0,
+      lineColor: [0, 0, 0],
+      overflow: "linebreak",
+    },
+    headStyles: {
+      fontStyle: "bold",
+      fillColor: false,
+      textColor: [0, 0, 0],
+      lineWidth: { top: 0.75, bottom: 0.75, left: 0, right: 0 },
+    },
+    columnStyles: colStyles,
+    didParseCell: function (cellData) {
+      if (cellData.row.index === data.rows.length) {
+        cellData.cell.styles.fontStyle = "bold";
+        cellData.cell.styles.lineWidth = { top: 0.75, bottom: 1.5, left: 0, right: 0 };
+      }
+    },
+    didDrawPage: function (pageInfo) {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(13);
+      doc.text(data.companyName, pageWidth / 2, 35, { align: "center" });
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10.5);
+      doc.text(data.reportTitle, pageWidth / 2, 50, { align: "center" });
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8.5);
+      doc.text(data.periodStr, pageWidth / 2, 63, { align: "center" });
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.text(`Page ${pageInfo.pageNumber}`, pageWidth - margin, pageHeight - 20, { align: "right" });
+    },
+  });
+
+  const buffer = Buffer.from(doc.output("arraybuffer"));
+  return buffer.toString("base64");
+}
+
+// ============================================
 // DETAILED SALES TRANSACTIONS REPORT FORMATTERS
 // ============================================
 
@@ -1277,7 +1518,11 @@ export function generateDetailedSalesExcel(data: DetailedSalesTransactionsData):
 </html>`;
 }
 
-export function generateDetailedSalesPDF(data: DetailedSalesTransactionsData): string {
+export function generateDetailedSalesPDF(data: LedgerReportData | DetailedSalesTransactionsData): string {
+  if ("entries" in data) {
+    return generateLedgerPDF(data);
+  }
+
   const doc = new jsPDF({
     orientation: "landscape",
     unit: "pt",

@@ -17,6 +17,7 @@ export interface Delivery {
   tracking_number: string | null;
   vehicle: string | null;
   driver: string | null;
+  driver_phone?: string | null;
   dispatched_at: string | null;
   delivered_at: string | null;
   proof_document_url: string | null;
@@ -43,6 +44,7 @@ export interface DeliveryListItem {
   tracking_number: string | null;
   vehicle: string | null;
   driver: string | null;
+  driver_phone?: string | null;
   dispatched_at: string | null;
   delivered_at: string | null;
   created_at: string;
@@ -151,4 +153,51 @@ export interface EligibleDeliveryOrder {
     quantity: number;
     unit: string;
   }[];
+}
+
+export interface CreateManualDeliveryInput {
+  customer_id: string;
+  order_id: string;
+  delivery_date: string;
+  vehicle_number: string;
+  driver_name?: string;
+  driver_mobile?: string;
+  notes?: string;
+}
+
+export interface CustomerOrderForDelivery {
+  id: string;
+  order_number: string;
+  order_date: string;
+  expected_delivery_date: string | null;
+  status: string;
+  delivery_status: string;
+  total_amount: number;
+  paid_amount: number;
+  due_amount: number;
+  total_quantity: number;
+  items: {
+    id: string;
+    product_id: string;
+    product_name: string;
+    product_sku: string | null;
+    quantity: number;
+    unit: string;
+    production_status: string;
+    completed_quantity: number;
+    available_stock: number;
+    current_stock: number;
+    is_ready: boolean;
+  }[];
+  is_fully_ready: boolean;
+  not_ready_reason: string | null;
+  has_active_delivery: boolean;
+  active_delivery_info?: string | null;
+}
+
+export interface CustomerDropdownItem {
+  id: string;
+  name: string;
+  company_name: string | null;
+  gst_number?: string | null;
 }

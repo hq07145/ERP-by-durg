@@ -55,10 +55,15 @@ import {
   generateStateWiseGstCSV,
   generateStateWiseGstExcel,
   generateStateWiseGstPDF,
+  generateSaleDetailsProductWiseCSV,
+  generateSaleDetailsProductWiseExcel,
+  generateSaleDetailsProductWisePDF,
   generateDetailedSalesCSV,
   generateDetailedSalesExcel,
   generateDetailedSalesPDF,
+  type SaleDetailsProductWiseData,
   type LedgerEntryRow,
+  type LedgerReportData,
   type OperationalReportData,
 } from "@/lib/reports/ledger-formatter";
 
@@ -2183,7 +2188,11 @@ async function fetchReportData(type: ReportType, filters: ReportFilters): Promis
   return getReportConfig(type, rows);
 }
 
-export type SalesReportVariant = "state_wise_gst" | "detailed_transactions";
+export type SalesReportVariant =
+  | "gst_paid_summary"
+  | "sale_details_product_wise"
+  | "state_wise_gst"
+  | "detailed_transactions";
 
 export async function exportSalesReport(
   variant: SalesReportVariant,
@@ -2267,8 +2276,8 @@ export async function exportSalesReport(
 
   await auditExport(context, "sales", filters, format, filteredOrders.length);
 
-  if (variant === "state_wise_gst") {
-    const filename = `state_wise_sales_gst_report_${dateStr}.${format === "excel" ? "xls" : format}`;
+  if (variant === "state_wise_gst" || variant === "gst_paid_summary") {
+    const filename = `gst_paid_sales_summary_${dateStr}.${format === "excel" ? "xls" : format}`;
     const headers = [
       "Sr. No.",
       "District",
@@ -2378,7 +2387,7 @@ export async function exportSalesReport(
 
     const reportData = {
       companyName,
-      reportTitle: "State-wise Sales & GST Report",
+      reportTitle: "GST Paid / Sales Summary",
       periodStr,
       headers,
       rows,
@@ -2405,8 +2414,303 @@ export async function exportSalesReport(
           filename,
         };
     }
+  } else if (variant === "sale_details_product_wise") {
+    const filename = `sale_details_product_wise_${dateStr}.${format === "excel" ? "xls" : format}`;
+
+    const productMap = new Map<string, { id: string; name: string; sku: string | null }>();
+    for (const order of filteredOrders) {
+      for (const item of order.items || []) {
+        if (!productMap.has(item.product_id)) {
+          productMap.set(item.product_id, {
+            id: item.product_id,
+            name: item.product_name || item.product?.name || "Product",
+            sku: item.product?.sku || null,
+          });
+        }
+      }
+    }
+    const productList = Array.from(productMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+
+    const productTotals = new Array(productList.length).fill(0);
+    let overallQtySum = 0;
+
+    const rows = filteredOrders.map((order, idx) => {
+      const addrs = order.customer?.customer_addresses as any[] | undefined;
+      const primaryAddr = addrs?.find((a: any) => a.address_type === "PRIMARY") ?? addrs?.[0];
+      const rawDistrict = (order.district && order.district.trim()) || primaryAddr?.district?.trim() || "-";
+      const districtDisplay = resolveDistrictDisplayName(rawDistrict, null);
+
+      const custName = order.customer?.name || "Customer";
+      const compName = order.customer?.company_name;
+      const dealerName = compName && compName !== custName ? `${compName} (${custName})` : custName;
+      const addrComponents = [
+        primaryAddr?.address,
+        primaryAddr?.city,
+        primaryAddr?.district,
+        primaryAddr?.state,
+        primaryAddr?.postal_code,
+      ].filter(Boolean);
+      const dealerWithAddr = addrComponents.length > 0 ? `${dealerName}, ${addrComponents.join(", ")}` : dealerName;
+
+      const gstNo = order.customer_gstin || (order.customer as any)?.gst_number || "Unregistered";
+      const billNo = order.order_number;
+      const billDate = formatLedgerDate(order.order_date);
+
+      const itemMap = new Map<string, number>();
+      let orderTotalQty = 0;
+      for (const it of order.items || []) {
+        const q = Number(it.quantity) || 0;
+        itemMap.set(it.product_id, (itemMap.get(it.product_id) || 0) + q);
+        orderTotalQty += q;
+      }
+
+      const productQtyCells = productList.map((p, pIdx) => {
+        const q = itemMap.get(p.id) || 0;
+        productTotals[pIdx] += q;
+        return q;
+      });
+
+      overallQtySum += orderTotalQty;
+
+      return [
+        idx + 1,
+        districtDisplay,
+        dealerWithAddr,
+        gstNo,
+        billNo,
+        billDate,
+        ...productQtyCells,
+        orderTotalQty,
+      ];
+    });
+
+    const totalsRow = [
+      "TOTALS",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ...productTotals,
+      overallQtySum,
+    ];
+
+    const reportData: SaleDetailsProductWiseData = {
+      companyName,
+      reportTitle: "Sale Details / Product-wise",
+      periodStr,
+      fixedHeaders: [
+        "Sr. No.",
+        "District",
+        "Dealer Name & Address",
+        "GST Number",
+        "Bill No.",
+        "Bill Date",
+      ],
+      products: productList,
+      rows,
+      totals: totalsRow,
+    };
+
+    switch (format) {
+      case "csv":
+        return {
+          content: generateSaleDetailsProductWiseCSV(reportData),
+          contentType: "text/csv; charset=utf-8",
+          filename,
+        };
+      case "excel":
+        return {
+          content: generateSaleDetailsProductWiseExcel(reportData),
+          contentType: "application/vnd.ms-excel; charset=utf-8",
+          filename,
+        };
+      case "pdf":
+        return {
+          content: generateSaleDetailsProductWisePDF(reportData),
+          contentType: "application/pdf",
+          filename,
+        };
+    }
   } else {
-    // Detailed Sales Transactions with dynamic product columns
+    // If format === "pdf", generate the 6-column Sales Ledger (Transactions) PDF
+    if (format === "pdf") {
+      let openingDebit = 0;
+      let openingCredit = 0;
+      const ledgerEntries: LedgerEntryRow[] = [];
+
+      // Opening balance prior to startDate
+      if (startDate) {
+        let preQ = supabase
+          .from("customer_ledger")
+          .select(`
+            debit, credit,
+            customer:customers(
+              customer_addresses(address, city, state, postal_code, district, address_type)
+            )
+          `)
+          .eq("business_id", context.user.business_id)
+          .lt("entry_date", startDate);
+
+        if (filters.customerId) {
+          preQ = preQ.eq("customer_id", filters.customerId);
+        }
+
+        const { data: preEntries } = await preQ;
+        let preDebit = 0;
+        let preCredit = 0;
+        for (const pe of preEntries ?? []) {
+          if (filters.district) {
+            const addrs = (pe.customer as any)?.customer_addresses as CustomerAddressQueryResult[] | undefined;
+            const primaryAddr = addrs?.find((a) => a.address_type === "PRIMARY") ?? addrs?.[0];
+            if (!matchesDistrict(primaryAddr?.district, primaryAddr?.state, filters.district)) {
+              continue;
+            }
+          }
+          preDebit += Number(pe.debit || 0);
+          preCredit += Number(pe.credit || 0);
+        }
+        const netPre = preDebit - preCredit;
+        if (netPre > 0) openingDebit = netPre;
+        else if (netPre < 0) openingCredit = Math.abs(netPre);
+      }
+
+      // Query customer ledger entries
+      let ledgerQuery = supabase
+        .from("customer_ledger")
+        .select(`
+          id, entry_type, entry_date, debit, credit, description, created_at,
+          customer:customers(
+            id, name, company_name,
+            customer_addresses(address, city, state, postal_code, district, address_type)
+          ),
+          order:orders(
+            id, order_number, status, district, place_of_supply,
+            items:order_items(product_id)
+          ),
+          payment:payments(id, payment_number, payment_method, reference)
+        `)
+        .eq("business_id", context.user.business_id);
+
+      if (filters.customerId) {
+        ledgerQuery = ledgerQuery.eq("customer_id", filters.customerId);
+      }
+      if (startDate) ledgerQuery = ledgerQuery.gte("entry_date", startDate);
+      if (endDate) ledgerQuery = ledgerQuery.lte("entry_date", endDate);
+
+      const { data: rawLedger, error: ledgerError } = await ledgerQuery
+        .order("entry_date", { ascending: true })
+        .order("created_at", { ascending: true });
+
+      if (ledgerError) throw ledgerError;
+
+      const filteredLedger = (rawLedger ?? []).filter((e: any) => {
+        if (filters.district) {
+          const addrs = e.customer?.customer_addresses as CustomerAddressQueryResult[] | undefined;
+          const primaryAddr = addrs?.find((a) => a.address_type === "PRIMARY") ?? addrs?.[0];
+          const rawDistrict = (e.order?.district && e.order.district.trim()) || primaryAddr?.district?.trim() || null;
+          const rawState = (e.order?.place_of_supply && e.order.place_of_supply.trim()) || primaryAddr?.state?.trim() || null;
+          if (!matchesDistrict(rawDistrict, rawState, filters.district)) {
+            return false;
+          }
+        }
+
+        if (filters.status) {
+          if (e.order && e.order.status !== filters.status) {
+            return false;
+          }
+        } else {
+          if (e.order && e.order.status === "CANCELLED") {
+            return false;
+          }
+        }
+
+        if (filters.productId) {
+          if (e.order) {
+            const items = e.order.items ?? [];
+            if (!items.some((it: any) => it.product_id === filters.productId)) {
+              return false;
+            }
+          }
+        }
+
+        return true;
+      });
+
+      for (const e of filteredLedger) {
+        const d = Number(e.debit) || 0;
+        const c = Number(e.credit) || 0;
+        const cust = (Array.isArray(e.customer) ? e.customer[0] : e.customer) as any;
+        const ord = (Array.isArray(e.order) ? e.order[0] : e.order) as any;
+        const pay = (Array.isArray(e.payment) ? e.payment[0] : e.payment) as any;
+
+        const custName = cust?.name || "Customer";
+        const compName = cust?.company_name;
+        const partyDisplayName = compName && compName !== custName ? `${compName} (${custName})` : custName;
+
+        const vchNo = ord?.order_number || pay?.payment_number || "—";
+
+        let vchType = "Journal";
+        if (e.entry_type === "INVOICE") vchType = "Sales";
+        else if (e.entry_type === "PAYMENT") vchType = "Receipt";
+        else if (e.entry_type === "CREDIT_NOTE") vchType = "Credit Note";
+        else if (e.entry_type === "DEBIT_NOTE") vchType = "Debit Note";
+        else if (e.entry_type === "ADVANCE") vchType = "Receipt";
+        else if (e.entry_type === "REFUND") vchType = "Payment";
+
+        let particulars = "";
+        if (filters.customerId) {
+          particulars = e.description || (vchType === "Sales" ? "To Sales" : "By Receipt");
+        } else {
+          particulars = `${partyDisplayName}: ${e.description || (vchType === "Sales" ? "To Sales" : "By Receipt")}`;
+        }
+
+        ledgerEntries.push({
+          date: formatLedgerDate(e.entry_date),
+          particulars,
+          vchType,
+          vchNo,
+          debit: d > 0 ? d : null,
+          credit: c > 0 ? c : null,
+        });
+      }
+
+      // Fallback: If ledgerEntries is empty but matching orders exist, populate from orders
+      if (ledgerEntries.length === 0 && filteredOrders.length > 0) {
+        for (const order of filteredOrders) {
+          const custName = order.customer?.name || "Customer";
+          const compName = order.customer?.company_name;
+          const partyDisplayName = compName && compName !== custName ? `${compName} (${custName})` : custName;
+          const total = Number(order.total_amount || 0);
+
+          ledgerEntries.push({
+            date: formatLedgerDate(order.order_date),
+            particulars: filters.customerId ? `To Sales (Order ${order.order_number})` : `${partyDisplayName}: To Sales (Order ${order.order_number})`,
+            vchType: "Sales",
+            vchNo: order.order_number,
+            debit: total > 0 ? total : null,
+            credit: null,
+          });
+        }
+      }
+
+      const salesLedgerData: LedgerReportData = {
+        companyName: "Sankalp Irrigation",
+        reportTitle: "Sales Ledger (Transactions)",
+        periodStr,
+        openingDebit,
+        openingCredit,
+        entries: ledgerEntries,
+      };
+
+      return {
+        content: generateDetailedSalesPDF(salesLedgerData),
+        contentType: "application/pdf",
+        filename: `sales_ledger_transactions_${dateStr}.pdf`,
+      };
+    }
+
+    // Detailed Sales Transactions with dynamic product columns (CSV / Excel)
     const filename = `detailed_sales_transactions_${dateStr}.${format === "excel" ? "xls" : format}`;
 
     const productMap = new Map<string, { id: string; name: string; sku: string | null }>();
@@ -2543,12 +2847,8 @@ export async function exportSalesReport(
           contentType: "application/vnd.ms-excel; charset=utf-8",
           filename,
         };
-      case "pdf":
-        return {
-          content: generateDetailedSalesPDF(reportData),
-          contentType: "application/pdf",
-          filename,
-        };
+      default:
+        throw new Error(`Unsupported format: ${format}`);
     }
   }
 }
