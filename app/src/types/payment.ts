@@ -68,11 +68,30 @@ export interface CustomerSummary {
   customer_id: string;
   customer_name: string;
   customer_company: string | null;
-  total_purchases: string | number; // sum of invoices
-  total_paid: string | number; // sum of successful payments
-  total_due: string | number; // total_purchases - total_paid
+  total_purchases: string | number; // sum of invoices / orders
+  total_paid: string | number; // sum of cleared receipts
+  total_due: string | number; // unpaid invoice dues (strictly non-negative)
+  available_advance?: string | number; // cleared unallocated customer advance
+  total_advance_received?: string | number;
+  total_advance_allocated?: string | number;
+  reconciliation_warning?: string | null;
   last_payment_date: string | null;
   last_payment_amount: string | number | null;
+}
+
+export interface CustomerAdvanceTransaction {
+  id: string;
+  date: string;
+  type: "RECEIPT" | "ALLOCATION" | "REFUND" | "REVERSAL";
+  receipt_number: string | null;
+  reference: string | null;
+  order_id: string | null;
+  order_number: string | null;
+  amount_received: number;
+  amount_allocated: number;
+  running_advance_balance: number;
+  status: string;
+  notes: string | null;
 }
 
 export interface CreatePaymentFormValues {

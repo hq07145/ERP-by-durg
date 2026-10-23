@@ -43,6 +43,7 @@ export interface Order {
   total_amount: string | number;
   paid_amount: string | number;
   due_amount: string | number;
+  advance_applied?: string | number;
   notes: string | null;
   created_at: string;
   updated_at: string;
@@ -63,6 +64,26 @@ export interface Order {
   delivery_calculated_at: string | null;
   delivery_calculation_version: number;
 }
+
+export interface CustomerAdvanceAllocation {
+  id: string;
+  business_id: string;
+  customer_id: string;
+  order_id: string;
+  payment_id: string;
+  allocated_amount: number | string;
+  allocation_date: string;
+  status: "ACTIVE" | "REVERSED";
+  notes?: string | null;
+  created_at: string;
+  payments?: {
+    payment_number: string;
+    payment_date: string;
+    reference?: string | null;
+    payment_method?: string | null;
+  } | null;
+}
+
 
 export interface OrderItem {
   id: string;

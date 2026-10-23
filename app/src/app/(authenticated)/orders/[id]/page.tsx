@@ -7,6 +7,7 @@ import { getOrderFulfillmentExplanation } from "@/lib/production/scheduler";
 import type { OrderWithCustomer, OrderItemWithProduct, OrderStatusHistory } from "@/types/order";
 import { CheckCircle2 } from "lucide-react";
 import { format } from "date-fns";
+import { getCustomerAdvanceBalance } from "@/lib/payments/actions";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -30,11 +31,12 @@ export default async function OrderPage({ params, searchParams }: PageProps) {
     { data: payments },
     { data: deliveries },
     { data: productionOrders },
-    { data: businessDetails }
+    { data: businessDetails },
+    { data: advanceAllocations }
   ] = await Promise.all([
     supabase
       .from("orders")
-      .select("id, business_id, customer_id, order_number, order_date, priority, status, subtotal, discount_amount, tax_amount, total_amount, paid_amount, due_amount, notes, created_at, updated_at, earliest_delivery_date, latest_delivery_date, expected_delivery_date, delivery_status, delivery_calculated_at, delivery_calculation_version, tax_type, place_of_supply, business_gstin, customer_gstin, cgst_amount, sgst_amount, igst_amount, customers(id, name, company_name, phone, email, gst_number)")
+      .select("id, business_id, customer_id, order_number, order_date, priority, status, subtotal, discount_amount, tax_amount, total_amount, paid_amount, due_amount, advance_applied, notes, created_at, updated_at, earliest_delivery_date, latest_delivery_date, expected_delivery_date, delivery_status, delivery_calculated_at, delivery_calculation_version, tax_type, place_of_supply, business_gstin, customer_gstin, cgst_amount, sgst_amount, igst_amount, customers(id, name, company_name, phone, email, gst_number)")
       .eq("business_id", context.user.business_id)
       .eq("id", id)
       .single(),
@@ -68,15 +70,24 @@ export default async function OrderPage({ params, searchParams }: PageProps) {
       .eq("business_id", context.user.business_id)
       .eq("order_id", id)
       .order("created_at", { ascending: false }),
-    supabase
+      supabase
       .from("business_settings")
       .select("value")
       .eq("business_id", context.user.business_id)
       .eq("key", "business_details")
       .maybeSingle(),
+    supabase
+      .from("customer_advance_allocations")
+      .select("id, business_id, customer_id, order_id, payment_id, allocated_amount, allocation_date, status, notes, created_at, payments(payment_number, payment_date, reference, payment_method)")
+      .eq("business_id", context.user.business_id)
+      .eq("order_id", id)
+      .eq("status", "ACTIVE")
+      .order("allocation_date"),
   ]);
 
   if (!order) redirect("/orders?error=not_found");
+
+  const customerAdvBal = await getCustomerAdvanceBalance(order.customer_id);
 
   const canEdit = hasPermission({ permissions: context.permissions }, "orders.edit");
   const canCancel = hasPermission({ permissions: context.permissions }, "orders.cancel");
@@ -282,6 +293,8 @@ export default async function OrderPage({ params, searchParams }: PageProps) {
         payments={(payments ?? []) as any}
         deliveries={(deliveries ?? []) as any}
         productionOrders={productionWithProduct}
+        advanceAllocations={(advanceAllocations ?? []) as any}
+        customerAdvanceBalance={customerAdvBal.availableAdvance}
         canEdit={canEdit}
         canCancel={canCancel}
         canApprove={canApprove}

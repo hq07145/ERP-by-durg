@@ -6,7 +6,7 @@ import { hasPermission } from "@/lib/permissions/authorization";
 import { setCustomerStatusAction } from "@/lib/customers/actions";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import type { Customer, CustomerAddress } from "@/types/customer";
-import { getCustomerSummary, getCustomerLedger, getCustomerPayments } from "@/lib/payments/actions";
+import { getCustomerSummary, getCustomerLedger, getCustomerPayments, getCustomerAdvanceTransactions } from "@/lib/payments/actions";
 import { CustomerLedger } from "@/components/payments/customer-ledger";
 import { format } from "date-fns";
 import {
@@ -58,10 +58,16 @@ export default async function CustomerProfilePage({
   const supabase = await createServerSupabaseClient();
   if (!supabase) return <p className="text-sm text-rose-600">Database client unavailable.</p>;
 
+  const canViewPayments = hasPermission({ permissions: context.permissions }, "payments.view");
+
   const [
     { data: customerData, error: customerError },
     { data: addressData, error: addressError },
     { data: customerOrdersData },
+    summary,
+    ledgerEntries,
+    payments,
+    advanceTransactions,
   ] = await Promise.all([
     supabase
       .from("customers")
@@ -80,6 +86,10 @@ export default async function CustomerProfilePage({
       .eq("business_id", context.user.business_id)
       .eq("customer_id", id)
       .order("order_date", { ascending: false }),
+    canViewPayments ? getCustomerSummary(id) : Promise.resolve(null),
+    canViewPayments ? getCustomerLedger(id, 20, 0) : Promise.resolve([]),
+    canViewPayments ? getCustomerPayments(id, 10, 0) : Promise.resolve([]),
+    canViewPayments ? getCustomerAdvanceTransactions(id) : Promise.resolve([]),
   ]);
 
   if (customerError || !customerData) notFound();
@@ -93,17 +103,8 @@ export default async function CustomerProfilePage({
   const canDeactivate = hasPermission({ permissions: context.permissions }, "customers.delete");
   const canAddPayment = hasPermission({ permissions: context.permissions }, "payments.add");
 
-  const canViewPayments = hasPermission({ permissions: context.permissions }, "payments.view");
-
   const paramsValue = await searchParams;
   const notice = paramsValue.notice ? notices[paramsValue.notice] : null;
-
-  // Fetch payment-related data safely
-  const [summary, ledgerEntries, payments] = await Promise.all([
-    canViewPayments ? getCustomerSummary(id) : Promise.resolve(null),
-    canViewPayments ? getCustomerLedger(id, 20, 0) : Promise.resolve([]),
-    canViewPayments ? getCustomerPayments(id, 10, 0) : Promise.resolve([]),
-  ]);
 
   const initials = (customer.name || "C")
     .split(" ")
@@ -227,11 +228,11 @@ export default async function CustomerProfilePage({
       {/* 2. EXECUTIVE FINANCIAL SUMMARY CARDS                           */}
       {/* ============================================================== */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {/* Total Invoiced (Lifetime Purchases) */}
+        {/* Total Invoiced (Purchases) */}
         <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-[#64748B]">
-              Total Purchases
+              Total Purchases / Invoiced
             </span>
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-[#142B3B]">
               <ShoppingBag className="w-4 h-4" />
@@ -243,11 +244,11 @@ export default async function CustomerProfilePage({
           <p className="text-[11px] text-[#64748B] mt-1">Lifetime gross purchases</p>
         </div>
 
-        {/* Total Paid */}
+        {/* Payments Received */}
         <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-[#64748B]">
-              Amount Paid
+              Payments Received
             </span>
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600">
               <CheckCircle2 className="w-4 h-4" />
@@ -259,40 +260,63 @@ export default async function CustomerProfilePage({
           <p className="text-[11px] text-[#64748B] mt-1">Cleared receipts to date</p>
         </div>
 
-        {/* Current Balance / Due */}
+        {/* Outstanding Due (Never Negative) */}
         <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-[#64748B]">
               Outstanding Due
             </span>
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-rose-50 text-rose-600">
+            <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${
+              Number(summary?.total_due ?? 0) > 0 ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600"
+            }`}>
               <Wallet className="w-4 h-4" />
             </div>
           </div>
-          <p className="mt-2 text-xl font-bold tracking-tight text-rose-700">
-            ₹{Number(summary?.total_due ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          <p className={`mt-2 text-xl font-bold tracking-tight ${
+            Number(summary?.total_due ?? 0) > 0 ? "text-rose-700" : "text-emerald-700"
+          }`}>
+            ₹{Math.max(0, Number(summary?.total_due ?? 0)).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </p>
-          <p className="text-[11px] text-[#64748B] mt-1">Unpaid receivables balance</p>
+          <p className="text-[11px] text-[#64748B] mt-1">
+            {Number(summary?.total_due ?? 0) > 0 ? "Unpaid invoice receivables" : "All orders settled in full"}
+          </p>
         </div>
 
-        {/* Credit Limit & Terms */}
+        {/* Available Customer Advance */}
         <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-[#64748B]">
-              Credit Limit
+              Available Advance
             </span>
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-teal-50 text-[#0F766E]">
+            <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${
+              Number(summary?.available_advance ?? 0) > 0 ? "bg-teal-50 text-[#0F766E]" : "bg-slate-100 text-slate-500"
+            }`}>
               <CreditCard className="w-4 h-4" />
             </div>
           </div>
-          <p className="mt-2 text-xl font-bold tracking-tight text-[#0F172A]">
-            ₹{Number(customer.credit_limit ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          <p className={`mt-2 text-xl font-bold tracking-tight ${
+            Number(summary?.available_advance ?? 0) > 0 ? "text-[#0F766E]" : "text-[#0F172A]"
+          }`}>
+            ₹{Math.max(0, Number(summary?.available_advance ?? 0)).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </p>
-          <p className="text-[11px] text-[#64748B] mt-1 truncate">
-            Terms: {customer.payment_terms || "Standard (Immediate)"}
+          <p className="text-[11px] text-[#64748B] mt-1">
+            {Number(summary?.available_advance ?? 0) > 0
+              ? "Unallocated credit balance"
+              : "No unallocated advance"}
           </p>
         </div>
       </div>
+
+      {/* Reconciliation Warning Notice */}
+      {summary?.reconciliation_warning && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" role="alert">
+          <AlertCircle className="w-5 h-5 shrink-0 text-amber-600 mt-0.5" />
+          <div>
+            <p className="font-semibold text-amber-950">Financial Reconciliation Warning</p>
+            <p className="text-xs text-amber-800 mt-0.5">{summary.reconciliation_warning}</p>
+          </div>
+        </div>
+      )}
 
       {/* ============================================================== */}
       {/* 3. PROFILE DETAILS & ADDRESSES (2 Columns)                     */}
@@ -479,6 +503,122 @@ export default async function CustomerProfilePage({
           </div>
         ) : (
           <p className="text-sm text-[#64748B] italic py-2">No customer orders recorded yet.</p>
+        )}
+      </div>
+
+      {/* ============================================================== */}
+      {/* 5. CUSTOMER ADVANCE HISTORY (Requirement 3)                    */}
+      {/* ============================================================== */}
+      <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 sm:p-6 shadow-2xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-[#E2E8F0] pb-3 gap-2">
+          <div>
+            <div className="flex items-center gap-2">
+              <CreditCard className="w-4 h-4 text-[#0F766E]" />
+              <h2 className="text-base font-semibold text-[#0F172A]">
+                Customer Advance Transaction History ({advanceTransactions.length})
+              </h2>
+            </div>
+            <p className="text-xs text-[#64748B]">
+              Chronological log of advance receipts, order allocations, and running available advance balance
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-[#64748B]">Available Advance Balance:</span>
+            <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold bg-teal-50 text-[#0F766E] border border-teal-200">
+              ₹{Math.max(0, Number(summary?.available_advance ?? 0)).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </span>
+          </div>
+        </div>
+
+        {advanceTransactions.length > 0 ? (
+          <div className="overflow-x-auto rounded-lg border border-[#E2E8F0]">
+            <table className="w-full text-left text-sm" role="table">
+              <thead className="bg-slate-50 text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
+                <tr>
+                  <th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3">Transaction Type</th>
+                  <th className="px-4 py-3">Receipt / Ref #</th>
+                  <th className="px-4 py-3">Order Allocated</th>
+                  <th className="px-4 py-3 text-right">Received (+)</th>
+                  <th className="px-4 py-3 text-right">Allocated (-)</th>
+                  <th className="px-4 py-3 text-right">Running Advance</th>
+                  <th className="px-4 py-3">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#E2E8F0] text-xs">
+                {advanceTransactions.map((tx) => (
+                  <tr key={tx.id} className="hover:bg-slate-50/70 transition-colors">
+                    <td className="px-4 py-3 text-[#64748B]">
+                      {format(new Date(tx.date), "MMM d, yyyy")}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+                          tx.type === "RECEIPT"
+                            ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                            : tx.type === "ALLOCATION"
+                            ? "bg-sky-50 text-sky-700 border border-sky-200"
+                            : "bg-amber-50 text-amber-700 border border-amber-200"
+                        }`}
+                      >
+                        {tx.type === "RECEIPT" ? "Advance Received" : tx.type === "ALLOCATION" ? "Order Allocation" : tx.type}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      {tx.receipt_number ? (
+                        <span className="font-mono font-bold text-slate-800">{tx.receipt_number}</span>
+                      ) : (
+                        <span className="text-slate-400 font-mono text-[11px]">
+                          {tx.reference || "Advance Adjustment"}
+                        </span>
+                      )}
+                      {tx.notes && <p className="text-[10px] text-slate-500 mt-0.5 truncate max-w-xs">{tx.notes}</p>}
+                    </td>
+                    <td className="px-4 py-3">
+                      {tx.order_id ? (
+                        <Link
+                          href={`/orders/${tx.order_id}`}
+                          className="font-mono font-bold text-[#0F766E] hover:underline"
+                        >
+                          {tx.order_number || "View Order"}
+                        </Link>
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono font-bold text-emerald-700">
+                      {tx.amount_received > 0
+                        ? `+₹${tx.amount_received.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : "—"}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono font-bold text-sky-800">
+                      {tx.amount_allocated > 0
+                        ? `-₹${tx.amount_allocated.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : "—"}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono font-bold text-slate-900">
+                      ₹{tx.running_advance_balance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+                          tx.status === "SUCCESS" || tx.status === "ACTIVE"
+                            ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                            : "bg-slate-100 text-slate-600 border border-slate-200"
+                        }`}
+                      >
+                        {tx.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-[#64748B] italic py-2">
+            No customer advance transactions or allocations recorded.
+          </p>
         )}
       </div>
 

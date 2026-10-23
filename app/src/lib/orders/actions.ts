@@ -18,6 +18,7 @@ import {
 import { notifyOrderEvent } from "@/lib/notifications/actions";
 import { generateNextOrderNumber } from "@/lib/orders/order-number";
 import { calculateOrderGst, validateItemTaxRates } from "@/lib/financials/gst";
+import { getCustomerAdvanceBalance } from "@/lib/payments/actions";
 
 export type OrderActionState = {
   error?: string;
@@ -179,32 +180,42 @@ export async function createOrderAction(
   const customerState = customerAddressRes.data?.state || null;
   const customerGstin = customer.gst_number || null;
 
-  // 2. Check for duplicate order number in business
+  // 2. Check for duplicate order number in business with idempotent retry safety
   const { data: duplicate } = await supabase
     .from("orders")
-    .select("id")
+    .select("id, customer_id, created_at")
     .eq("business_id", context.user.business_id)
     .eq("order_number", values.order_number)
     .maybeSingle();
 
   if (duplicate) {
+    const createdTime = new Date(duplicate.created_at).getTime();
+    const isRecent = Date.now() - createdTime < 120000;
+    if (isRecent && duplicate.customer_id === values.customer_id) {
+      console.log(`[createOrderAction] Idempotent retry detected for order ${values.order_number}. Redirecting safely.`);
+      const returnTo = formData.get("return_to");
+      if (returnTo === "orders") {
+        redirect("/orders?notice=order_created");
+      }
+      redirect(`/orders/${duplicate.id}?notice=order_created`);
+    }
     return { error: "duplicate_order_number" };
   }
 
-  // 3. Verify all products exist and are active in business
-  const productMap = new Map<string, { id: string; name: string }>();
-  for (const item of values.items) {
-    const { data: prod, error: prodError } = await supabase
-      .from("products")
-      .select("id, name")
-      .eq("id", item.product_id)
-      .eq("business_id", context.user.business_id)
-      .eq("active", true)
-      .maybeSingle();
+  // 3. Verify all products exist and are active in business in one batch query
+  const productIds = Array.from(new Set(values.items.map((it) => it.product_id)));
+  const { data: prods, error: prodError } = await supabase
+    .from("products")
+    .select("id, name")
+    .in("id", productIds)
+    .eq("business_id", context.user.business_id)
+    .eq("active", true);
 
-    if (prodError || !prod) {
-      return { error: "invalid_product" };
-    }
+  if (prodError || !prods || prods.length !== productIds.length) {
+    return { error: "invalid_product" };
+  }
+  const productMap = new Map<string, { id: string; name: string }>();
+  for (const prod of prods) {
     productMap.set(prod.id, prod);
   }
 
@@ -266,6 +277,24 @@ export async function createOrderAction(
     line_total: it.lineTotal,
   }));
 
+  // Customer advance calculation & authoritative server-side validation
+  const useAdvance = formData.get("use_advance") === "true";
+  const requestedAdvance = Number(formData.get("advance_amount")) || 0;
+
+  let advanceToApply = 0;
+  if (useAdvance && requestedAdvance > 0) {
+    const advBal = await getCustomerAdvanceBalance(values.customer_id);
+    const maxEligible = Math.min(advBal.availableAdvance, gstCalc.totalAmount);
+
+    if (requestedAdvance > maxEligible + 0.001) {
+      return {
+        error: "advance_exceeds_eligible",
+        message: `Selected advance amount (₹${requestedAdvance.toFixed(2)}) exceeds eligible balance (₹${maxEligible.toFixed(2)}).`,
+      };
+    }
+    advanceToApply = Math.min(requestedAdvance, maxEligible);
+  }
+
   const orderId = crypto.randomUUID();
 
   // 5. Insert order record (RLS and check constraints enforced)
@@ -283,6 +312,7 @@ export async function createOrderAction(
     total_amount: gstCalc.totalAmount,
     paid_amount: 0,
     due_amount: gstCalc.totalAmount,
+    advance_applied: 0,
     tax_type: gstCalc.taxType,
     place_of_supply: gstCalc.placeOfSupply,
     district: values.district || null,
@@ -395,22 +425,63 @@ export async function createOrderAction(
     return { error: "create_failed" };
   }
 
+  // 7. Atomically allocate customer advance if selected
+  if (advanceToApply > 0) {
+    const admin = createAdminSupabaseClient();
+    const dbClient = admin || supabase;
+    const { error: allocErr } = await dbClient.rpc("allocate_customer_advance_to_order", {
+      p_business_id: context.user.business_id,
+      p_customer_id: values.customer_id,
+      p_order_id: orderId,
+      p_amount: advanceToApply,
+      p_user_id: context.user.id,
+      p_notes: `Advance applied on order creation (${values.order_number})`,
+    });
+
+    if (allocErr) {
+      console.error("[createOrderAction] Error allocating advance, rolling back order:", allocErr);
+      if (admin) {
+        await admin.from("order_items").delete().eq("order_id", orderId);
+        await admin.from("orders").delete().eq("id", orderId);
+      }
+      return {
+        error: "advance_allocation_failed",
+        message: `Failed to adjust customer advance: ${allocErr.message || "Insufficient balance or concurrent update"}. Order creation was rolled back.`,
+      };
+    }
+  }
+
   revalidatePath("/orders");
   revalidatePath("/reports/sales");
 
+  // Non-blocking with 2.5s safety timeout so post-order tasks never hang response
+  const timeoutPromise = <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> =>
+    Promise.race([
+      promise,
+      new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+    ]);
+
   try {
-    await estimateAndSaveOrderDelivery(supabase, context.user.business_id, orderId);
+    await timeoutPromise(
+      estimateAndSaveOrderDelivery(supabase, context.user.business_id, orderId),
+      2500,
+      null
+    );
   } catch (err) {
     console.warn("[createOrderAction] Delivery estimation failed (non-fatal):", err);
   }
 
   try {
-    await notifyOrderEvent(
-      context.user.business_id,
-      orderId,
-      values.order_number,
-      "created",
-      context.user.id
+    await timeoutPromise(
+      notifyOrderEvent(
+        context.user.business_id,
+        orderId,
+        values.order_number,
+        "created",
+        context.user.id
+      ),
+      2000,
+      null
     );
   } catch (err) {
     console.warn("[createOrderAction] Notification failed (non-fatal):", err);
@@ -426,6 +497,20 @@ export async function createOrderAction(
   }
 
   redirect(`/orders/${orderId}?notice=order_created`);
+}
+
+export async function checkOrderExistsAction(orderNumber: string): Promise<boolean> {
+  const context = await getAuthContext();
+  if (!context) return false;
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return false;
+  const { data } = await supabase
+    .from("orders")
+    .select("id")
+    .eq("business_id", context.user.business_id)
+    .eq("order_number", orderNumber.trim())
+    .maybeSingle();
+  return Boolean(data);
 }
 
 export async function updateOrderAction(
@@ -845,6 +930,18 @@ export async function cancelOrderAction(
       );
     } catch (err) {
       console.warn("[cancelOrderAction] Failed to release stock reservation:", err);
+    }
+
+    // Safely reverse any advance allocation linked to this order
+    try {
+      await dbClient.rpc("reverse_order_advance_allocations", {
+        p_business_id: context.user.business_id,
+        p_order_id: orderId,
+        p_user_id: context.user.id,
+        p_reason: reason?.trim() || "Order cancelled",
+      });
+    } catch (revErr) {
+      console.warn("[cancelOrderAction] Failed to reverse advance allocations:", revErr);
     }
 
     // 8. Recalculate affected future production schedules & send notifications without hanging the HTTP response

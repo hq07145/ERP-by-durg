@@ -67,6 +67,7 @@ export default async function InventoryPage({
     { data: invData },
     { data: outputsData },
     rawMaterialsResult,
+    rawMaterialsListResult,
   ] = await Promise.all([
     supabase
       .from("products")
@@ -92,6 +93,12 @@ export default async function InventoryPage({
           .order("updated_at", { ascending: false })
           .range((page - 1) * pageSize, page * pageSize - 1)
       : Promise.resolve({ data: [], error: null, count: 0 }),
+    canViewRawMaterials
+      ? supabase
+          .from("raw_materials")
+          .select("*")
+          .eq("business_id", context.user.business_id)
+      : Promise.resolve({ data: [], error: null }),
   ]);
 
   // ============================================
@@ -153,14 +160,7 @@ export default async function InventoryPage({
       rawMaterialsContent = <p className="text-sm text-[var(--signal)]">Inventory could not be loaded.</p>;
     } else {
       const inventoryRows = (rawData ?? []) as InventoryRecord[];
-      const materialIds = inventoryRows.map((row) => row.item_id);
-      const { data: materialData, error: materialError } = materialIds.length
-        ? await supabase
-            .from("raw_materials")
-            .select("*")
-            .eq("business_id", context.user.business_id)
-            .in("id", materialIds)
-        : { data: [], error: null };
+      const { data: materialData, error: materialError } = rawMaterialsListResult;
 
       if (materialError) {
         rawMaterialsContent = <p className="text-sm text-[var(--signal)]">Raw-material details could not be loaded.</p>;

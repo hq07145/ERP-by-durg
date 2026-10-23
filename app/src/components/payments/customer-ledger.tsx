@@ -35,19 +35,19 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
           </p>
         </div>
         <div className="rounded-lg border border-gray-200 bg-white p-6">
-          <p className="text-sm text-gray-500">Total Due</p>
-          <p className="text-2xl font-bold text-red-700 mt-1">
-            {Number(customer.total_due).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          <p className="text-sm text-gray-500">Outstanding Due</p>
+          <p className={`text-2xl font-bold mt-1 ${Number(customer.total_due) > 0 ? "text-red-700" : "text-gray-900"}`}>
+            ₹{Math.max(0, Number(customer.total_due)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </p>
         </div>
         <div className="rounded-lg border border-gray-200 bg-white p-6">
-          <p className="text-sm text-gray-500">Last Payment</p>
-          <p className="text-sm font-medium text-gray-900 mt-1">
-            {customer.last_payment_date ? format(new Date(customer.last_payment_date), "MMM d, yyyy") : "—"}
+          <p className="text-sm text-gray-500">Available Advance</p>
+          <p className={`text-2xl font-bold mt-1 ${Number(customer.available_advance ?? 0) > 0 ? "text-amber-700" : "text-gray-900"}`}>
+            ₹{Math.max(0, Number(customer.available_advance ?? 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </p>
-          {customer.last_payment_amount && (
-            <p className="text-sm text-green-700 mt-1">
-              {Number(customer.last_payment_amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          {customer.last_payment_date && (
+            <p className="text-xs text-gray-500 mt-1">
+              Last payment: {format(new Date(customer.last_payment_date), "MMM d, yyyy")}
             </p>
           )}
         </div>

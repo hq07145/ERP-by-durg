@@ -16,6 +16,7 @@ import type {
   OrderPaymentItem,
   OrderDeliveryItem,
   OrderProductionItem,
+  CustomerAdvanceAllocation,
 } from "@/types/order";
 import {
   getOrderPaymentStatus,
@@ -50,6 +51,7 @@ import {
   MapPin,
   Receipt,
   X,
+  Wallet,
 } from "lucide-react";
 
 interface DeliveryInfo {
@@ -82,6 +84,8 @@ interface OrderDetailProps {
   payments?: OrderPaymentItem[];
   deliveries?: OrderDeliveryItem[];
   productionOrders?: OrderProductionItem[];
+  advanceAllocations?: CustomerAdvanceAllocation[];
+  customerAdvanceBalance?: number;
   canEdit: boolean;
   canCancel: boolean;
   canApprove: boolean;
@@ -142,6 +146,8 @@ export function OrderDetail({
   payments = [],
   deliveries = [],
   productionOrders = [],
+  advanceAllocations = [],
+  customerAdvanceBalance,
   canEdit,
   canCancel,
   canApprove,
@@ -471,12 +477,16 @@ export function OrderDetail({
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <span className="text-[11px] font-semibold tracking-wider text-slate-500 uppercase">Paid to Date</span>
+          <span className="text-[11px] font-semibold tracking-wider text-slate-500 uppercase">Paid / Adjusted</span>
           <p className="text-xl sm:text-2xl font-bold text-emerald-700 mt-1">
             {formatCurrency(order.paid_amount)}
           </p>
           <span className="text-[11px] text-emerald-600 mt-1 block">
-            {payments.length} payment record{payments.length === 1 ? "" : "s"}
+            {Number(order.advance_applied || 0) > 0 ? (
+              <>Includes {formatCurrency(order.advance_applied)} advance</>
+            ) : (
+              <>{payments.length} payment record{payments.length === 1 ? "" : "s"}</>
+            )}
           </span>
         </div>
 
@@ -720,17 +730,34 @@ export function OrderDetail({
             </div>
 
             <div className="flex justify-between text-sm font-bold text-slate-900 border-t border-slate-200 pt-2">
-              <span>Grand Total:</span>
+              <span>Final Order Total:</span>
               <span className="text-[#0F766E] font-mono">{formatCurrency(order.total_amount)}</span>
             </div>
-            <div className="flex justify-between text-xs text-emerald-700 font-medium">
-              <span>Amount Paid:</span>
-              <span className="font-mono">{formatCurrency(order.paid_amount)}</span>
-            </div>
-            <div className="flex justify-between text-xs text-rose-700 font-bold">
-              <span>Outstanding Due:</span>
+            {Number(order.advance_applied || 0) > 0 && (
+              <div className="flex justify-between text-xs text-emerald-700 font-semibold pt-0.5">
+                <span>Less: Customer Advance Adjusted:</span>
+                <span className="font-mono">-{formatCurrency(order.advance_applied)}</span>
+              </div>
+            )}
+            {Number(order.paid_amount || 0) - Number(order.advance_applied || 0) > 0 && (
+              <div className="flex justify-between text-xs text-emerald-700 font-medium">
+                <span>Other Payments Received:</span>
+                <span className="font-mono">-{formatCurrency(Number(order.paid_amount || 0) - Number(order.advance_applied || 0))}</span>
+              </div>
+            )}
+            <div className="flex justify-between text-xs text-rose-700 font-bold border-t border-slate-100 pt-1">
+              <span>Net Amount Payable:</span>
               <span className="font-mono">{formatCurrency(order.due_amount)}</span>
             </div>
+            {customerAdvanceBalance !== undefined && (
+              <div className="flex justify-between items-center text-[11px] text-slate-600 bg-slate-50 p-2 rounded-lg mt-1 border border-slate-200">
+                <span className="font-medium">Remaining Customer Advance:</span>
+                <span className="font-mono font-bold text-slate-800">
+                  {formatCurrency(customerAdvanceBalance)}{" "}
+                  <span className="text-[10px] text-slate-500 font-normal">(Account Balance)</span>
+                </span>
+              </div>
+            )}
             <div className="flex justify-between items-center text-xs pt-1 border-t border-slate-100">
               <span className="text-slate-500 font-semibold">Payment Status:</span>
               <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border ${ORDER_PAYMENT_STATUS_COLORS[getOrderPaymentStatus(order.total_amount, order.paid_amount, order.due_amount)]}`}>
@@ -823,12 +850,12 @@ export function OrderDetail({
         )}
       </div>
 
-      {/* Payment History Table (Step 4) */}
+      {/* Payment & Advance Adjustment History */}
       <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
             <CreditCard className="w-4 h-4 text-[#0F766E]" />
-            <span>Payment History ({payments.length})</span>
+            <span>Payment & Settlement History</span>
           </h2>
           {order.status !== "CANCELLED" && Number(order.due_amount) > 0 && (
             <Link
@@ -841,11 +868,56 @@ export function OrderDetail({
           )}
         </div>
 
-        {payments.length === 0 ? (
+        {/* Customer Advance Adjustments Table if any */}
+        {advanceAllocations.length > 0 && (
+          <div className="mb-4 rounded-xl border border-teal-200 bg-teal-50/50 p-4 space-y-2 text-xs">
+            <div className="flex items-center justify-between pb-1.5 border-b border-teal-100">
+              <span className="font-bold text-teal-950 flex items-center gap-1.5">
+                <Wallet className="w-4 h-4 text-[#0F766E]" />
+                <span>Customer Advance Adjusted ({advanceAllocations.length})</span>
+              </span>
+              <span className="font-mono font-bold text-emerald-800">
+                Total Adjusted: {formatCurrency(order.advance_applied || advanceAllocations.reduce((sum, a) => sum + (Number(a.allocated_amount) || 0), 0))}
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-teal-100 text-left">
+                <thead>
+                  <tr className="text-[11px] font-semibold text-teal-800 uppercase">
+                    <th className="py-2 px-2.5">Allocation Date</th>
+                    <th className="py-2 px-2.5">Advance Receipt #</th>
+                    <th className="py-2 px-2.5">Receipt Date</th>
+                    <th className="py-2 px-2.5">Reference / Notes</th>
+                    <th className="py-2 px-2.5 text-right">Adjusted Amount</th>
+                    <th className="py-2 px-2.5 text-right">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-teal-100/60 bg-white/70">
+                  {advanceAllocations.map((a) => (
+                    <tr key={a.id} className="text-slate-700">
+                      <td className="py-2 px-2.5">{formatDate(a.allocation_date)}</td>
+                      <td className="py-2 px-2.5 font-mono font-bold text-slate-900">{a.payments?.payment_number || "ADV"}</td>
+                      <td className="py-2 px-2.5 text-slate-500">{formatDate(a.payments?.payment_date)}</td>
+                      <td className="py-2 px-2.5 text-slate-600 text-[11px]">{a.payments?.reference || a.notes || "—"}</td>
+                      <td className="py-2 px-2.5 text-right font-mono font-bold text-emerald-700">{formatCurrency(a.allocated_amount)}</td>
+                      <td className="py-2 px-2.5 text-right">
+                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${a.status === 'ACTIVE' ? 'bg-teal-50 text-teal-800 border-teal-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+                          {a.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {payments.length === 0 && advanceAllocations.length === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-200 p-6 text-center text-slate-500 text-xs">
             No payments recorded yet for this order. Outstanding balance: <strong className="text-slate-800">{formatCurrency(order.due_amount)}</strong>
           </div>
-        ) : (
+        ) : payments.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-slate-200 text-left" role="table">
               <thead className="bg-slate-50">
@@ -876,7 +948,7 @@ export function OrderDetail({
               </tbody>
             </table>
           </div>
-        )}
+        ) : null}
       </div>
 
       {/* Deliveries Table (Step 4) */}
@@ -1215,6 +1287,16 @@ export function OrderDetail({
                   <p className="text-slate-700"><span className="font-semibold">Payment Status:</span> {order.due_amount === 0 ? "PAID IN FULL" : Number(order.paid_amount) > 0 ? "PARTIALLY PAID" : "PENDING PAYMENT"}</p>
                   <p className="text-slate-700"><span className="font-semibold">Target Dispatch:</span> {formatDate(order.expected_delivery_date)}</p>
                   <p className="text-slate-700"><span className="font-semibold">Reverse Charge:</span> Applicable (No)</p>
+                  {advanceAllocations && advanceAllocations.length > 0 && (
+                    <div className="mt-1 pt-1 border-t border-slate-200 text-teal-800">
+                      <p className="font-semibold text-slate-700">Advance Adjusted:</p>
+                      {advanceAllocations.map((a, i) => (
+                        <p key={a.id || i} className="font-mono text-[11px] text-teal-900">
+                          • {formatCurrency(a.allocated_amount)} via {a.payments?.payment_number || "ADV"} ({formatDate(a.allocation_date)})
+                        </p>
+                      ))}
+                    </div>
+                  )}
                   {order.notes && <p className="text-slate-600 mt-1 italic">Note: {order.notes}</p>}
                 </div>
               </div>
@@ -1338,17 +1420,34 @@ export function OrderDetail({
                     <span className="font-mono">{formatCurrency(order.tax_amount)}</span>
                   </div>
                   <div className="flex justify-between border-t border-slate-300 pt-2 text-sm font-bold text-slate-950">
-                    <span>Invoice Total:</span>
+                    <span>Final Invoice Total:</span>
                     <span className="font-mono text-[#0F766E]">{formatCurrency(order.total_amount)}</span>
                   </div>
-                  <div className="flex justify-between text-emerald-700 pt-1">
-                    <span>Amount Paid:</span>
-                    <span className="font-mono font-semibold">{formatCurrency(order.paid_amount)}</span>
-                  </div>
-                  <div className="flex justify-between text-rose-700 font-bold">
-                    <span>Balance Due:</span>
+                  {Number(order.advance_applied || 0) > 0 && (
+                    <div className="flex justify-between text-emerald-700 font-semibold pt-1">
+                      <span>Less: Customer Advance Adjusted:</span>
+                      <span className="font-mono">-{formatCurrency(order.advance_applied)}</span>
+                    </div>
+                  )}
+                  {Number(order.paid_amount || 0) - Number(order.advance_applied || 0) > 0 && (
+                    <div className="flex justify-between text-emerald-700 pt-0.5">
+                      <span>Less: Other Payments Received:</span>
+                      <span className="font-mono">-{formatCurrency(Number(order.paid_amount || 0) - Number(order.advance_applied || 0))}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between border-t border-slate-200 pt-1.5 text-sm font-bold text-rose-700">
+                    <span>Net Amount Payable:</span>
                     <span className="font-mono">{formatCurrency(order.due_amount)}</span>
                   </div>
+                  {customerAdvanceBalance !== undefined && (
+                    <div className="flex justify-between items-center text-[11px] text-slate-600 bg-white p-2 rounded-lg mt-2 border border-slate-200">
+                      <span className="font-medium">Remaining Customer Advance:</span>
+                      <span className="font-mono font-bold text-slate-900">
+                        {formatCurrency(customerAdvanceBalance)}{" "}
+                        <span className="text-[10px] text-slate-500 font-normal block sm:inline">(Account Balance)</span>
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
 

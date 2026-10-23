@@ -53,30 +53,17 @@ export default async function OrdersPage({
 
   // 1. Fetch KPI Summary Counts and Create Order Form Dependencies
   const [
-    totalRes,
-    confirmedRes,
-    draftRes,
+    statusRowsRes,
     customersRes,
     productsRes,
     inventoryRowsRes,
-    wdSettingRes,
-    calRowsRes,
-    businessDetailsRes
+    settingsRes,
+    calRowsRes
   ] = await Promise.all([
     supabase
       .from("orders")
-      .select("*", { count: "exact", head: true })
+      .select("status")
       .eq("business_id", context.user.business_id),
-    supabase
-      .from("orders")
-      .select("*", { count: "exact", head: true })
-      .eq("business_id", context.user.business_id)
-      .eq("status", "CONFIRMED"),
-    supabase
-      .from("orders")
-      .select("*", { count: "exact", head: true })
-      .eq("business_id", context.user.business_id)
-      .eq("status", "DRAFT"),
     supabase
       .from("customers")
       .select("id, name, company_name, gst_number, customer_addresses(district, state, address_type)")
@@ -96,21 +83,23 @@ export default async function OrdersPage({
       .eq("item_type", "finished_good"),
     supabase
       .from("business_settings")
-      .select("value")
+      .select("key, value")
       .eq("business_id", context.user.business_id)
-      .eq("key", "working_days")
-      .maybeSingle(),
+      .in("key", ["working_days", "business_details"]),
     supabase
       .from("business_calendar")
       .select("calendar_date, is_working_day")
       .eq("business_id", context.user.business_id),
-    supabase
-      .from("business_settings")
-      .select("value")
-      .eq("business_id", context.user.business_id)
-      .eq("key", "business_details")
-      .maybeSingle(),
   ]);
+
+  let totalOrdersCount = 0;
+  let confirmedOrdersCount = 0;
+  let draftOrdersCount = 0;
+  (statusRowsRes.data ?? []).forEach((row: any) => {
+    totalOrdersCount++;
+    if (row.status === "CONFIRMED") confirmedOrdersCount++;
+    else if (row.status === "DRAFT") draftOrdersCount++;
+  });
 
   const stockMap = new Map<string, number>();
   (inventoryRowsRes.data ?? []).forEach((row: any) => {
@@ -120,6 +109,11 @@ export default async function OrdersPage({
   const calMap: Record<string, boolean> = {};
   (calRowsRes.data ?? []).forEach((r: any) => {
     calMap[r.calendar_date] = Boolean(r.is_working_day);
+  });
+
+  const settingsMap: Record<string, any> = {};
+  (settingsRes.data ?? []).forEach((s: any) => {
+    settingsMap[s.key] = s.value;
   });
 
   const productsWithStock = (productsRes.data ?? []).map((p: any) => ({
@@ -233,9 +227,9 @@ export default async function OrdersPage({
         sort,
       }}
       counts={{
-        total: totalRes.count ?? 0,
-        confirmed: confirmedRes.count ?? 0,
-        draft: draftRes.count ?? 0,
+        total: totalOrdersCount,
+        confirmed: confirmedOrdersCount,
+        draft: draftOrdersCount,
       }}
       permissions={{
         canCreate,
@@ -258,9 +252,9 @@ export default async function OrdersPage({
           };
         }),
         products: productsWithStock as any,
-        workingDays: wdSettingRes.data?.value as any,
+        workingDays: settingsMap["working_days"] as any,
         calendarOverrides: calMap,
-        businessDetails: businessDetailsRes.data?.value as any,
+        businessDetails: settingsMap["business_details"] as any,
       }}
       isNewModalRequested={params.new === "true" || params.new === "1"}
       queryError={

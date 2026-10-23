@@ -3,11 +3,12 @@
 import { useState, useTransition, useMemo, useEffect, useRef } from "react";
 import { useActionState } from "react";
 import Link from "next/link";
-import { createOrderAction, updateOrderAction } from "@/lib/orders/actions";
-import { Loader2, AlertCircle, Plus, Trash2, Truck, Clock, CheckCircle2, AlertTriangle, ShieldCheck, MapPin } from "lucide-react";
+import { createOrderAction, updateOrderAction, checkOrderExistsAction } from "@/lib/orders/actions";
+import { Loader2, AlertCircle, Plus, Trash2, Truck, Clock, CheckCircle2, AlertTriangle, ShieldCheck, MapPin, Wallet } from "lucide-react";
 import { INDIAN_STATES, determineGstTaxType, calculateItemGst, calculateOrderGst, type TaxType } from "@/lib/financials/gst";
 import { OrderDistrictSelect } from "./order-district-select";
 import { getStateForDistrict, getBaseDistrictName } from "@/lib/reports/indian-districts";
+import { getCustomerAdvanceBalance, type CustomerAdvanceBalance } from "@/lib/payments/actions";
 
 interface OrderFormProps {
   orderId?: string;
@@ -159,6 +160,49 @@ export function OrderForm({
   );
   const [notes, setNotes] = useState<string>(initialValues?.notes ?? "");
 
+  // Customer advance visibility and adjustment state
+  const [advanceSummary, setAdvanceSummary] = useState<CustomerAdvanceBalance | null>(null);
+  const [isLoadingAdvance, setIsLoadingAdvance] = useState(false);
+  const [useAdvance, setUseAdvance] = useState(false);
+  const [advanceAmountInput, setAdvanceAmountInput] = useState<string>("");
+  const [userEditedAdvance, setUserEditedAdvance] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    if (!customerId) {
+      setAdvanceSummary(null);
+      setIsLoadingAdvance(false);
+      setUseAdvance(false);
+      setAdvanceAmountInput("");
+      setUserEditedAdvance(false);
+      return;
+    }
+
+    setIsLoadingAdvance(true);
+    setUseAdvance(false);
+    setAdvanceAmountInput("");
+    setUserEditedAdvance(false);
+
+    getCustomerAdvanceBalance(customerId)
+      .then((res) => {
+        if (isMounted) {
+          setAdvanceSummary(res);
+          setIsLoadingAdvance(false);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to fetch customer advance balance:", err);
+        if (isMounted) {
+          setAdvanceSummary(null);
+          setIsLoadingAdvance(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [customerId]);
+
   const selectedCustomer = useMemo(
     () => customers.find((c) => c.id === customerId),
     [customers, customerId]
@@ -212,12 +256,25 @@ export function OrderForm({
 
   const isPending = isServerPending || isClientPending;
   const isSubmittingRef = useRef(false);
+  const timeoutIdRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (!isPending) {
       isSubmittingRef.current = false;
+      if (timeoutIdRef.current) {
+        clearTimeout(timeoutIdRef.current);
+        timeoutIdRef.current = null;
+      }
     }
   }, [isPending]);
+
+  useEffect(() => {
+    return () => {
+      if (timeoutIdRef.current) {
+        clearTimeout(timeoutIdRef.current);
+      }
+    };
+  }, []);
 
   // Track unsaved changes
   const isDirty = useMemo(() => {
@@ -225,12 +282,13 @@ export function OrderForm({
       const hasCustomer = Boolean(customerId);
       const hasOrderNumber = Boolean(orderNumber.trim());
       const hasNotes = Boolean(notes.trim());
+      const hasAdvance = useAdvance;
       const hasModifiedDate = orderDate !== new Date().toISOString().split("T")[0];
       const hasModifiedPriority = priority !== "NORMAL";
       const hasModifiedItems = items.some(
         (it) => Boolean(it.product_id) || Boolean(it.quantity.trim()) || (it.discount_rate.trim() !== "" && it.discount_rate.trim() !== "0") || (it.tax_rate.trim() !== "" && it.tax_rate.trim() !== "0")
       ) || items.length > 1;
-      return hasCustomer || hasOrderNumber || hasNotes || hasModifiedDate || hasModifiedPriority || hasModifiedItems;
+      return hasCustomer || hasOrderNumber || hasNotes || hasAdvance || hasModifiedDate || hasModifiedPriority || hasModifiedItems;
     }
     const customerChanged = customerId !== (initialValues.customer_id || "");
     const numberChanged = orderNumber.trim() !== (initialValues.order_number || "");
@@ -239,7 +297,7 @@ export function OrderForm({
     const notesChanged = notes.trim() !== (initialValues.notes || "");
     const itemsChanged = JSON.stringify(items) !== JSON.stringify(initialItems ?? []);
     return customerChanged || numberChanged || dateChanged || priorityChanged || notesChanged || itemsChanged;
-  }, [customerId, orderNumber, orderDate, priority, notes, items, initialValues, initialItems]);
+  }, [customerId, orderNumber, orderDate, priority, notes, items, initialValues, initialItems, useAdvance]);
 
   useEffect(() => {
     onDirtyChange?.(isDirty);
@@ -504,12 +562,40 @@ export function OrderForm({
     formData.set("items", JSON.stringify(sanitizedItems));
     formData.set("district", district ? getBaseDistrictName(district) : "");
     formData.set("place_of_supply", effectivePos);
+    formData.set("use_advance", useAdvance ? "true" : "false");
+    formData.set("advance_amount", useAdvance ? effectiveAdvanceApplied.toString() : "0");
+
+    if (useAdvance && effectiveAdvanceApplied <= 0 && maxEligibleAdvance > 0) {
+      setClientError("Please enter a valid advance amount greater than ₹0 to apply, or select No.");
+      return;
+    }
+    if (useAdvance && Number(advanceAmountInput) > maxEligibleAdvance + 0.001) {
+      setClientError(`Advance amount cannot exceed eligible balance (₹${maxEligibleAdvance.toFixed(2)}).`);
+      return;
+    }
 
     if (returnTo) {
       formData.set("return_to", returnTo);
     }
 
     isSubmittingRef.current = true;
+    if (timeoutIdRef.current) clearTimeout(timeoutIdRef.current);
+    timeoutIdRef.current = setTimeout(async () => {
+      if (isSubmittingRef.current) {
+        try {
+          const exists = await checkOrderExistsAction(orderNumber.trim());
+          if (exists) {
+            window.location.href = returnTo === "orders" ? "/orders?notice=order_created" : "/orders?notice=order_created";
+            return;
+          }
+        } catch {
+          // Ignore network check failure
+        }
+        setClientError("Creating the order took longer than expected. Please check your orders list or retry safely.");
+        isSubmittingRef.current = false;
+      }
+    }, 15000);
+
     startTransition(() => {
       formAction(formData);
     });
@@ -553,6 +639,45 @@ export function OrderForm({
     tax: gstSummary.taxAmount,
     grandTotal: gstSummary.totalAmount,
     taxType: gstSummary.taxType,
+  };
+
+  // Authoritative advance adjustment calculations & real-time recalculations
+  const availableAdvance = advanceSummary?.availableAdvance ?? 0;
+  const orderEligibleTotal = summary.grandTotal;
+  const maxEligibleAdvance = Math.min(availableAdvance, orderEligibleTotal);
+
+  // Sync default max eligible advance if user has selected Yes and hasn't manually modified the input
+  useEffect(() => {
+    if (useAdvance && !userEditedAdvance) {
+      setAdvanceAmountInput(maxEligibleAdvance > 0 ? maxEligibleAdvance.toFixed(2) : "0");
+    }
+  }, [useAdvance, userEditedAdvance, maxEligibleAdvance]);
+
+  const effectiveAdvanceApplied = useAdvance
+    ? Math.min(Math.max(0, Number(advanceAmountInput) || 0), maxEligibleAdvance)
+    : 0;
+
+  const remainingCustomerAdvance = Math.max(0, availableAdvance - effectiveAdvanceApplied);
+  const netAmountPayable = Math.max(0, orderEligibleTotal - effectiveAdvanceApplied);
+
+  const handleAdvanceChoice = (choice: boolean) => {
+    setUseAdvance(choice);
+    setUserEditedAdvance(false);
+    if (choice) {
+      setAdvanceAmountInput(maxEligibleAdvance > 0 ? maxEligibleAdvance.toFixed(2) : "0");
+    } else {
+      setAdvanceAmountInput("");
+    }
+  };
+
+  const handleApplyMaxAdvance = () => {
+    setUserEditedAdvance(false);
+    setAdvanceAmountInput(maxEligibleAdvance > 0 ? maxEligibleAdvance.toFixed(2) : "0");
+  };
+
+  const handleAdvanceAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setUserEditedAdvance(true);
+    setAdvanceAmountInput(e.target.value);
   };
 
   const deliveryPreview = (() => {
@@ -745,6 +870,189 @@ export function OrderForm({
               ))}
             </select>
           </div>
+
+          {/* CUSTOMER ADVANCE SUMMARY & ADJUSTMENT WORKFLOW */}
+          {customerId && (
+            <div className="col-span-1 md:col-span-2">
+              {isLoadingAdvance ? (
+                <div className="rounded-xl border border-teal-100 bg-teal-50/50 p-3.5 flex items-center gap-2.5 text-xs text-teal-800 animate-pulse">
+                  <Loader2 className="w-4 h-4 animate-spin text-[#0F766E] shrink-0" />
+                  <span className="font-medium">Fetching verified customer advance balance from ledger records...</span>
+                </div>
+              ) : advanceSummary ? (
+                advanceSummary.availableAdvance > 0 ? (
+                  <div className="rounded-xl border border-teal-200/90 bg-gradient-to-br from-teal-50/60 via-slate-50 to-white p-4 shadow-2xs space-y-3.5">
+                    {/* Header Strip with Badges */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-teal-100">
+                      <div className="flex items-center gap-2">
+                        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-teal-100 text-[#0F766E]">
+                          <Wallet className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-slate-900">Customer Advance Account</span>
+                          <span className="ml-2 text-[10px] font-semibold text-teal-700 bg-teal-100/80 px-2 py-0.5 rounded-full border border-teal-200">
+                            Verified Credit Balance
+                          </span>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <span className="block text-[10px] uppercase tracking-wider text-slate-500 font-bold">Available Advance</span>
+                        <span className="font-mono text-base font-bold text-emerald-700">
+                          ₹{advanceSummary.availableAdvance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Three Key Summary Badges */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                      <div className="rounded-lg bg-white border border-slate-200/80 p-2.5 shadow-2xs">
+                        <span className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Available Advance Balance</span>
+                        <p className="font-mono text-sm font-bold text-[#0F766E] mt-0.5">
+                          ₹{advanceSummary.availableAdvance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-white border border-slate-200/80 p-2.5 shadow-2xs">
+                        <span className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Total Advance Received</span>
+                        <p className="font-mono text-sm font-semibold text-slate-800 mt-0.5">
+                          ₹{advanceSummary.totalAdvanceReceived.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-white border border-slate-200/80 p-2.5 shadow-2xs">
+                        <span className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Already Allocated to Orders</span>
+                        <p className="font-mono text-sm font-semibold text-slate-600 mt-0.5">
+                          ₹{advanceSummary.totalAdvanceAllocated.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Prompt & Yes/No Choice (Default No) */}
+                    {!orderId && (
+                      <div className="pt-2 border-t border-slate-200/80 space-y-3">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                          <p className="text-xs sm:text-sm font-semibold text-slate-800">
+                            Customer has{" "}
+                            <span className="font-mono font-bold text-emerald-700">
+                              ₹{advanceSummary.availableAdvance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>{" "}
+                            available advance. Do you want to use it for this order?
+                          </p>
+
+                          <div className="inline-flex rounded-lg border border-slate-300 p-0.5 bg-slate-100 shrink-0 self-start sm:self-auto">
+                            <button
+                              type="button"
+                              onClick={() => handleAdvanceChoice(false)}
+                              className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                                !useAdvance
+                                  ? "bg-white text-slate-900 shadow-2xs border border-slate-200"
+                                  : "text-slate-600 hover:text-slate-900"
+                              }`}
+                            >
+                              No
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleAdvanceChoice(true)}
+                              className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                                useAdvance
+                                  ? "bg-[#0F766E] text-white shadow-2xs"
+                                  : "text-slate-600 hover:text-slate-900"
+                              }`}
+                            >
+                              Yes
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Preserved Full Advance Message if No */}
+                        {!useAdvance && (
+                          <p className="text-[11px] text-slate-500 italic bg-white/70 rounded-md p-2 border border-slate-100">
+                            Full advance balance of ₹{advanceSummary.availableAdvance.toLocaleString("en-IN", { minimumFractionDigits: 2 })} will be preserved. No advance will be deducted for this order.
+                          </p>
+                        )}
+
+                        {/* Interactive Amount Adjustment if Yes */}
+                        {useAdvance && (
+                          <div className="rounded-xl bg-white border border-teal-200 p-3.5 space-y-3 shadow-2xs">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                              <div>
+                                <label htmlFor="advance_amount_input" className="block text-xs font-bold text-slate-800">
+                                  Advance Amount to Adjust (₹)
+                                </label>
+                                <p className="text-[11px] text-slate-500">
+                                  Max eligible: <span className="font-mono font-semibold text-teal-800">₹{maxEligibleAdvance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> (Min of available advance and order total)
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={handleApplyMaxAdvance}
+                                className="text-xs font-semibold text-[#0F766E] hover:text-[#0D655E] bg-teal-50 hover:bg-teal-100/80 px-2.5 py-1 rounded-md border border-teal-200 transition cursor-pointer self-start sm:self-auto"
+                              >
+                                Apply Max (₹{maxEligibleAdvance.toLocaleString("en-IN", { minimumFractionDigits: 2 })})
+                              </button>
+                            </div>
+
+                            <div className="relative">
+                              <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500 font-bold text-sm">
+                                ₹
+                              </span>
+                              <input
+                                type="number"
+                                id="advance_amount_input"
+                                step="0.01"
+                                min="0.01"
+                                max={maxEligibleAdvance}
+                                value={advanceAmountInput}
+                                onChange={handleAdvanceAmountChange}
+                                placeholder={maxEligibleAdvance.toFixed(2)}
+                                className="w-full pl-8 pr-3 py-2 rounded-lg border border-slate-300 text-sm font-mono font-bold text-slate-900 focus:border-[#0F766E] focus:outline-none focus:ring-1 focus:ring-[#0F766E]"
+                              />
+                            </div>
+
+                            {/* Adjustment & Balance Preview Chips */}
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 text-xs">
+                              <div className="p-2.5 rounded-lg bg-teal-50/70 border border-teal-100">
+                                <span className="block text-[10px] uppercase font-bold text-teal-800">Advance Applied</span>
+                                <span className="font-mono font-bold text-teal-900 text-sm">
+                                  ₹{effectiveAdvanceApplied.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </span>
+                              </div>
+                              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+                                <span className="block text-[10px] uppercase font-bold text-slate-600">Remaining Customer Advance</span>
+                                <span className="font-mono font-bold text-slate-800 text-sm">
+                                  ₹{remainingCustomerAdvance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </span>
+                              </div>
+                              <div className="p-2.5 rounded-lg bg-amber-50/70 border border-amber-200">
+                                <span className="block text-[10px] uppercase font-bold text-amber-800">Net Amount Payable</span>
+                                <span className="font-mono font-bold text-amber-900 text-sm">
+                                  ₹{netAmountPayable.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3.5 space-y-1.5 text-xs">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-slate-700">
+                        <Wallet className="w-4 h-4 text-slate-400" />
+                        <span className="font-semibold">No available advance for this customer.</span>
+                      </div>
+                      <span className="font-mono font-bold text-slate-500">₹0.00</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      {advanceSummary.totalAdvanceReceived > 0
+                        ? `Total advance received: ₹${advanceSummary.totalAdvanceReceived.toLocaleString("en-IN", { minimumFractionDigits: 2 })} | Fully allocated (₹${advanceSummary.totalAdvanceAllocated.toLocaleString("en-IN", { minimumFractionDigits: 2 })}) to previous orders.`
+                        : "This customer has no recorded advance payment receipts."}
+                    </p>
+                  </div>
+                )
+              ) : null}
+            </div>
+          )}
 
           <div>
             <div className="flex items-center justify-between mb-1">
@@ -1462,11 +1770,35 @@ export function OrderForm({
               </div>
 
               <div className="flex justify-between text-base font-bold text-slate-900 border-t border-slate-200 pt-2.5">
-                <span>Grand Total:</span>
+                <span>Final Order Total:</span>
                 <span className="text-[#0F766E] font-mono text-lg font-bold">
                   ₹{summary.grandTotal.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </div>
+
+              {useAdvance && effectiveAdvanceApplied > 0 && (
+                <>
+                  <div className="flex justify-between text-sm font-semibold text-emerald-700 pt-1">
+                    <span>Less: Customer Advance Adjusted:</span>
+                    <span className="font-mono">
+                      -₹{effectiveAdvanceApplied.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-base font-bold text-slate-950 border-t border-slate-300 pt-1.5">
+                    <span>Net Amount Payable:</span>
+                    <span className="font-mono text-rose-600 text-lg">
+                      ₹{netAmountPayable.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-xs text-slate-600 bg-slate-50 p-2.5 rounded-lg mt-2 border border-slate-200">
+                    <span className="font-medium">Remaining Customer Advance:</span>
+                    <span className="font-mono font-bold text-slate-900">
+                      ₹{remainingCustomerAdvance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{" "}
+                      <span className="text-[10px] text-slate-500 font-normal">(Account Balance)</span>
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}

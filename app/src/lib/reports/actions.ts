@@ -61,8 +61,9 @@ import {
 // ============================================
 
 function resolveDateRange(filters: ReportFilters): { startDate: string | null; endDate: string | null } {
+  const effectiveRange = filters.dateRange || (!filters.startDate && !filters.endDate ? "this_month" : undefined);
   return resolveFinancialDateRange({
-    dateRange: filters.dateRange,
+    dateRange: effectiveRange,
     customStartDate: filters.startDate,
     customEndDate: filters.endDate,
   });

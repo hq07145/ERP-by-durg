@@ -37,7 +37,11 @@ export function SalesReportClient() {
   // Initialize filters from URL with reference preservation to avoid duplicate fetches
   const initializeFromSearchParams = useCallback(() => {
     const params: SalesReportFilters = {};
-    if (searchParams.get("dateRange")) params.dateRange = searchParams.get("dateRange") as SalesReportFilters["dateRange"];
+    if (searchParams.get("dateRange")) {
+      params.dateRange = searchParams.get("dateRange") as SalesReportFilters["dateRange"];
+    } else if (!searchParams.get("startDate") && !searchParams.get("endDate")) {
+      params.dateRange = "this_month";
+    }
     if (searchParams.get("startDate")) params.startDate = searchParams.get("startDate")!;
     if (searchParams.get("endDate")) params.endDate = searchParams.get("endDate")!;
     if (searchParams.get("district")) params.district = searchParams.get("district")!;

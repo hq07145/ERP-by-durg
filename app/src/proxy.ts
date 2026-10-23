@@ -23,6 +23,13 @@ export async function proxy(request: NextRequest) {
     },
   });
 
+  // Only refresh session if an auth token cookie actually exists.
+  // Avoids a 1.3s blocking remote network call on unauthenticated / public requests.
+  const hasAuthToken = request.cookies.getAll().some((c) => c.name.includes("-auth-token"));
+  if (!hasAuthToken) {
+    return response;
+  }
+
   await supabase.auth.getUser();
   return response;
 }

@@ -9,6 +9,7 @@ import type {
   PaymentWithDetails,
   CustomerLedgerEntryWithDetails,
   CustomerSummary,
+  CustomerAdvanceTransaction,
   CreatePaymentFormValues,
   UpdatePaymentFormValues,
   DeletePaymentFormValues,
@@ -34,7 +35,8 @@ const VALID_PAYMENT_STATUSES: PaymentStatus[] = [
 ];
 
 // Helper to keep order paid and due amounts mathematically authoritative:
-// paid = sum(successful payments), due = max(0, total - paid)
+// paid = sum(successful direct payments) + sum(active customer advance allocations)
+// due = max(0, total - paid)
 async function syncAuthoritativeOrderTotals(
   supabase: any,
   businessId: string,
@@ -51,21 +53,34 @@ async function syncAuthoritativeOrderTotals(
     throw new Error("Order not found or inaccessible for financial sync.");
   }
 
-  const { data: payments, error: payErr } = await supabase
-    .from("payments")
-    .select("amount")
-    .eq("business_id", businessId)
-    .eq("order_id", orderId)
-    .eq("status", "SUCCESS");
+  const [payRes, allocRes] = await Promise.all([
+    supabase
+      .from("payments")
+      .select("amount")
+      .eq("business_id", businessId)
+      .eq("order_id", orderId)
+      .eq("status", "SUCCESS"),
+    supabase
+      .from("customer_advance_allocations")
+      .select("allocated_amount")
+      .eq("business_id", businessId)
+      .eq("order_id", orderId)
+      .eq("status", "ACTIVE"),
+  ]);
 
-  if (payErr) {
-    throw new Error(`Failed to sum order payments: ${payErr.message}`);
+  if (payRes.error) {
+    throw new Error(`Failed to sum order payments: ${payRes.error.message}`);
   }
 
-  const totalPaid = (payments ?? []).reduce(
+  const totalDirectPaid = (payRes.data ?? []).reduce(
     (acc: number, p: any) => acc + (Number(p.amount) || 0),
     0
   );
+  const totalAdvanceApplied = (allocRes.data ?? []).reduce(
+    (acc: number, a: any) => acc + (Number(a.allocated_amount) || 0),
+    0
+  );
+  const totalPaid = totalDirectPaid + totalAdvanceApplied;
   const totalAmount = Number(order.total_amount) || 0;
   const totalDue = Math.max(0, totalAmount - totalPaid);
 
@@ -74,6 +89,7 @@ async function syncAuthoritativeOrderTotals(
     .update({
       paid_amount: totalPaid,
       due_amount: totalDue,
+      advance_applied: totalAdvanceApplied,
       updated_at: new Date().toISOString(),
     })
     .eq("id", orderId)
@@ -81,6 +97,87 @@ async function syncAuthoritativeOrderTotals(
 
   return { paid: totalPaid, due: totalDue, total: totalAmount };
 }
+
+export interface CustomerAdvanceBalance {
+  availableAdvance: number;
+  totalAdvanceReceived: number;
+  totalAdvanceAllocated: number;
+}
+
+export async function getCustomerAdvanceBalance(
+  customerId: string
+): Promise<CustomerAdvanceBalance> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!customerId || !uuidRegex.test(customerId)) {
+    return { availableAdvance: 0, totalAdvanceReceived: 0, totalAdvanceAllocated: 0 };
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) {
+    return { availableAdvance: 0, totalAdvanceReceived: 0, totalAdvanceAllocated: 0 };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc("get_customer_advance_balance", {
+      p_business_id: context.user.business_id,
+      p_customer_id: customerId,
+    });
+
+    if (error) {
+      console.warn("get_customer_advance_balance RPC error:", error.message || error);
+    } else if (data && data.length > 0) {
+      return {
+        availableAdvance: Math.max(0, Number(data[0].available_advance) || 0),
+        totalAdvanceReceived: Math.max(0, Number(data[0].total_advance_received) || 0),
+        totalAdvanceAllocated: Math.max(0, Number(data[0].total_advance_allocated) || 0),
+      };
+    }
+  } catch (err) {
+    console.warn("getCustomerAdvanceBalance RPC exception:", err);
+  }
+
+  // Authoritative fallback calculation using direct table queries
+  try {
+    const [paymentsRes, allocsRes] = await Promise.all([
+      supabase
+        .from("payments")
+        .select("amount")
+        .eq("business_id", context.user.business_id)
+        .eq("customer_id", customerId)
+        .is("order_id", null)
+        .eq("status", "SUCCESS"),
+      supabase
+        .from("customer_advance_allocations")
+        .select("allocated_amount")
+        .eq("business_id", context.user.business_id)
+        .eq("customer_id", customerId)
+        .eq("status", "ACTIVE"),
+    ]);
+
+    const received = (paymentsRes.data ?? []).reduce(
+      (sum: number, p: any) => sum + (Number(p.amount) || 0),
+      0
+    );
+    const allocated = (allocsRes.data ?? []).reduce(
+      (sum: number, a: any) => sum + (Number(a.allocated_amount) || 0),
+      0
+    );
+    const available = Math.max(0, received - allocated);
+
+    return {
+      availableAdvance: available,
+      totalAdvanceReceived: received,
+      totalAdvanceAllocated: allocated,
+    };
+  } catch (fallbackErr) {
+    console.error("getCustomerAdvanceBalance fallback exception:", fallbackErr);
+    return { availableAdvance: 0, totalAdvanceReceived: 0, totalAdvanceAllocated: 0 };
+  }
+}
+
 
 // ============================================
 // PAYMENT QUERY FUNCTIONS
@@ -306,7 +403,11 @@ export async function getCustomerSummary(customerId: string): Promise<CustomerSu
         customer_company: s.customer_company,
         total_purchases: Number(s.total_purchases) || 0,
         total_paid: Number(s.total_paid) || 0,
-        total_due: Number(s.total_due) || 0,
+        total_due: Math.max(0, Number(s.total_due) || 0),
+        available_advance: Math.max(0, Number(s.available_advance) || 0),
+        total_advance_received: Number(s.total_advance_received) || 0,
+        total_advance_allocated: Number(s.total_advance_allocated) || 0,
+        reconciliation_warning: s.reconciliation_warning || null,
         last_payment_date: s.last_payment_date,
         last_payment_amount: s.last_payment_amount ? Number(s.last_payment_amount) : null,
       };
@@ -326,21 +427,62 @@ export async function getCustomerSummary(customerId: string): Promise<CustomerSu
 
     if (!customer) return null;
 
-    const { data: ledger } = await supabase
-      .from("customer_ledger")
-      .select("entry_type, debit, credit, entry_date")
-      .eq("customer_id", customerId)
-      .eq("business_id", context.user.business_id);
+    const [
+      { data: ledger },
+      advBal,
+      { data: activeOrders },
+      { data: payments }
+    ] = await Promise.all([
+      supabase
+        .from("customer_ledger")
+        .select("entry_type, debit, credit, entry_date")
+        .eq("customer_id", customerId)
+        .eq("business_id", context.user.business_id),
+      getCustomerAdvanceBalance(customerId),
+      supabase
+        .from("orders")
+        .select("total_amount, due_amount, status")
+        .eq("customer_id", customerId)
+        .eq("business_id", context.user.business_id)
+        .not("status", "eq", "CANCELLED"),
+      supabase
+        .from("payments")
+        .select("amount, status, payment_date")
+        .eq("customer_id", customerId)
+        .eq("business_id", context.user.business_id)
+        .eq("status", "SUCCESS")
+        .order("payment_date", { ascending: true })
+    ]);
 
     const entries = ledger ?? [];
-    const total_purchases = entries
+    const ledgerPurchases = entries
       .filter((e) => e.entry_type === "INVOICE")
       .reduce((sum, e) => sum + (Number(e.debit) || 0), 0);
-    const total_paid = entries
-      .filter((e) => e.entry_type === "PAYMENT")
-      .reduce((sum, e) => sum + (Number(e.credit) || 0), 0);
-    const paymentEntries = entries.filter((e) => e.entry_type === "PAYMENT");
-    const lastPayment = paymentEntries[paymentEntries.length - 1];
+    const ordersTotal = (activeOrders ?? []).reduce(
+      (sum, o) => sum + (Number(o.total_amount) || 0),
+      0
+    );
+    const total_purchases = Math.max(ledgerPurchases, ordersTotal);
+
+    const clearedPayments = payments ?? [];
+    const total_paid = clearedPayments.reduce(
+      (sum, p) => sum + (Number(p.amount) || 0),
+      0
+    );
+
+    const total_due = (activeOrders ?? []).reduce(
+      (sum, o) => sum + Math.max(0, Number(o.due_amount) || 0),
+      0
+    );
+
+    const lastPayment = clearedPayments[clearedPayments.length - 1];
+
+    const netLedger = total_purchases - total_paid;
+    const netDues = total_due - advBal.availableAdvance;
+    const reconciliation_warning =
+      Math.abs(netLedger - netDues) > 0.01
+        ? `Reconciliation note: Lifetime purchases less payments differs from net receivables. Please review historical records.`
+        : null;
 
     return {
       customer_id: customerId,
@@ -348,13 +490,145 @@ export async function getCustomerSummary(customerId: string): Promise<CustomerSu
       customer_company: customer.company_name,
       total_purchases,
       total_paid,
-      total_due: Math.max(0, total_purchases - total_paid),
-      last_payment_date: lastPayment?.entry_date ?? null,
-      last_payment_amount: lastPayment ? Number(lastPayment.credit) || 0 : null,
+      total_due: Math.max(0, total_due),
+      available_advance: advBal.availableAdvance,
+      total_advance_received: advBal.totalAdvanceReceived,
+      total_advance_allocated: advBal.totalAdvanceAllocated,
+      reconciliation_warning,
+      last_payment_date: lastPayment?.payment_date ?? null,
+      last_payment_amount: lastPayment ? Number(lastPayment.amount) || 0 : null,
     };
   } catch (err) {
     console.warn("getCustomerSummary exception:", err);
     return null;
+  }
+}
+
+export async function getCustomerAdvanceTransactions(
+  customerId: string
+): Promise<CustomerAdvanceTransaction[]> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+  if (!hasPermission({ permissions: context.permissions }, "payments.view")) {
+    return [];
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return [];
+
+  try {
+    // 1. Fetch advance receipts (order_id IS NULL)
+    const { data: receipts } = await supabase
+      .from("payments")
+      .select("id, payment_number, payment_date, amount, reference, notes, status, created_at")
+      .eq("business_id", context.user.business_id)
+      .eq("customer_id", customerId)
+      .is("order_id", null)
+      .order("payment_date", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    // 2. Fetch advance allocations linked to orders
+    const { data: allocations } = await supabase
+      .from("customer_advance_allocations")
+      .select("id, payment_id, order_id, allocated_amount, allocation_date, status, notes, created_at, orders(order_number)")
+      .eq("business_id", context.user.business_id)
+      .eq("customer_id", customerId)
+      .order("allocation_date", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    type RawItem = {
+      id: string;
+      date: string;
+      createdAt: string;
+      type: "RECEIPT" | "ALLOCATION";
+      receipt_number: string | null;
+      reference: string | null;
+      order_id: string | null;
+      order_number: string | null;
+      amount_received: number;
+      amount_allocated: number;
+      status: string;
+      notes: string | null;
+    };
+
+    const combined: RawItem[] = [];
+
+    for (const r of receipts ?? []) {
+      combined.push({
+        id: r.id,
+        date: r.payment_date,
+        createdAt: r.created_at,
+        type: "RECEIPT",
+        receipt_number: r.payment_number,
+        reference: r.reference,
+        order_id: null,
+        order_number: null,
+        amount_received: Number(r.amount) || 0,
+        amount_allocated: 0,
+        status: r.status,
+        notes: r.notes,
+      });
+    }
+
+    for (const a of allocations ?? []) {
+      const ordNum = (a.orders as any)?.order_number || null;
+      combined.push({
+        id: a.id,
+        date: a.allocation_date,
+        createdAt: a.created_at,
+        type: "ALLOCATION",
+        receipt_number: null,
+        reference: null,
+        order_id: a.order_id,
+        order_number: ordNum,
+        amount_received: 0,
+        amount_allocated: Number(a.allocated_amount) || 0,
+        status: a.status,
+        notes: a.notes,
+      });
+    }
+
+    combined.sort((a, b) => {
+      const d1 = new Date(a.date).getTime();
+      const d2 = new Date(b.date).getTime();
+      if (d1 !== d2) return d1 - d2;
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    });
+
+    let running = 0;
+    const result: CustomerAdvanceTransaction[] = [];
+
+    for (const item of combined) {
+      if (item.type === "RECEIPT") {
+        if (item.status === "SUCCESS") {
+          running += item.amount_received;
+        }
+      } else if (item.type === "ALLOCATION") {
+        if (item.status === "ACTIVE") {
+          running = Math.max(0, running - item.amount_allocated);
+        }
+      }
+
+      result.push({
+        id: item.id,
+        date: item.date,
+        type: item.type,
+        receipt_number: item.receipt_number,
+        reference: item.reference,
+        order_id: item.order_id,
+        order_number: item.order_number,
+        amount_received: item.amount_received,
+        amount_allocated: item.amount_allocated,
+        running_advance_balance: running,
+        status: item.status,
+        notes: item.notes,
+      });
+    }
+
+    return result.reverse();
+  } catch (err) {
+    console.warn("getCustomerAdvanceTransactions exception:", err);
+    return [];
   }
 }
 
