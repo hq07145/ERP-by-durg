@@ -2417,14 +2417,44 @@ export async function exportSalesReport(
   } else if (variant === "sale_details_product_wise") {
     const filename = `sale_details_product_wise_${dateStr}.${format === "excel" ? "xls" : format}`;
 
+    // Collect all distinct product IDs present in filtered orders
+    const productIdsInOrders = new Set<string>();
+    for (const order of filteredOrders) {
+      for (const item of order.items || []) {
+        if (item.product_id) {
+          productIdsInOrders.add(item.product_id);
+        }
+      }
+    }
+
+    // Fetch the latest configured product names and SKUs directly from the products table
+    const dbProductMap = new Map<string, { id: string; name: string; sku: string | null }>();
+    if (productIdsInOrders.size > 0) {
+      const { data: dbProducts } = await supabase
+        .from("products")
+        .select("id, name, sku")
+        .in("id", Array.from(productIdsInOrders));
+
+      for (const p of dbProducts || []) {
+        dbProductMap.set(p.id, {
+          id: p.id,
+          name: p.name || "Product",
+          sku: p.sku || null,
+        });
+      }
+    }
+
     const productMap = new Map<string, { id: string; name: string; sku: string | null }>();
     for (const order of filteredOrders) {
       for (const item of order.items || []) {
+        if (!item.product_id) continue;
         if (!productMap.has(item.product_id)) {
+          const dbProd = dbProductMap.get(item.product_id);
+          const resolvedName = dbProd?.name || item.product?.name || item.product_name || "Product";
           productMap.set(item.product_id, {
             id: item.product_id,
-            name: item.product_name || item.product?.name || "Product",
-            sku: item.product?.sku || null,
+            name: resolvedName,
+            sku: dbProd?.sku || item.product?.sku || null,
           });
         }
       }

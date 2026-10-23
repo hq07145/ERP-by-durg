@@ -1216,7 +1216,7 @@ export function generateSaleDetailsProductWiseCSV(data: SaleDetailsProductWiseDa
     "GST Number",
     "Bill No.",
     "Bill Date",
-    ...data.products.map((p) => (p.sku ? `${p.name} (${p.sku})` : p.name)),
+    ...data.products.map((p) => p.name),
     "Total Qty",
   ];
 
@@ -1296,7 +1296,7 @@ export function generateSaleDetailsProductWiseExcel(data: SaleDetailsProductWise
         <th colspan="${Math.max(1, numProducts + 1)}" class="center" style="background-color: #f1f5f9;">Sale Details</th>
       </tr>
       <tr>
-        ${data.products.map((p) => `<th class="num">${sanitizeExcel(p.sku ? `${p.name} (${p.sku})` : p.name)}</th>`).join("")}
+        ${data.products.map((p) => `<th class="num">${sanitizeExcel(p.name)}</th>`).join("")}
         <th class="num">Total Qty</th>
       </tr>
     </thead>
@@ -1341,7 +1341,7 @@ export function generateSaleDetailsProductWisePDF(data: SaleDetailsProductWiseDa
 
   const headRow2: any[] = [
     ...data.products.map((p) => {
-      let label = p.sku ? `${p.name}\n(${p.sku})` : p.name;
+      let label = p.name;
       return { content: label, styles: { halign: "right", valign: "bottom" } };
     }),
     { content: "Total\nQty", styles: { halign: "right", valign: "bottom", fontStyle: "bold" } },
