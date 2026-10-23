@@ -42,7 +42,7 @@ export default async function OrderPage({ params, searchParams }: PageProps) {
       .single(),
     supabase
       .from("order_items")
-      .select("id, business_id, order_id, product_id, product_name, quantity, unit_price, discount_rate, tax_rate, line_total, taxable_amount, cgst_rate, cgst_amount, sgst_rate, sgst_amount, igst_rate, igst_amount, created_at, updated_at, products(name, sku, unit)")
+      .select("id, business_id, order_id, product_id, product_name, quality_grade, variant_id, quantity, unit_price, discount_rate, tax_rate, line_total, taxable_amount, cgst_rate, cgst_amount, sgst_rate, sgst_amount, igst_rate, igst_amount, created_at, updated_at, products(name, sku, unit, quality_grade)")
       .eq("business_id", context.user.business_id)
       .eq("order_id", id)
       .order("created_at"),
@@ -139,12 +139,14 @@ export default async function OrderPage({ params, searchParams }: PageProps) {
     const resolvedName = (i.product_name && i.product_name.trim()) || (prod?.name && prod.name.trim()) || "Product unavailable";
     const resolvedSku = prod?.sku ?? null;
     const resolvedUnit = prod?.unit ?? "";
+    const resolvedQualityGrade = i.quality_grade || prod?.quality_grade || null;
 
     return {
       ...i,
       product_name: resolvedName,
       product_sku: resolvedSku,
       product_unit: resolvedUnit,
+      quality_grade: resolvedQualityGrade,
     };
   });
 

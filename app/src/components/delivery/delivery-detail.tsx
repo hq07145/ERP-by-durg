@@ -36,6 +36,7 @@ import {
   completeDelivery,
   cancelDelivery,
 } from "@/lib/delivery/actions";
+import { validateAndNormalizeVehicleNumber, validateDriverMobile } from "@/lib/delivery/validation";
 
 interface DeliveryDetailProps {
   delivery: DeliveryWithDetails;
@@ -63,8 +64,11 @@ export function DeliveryDetail({
   const [showDispatchModal, setShowDispatchModal] = useState(false);
   const [dispatchVehicle, setDispatchVehicle] = useState(delivery.vehicle || "");
   const [dispatchDriver, setDispatchDriver] = useState(delivery.driver || "");
+  const [dispatchDriverPhone, setDispatchDriverPhone] = useState(delivery.driver_phone || "");
+  const [dispatchDateTime, setDispatchDateTime] = useState(() => new Date().toISOString().slice(0, 16));
   const [dispatchTracking, setDispatchTracking] = useState(delivery.tracking_number || "");
   const [dispatchNotes, setDispatchNotes] = useState("");
+  const [dispatchModalError, setDispatchModalError] = useState<string | null>(null);
 
   const [showCompleteModal, setShowCompleteModal] = useState(false);
   const [proofUrl, setProofUrl] = useState(delivery.proof_document_url || "");
@@ -86,13 +90,29 @@ export function DeliveryDetail({
   const validTransitions = DELIVERY_STATUS_TRANSITIONS[delivery.status] || [];
 
   const handleConfirmDispatch = () => {
+    setDispatchModalError(null);
+    const vRes = validateAndNormalizeVehicleNumber(dispatchVehicle);
+    if (!vRes.isValid) {
+      setDispatchModalError(vRes.error || "A valid vehicle/truck number is required.");
+      return;
+    }
+    if (dispatchDriverPhone.trim()) {
+      const pRes = validateDriverMobile(dispatchDriverPhone);
+      if (!pRes.isValid) {
+        setDispatchModalError(pRes.error || "Invalid driver phone number.");
+        return;
+      }
+    }
+
     setError(null);
     startTransition(async () => {
       try {
         await dispatchDelivery({
           delivery_id: delivery.id,
-          vehicle: dispatchVehicle.trim() || undefined,
+          vehicle: vRes.normalized || dispatchVehicle.trim(),
           driver: dispatchDriver.trim() || undefined,
+          driver_phone: dispatchDriverPhone.trim() || undefined,
+          dispatched_at: dispatchDateTime ? new Date(dispatchDateTime).toISOString() : undefined,
           tracking_number: dispatchTracking.trim() || undefined,
           notes: dispatchNotes.trim() || undefined,
         });
@@ -219,15 +239,31 @@ export function DeliveryDetail({
                 {DELIVERY_STATUS_LABELS[delivery.status]}
               </span>
             </div>
-            <p className="text-xs text-slate-500 mt-1">
-              Order:{" "}
-              <Link
-                href={`/orders/${delivery.order_id}`}
-                className="font-mono font-semibold text-[#0F766E] hover:underline"
-              >
-                {delivery.order_number}
-              </Link>{" "}
-              • Customer: <strong className="text-slate-700">{delivery.customer_name ?? "No Customer"}</strong>
+            <p className="text-xs text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
+              <span>
+                Order:{" "}
+                <Link
+                  href={`/orders/${delivery.order_id}`}
+                  className="font-mono font-semibold text-[#0F766E] hover:underline"
+                >
+                  {delivery.order_number}
+                </Link>
+              </span>
+              <span>•</span>
+              <span>
+                Customer: <strong className="text-slate-700">{delivery.customer_name ?? "No Customer"}</strong>
+              </span>
+              {delivery.invoice_number && (
+                <>
+                  <span>•</span>
+                  <span>
+                    Invoice:{" "}
+                    <strong className="font-mono text-slate-900 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                      {delivery.invoice_number}
+                    </strong>
+                  </span>
+                </>
+              )}
             </p>
           </div>
 
@@ -254,8 +290,17 @@ export function DeliveryDetail({
         </div>
 
         {/* Shipment Details Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-xs">
-          <div className="bg-slate-50 p-3.5 rounded-lg">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 text-xs">
+          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100">
+            <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
+              Invoice Number
+            </span>
+            <span className="font-mono font-bold text-slate-900 text-sm mt-0.5 block">
+              {delivery.invoice_number ?? "—"}
+            </span>
+          </div>
+
+          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100">
             <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
               Expected Delivery
             </span>
@@ -266,7 +311,7 @@ export function DeliveryDetail({
             </span>
           </div>
 
-          <div className="bg-slate-50 p-3.5 rounded-lg">
+          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100">
             <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
               Tracking Number
             </span>
@@ -275,7 +320,7 @@ export function DeliveryDetail({
             </span>
           </div>
 
-          <div className="bg-slate-50 p-3.5 rounded-lg">
+          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100">
             <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
               Vehicle
             </span>
@@ -284,7 +329,7 @@ export function DeliveryDetail({
             </span>
           </div>
 
-          <div className="bg-slate-50 p-3.5 rounded-lg">
+          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100">
             <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
               Driver
             </span>
@@ -553,38 +598,71 @@ export function DeliveryDetail({
               Deducts finished goods inventory and sets dispatch timestamp.
             </p>
 
+            {dispatchModalError && (
+              <div className="rounded-lg bg-rose-50 border border-rose-200 p-2.5 text-xs text-rose-700 font-medium">
+                {dispatchModalError}
+              </div>
+            )}
+
             <div className="space-y-3">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Vehicle / Truck #</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Vehicle / Truck # <span className="text-rose-500">*</span>
+                </label>
                 <input
                   type="text"
                   value={dispatchVehicle}
                   onChange={(e) => setDispatchVehicle(e.target.value)}
-                  placeholder="e.g. TRUCK-42 or Van #3"
+                  placeholder="e.g. TRUCK-42 or LES-1234"
                   className="w-full rounded-lg border border-slate-300 p-2.5 text-xs text-slate-900 focus:border-[#0F766E] focus:outline-none"
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Driver Name</label>
-                <input
-                  type="text"
-                  value={dispatchDriver}
-                  onChange={(e) => setDispatchDriver(e.target.value)}
-                  placeholder="e.g. John Doe"
-                  className="w-full rounded-lg border border-slate-300 p-2.5 text-xs text-slate-900 focus:border-[#0F766E] focus:outline-none"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Driver Name</label>
+                  <input
+                    type="text"
+                    value={dispatchDriver}
+                    onChange={(e) => setDispatchDriver(e.target.value)}
+                    placeholder="e.g. John Doe"
+                    className="w-full rounded-lg border border-slate-300 p-2.5 text-xs text-slate-900 focus:border-[#0F766E] focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Driver Phone</label>
+                  <input
+                    type="text"
+                    value={dispatchDriverPhone}
+                    onChange={(e) => setDispatchDriverPhone(e.target.value)}
+                    placeholder="e.g. 03001234567"
+                    className="w-full rounded-lg border border-slate-300 p-2.5 text-xs text-slate-900 focus:border-[#0F766E] focus:outline-none"
+                  />
+                </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Tracking Number</label>
-                <input
-                  type="text"
-                  value={dispatchTracking}
-                  onChange={(e) => setDispatchTracking(e.target.value)}
-                  placeholder="e.g. TRK-987654321"
-                  className="w-full rounded-lg border border-slate-300 p-2.5 text-xs font-mono text-slate-900 focus:border-[#0F766E] focus:outline-none"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Dispatch Date & Time</label>
+                  <input
+                    type="datetime-local"
+                    value={dispatchDateTime}
+                    onChange={(e) => setDispatchDateTime(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 p-2.5 text-xs text-slate-900 focus:border-[#0F766E] focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Tracking Number</label>
+                  <input
+                    type="text"
+                    value={dispatchTracking}
+                    onChange={(e) => setDispatchTracking(e.target.value)}
+                    placeholder="e.g. TRK-987654321"
+                    className="w-full rounded-lg border border-slate-300 p-2.5 text-xs font-mono text-slate-900 focus:border-[#0F766E] focus:outline-none"
+                  />
+                </div>
               </div>
 
               <div>

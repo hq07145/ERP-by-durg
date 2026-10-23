@@ -33,6 +33,7 @@ export interface Product {
   delivery_max_days: number;
   min_stock: string | number;
   reorder_level: string | number;
+  quality_grade?: string | null;
   active: boolean;
   created_at: string;
   updated_at: string;
@@ -44,6 +45,7 @@ export interface ProductVariant {
   product_id: string;
   sku: string | null;
   name: string;
+  quality_grade?: string | null;
   price: string | number | null;
   daily_capacity: number | null;
   active: boolean;
@@ -54,6 +56,7 @@ export interface ProductVariant {
 export interface ProductFormValues {
   name: string;
   sku: string;
+  quality_grade: string;
   category_id: string;
   subcategory_id: string;
   description: string;

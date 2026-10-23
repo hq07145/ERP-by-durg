@@ -701,13 +701,13 @@ export function ProductionTrackingDetail({
               </button>
             )}
 
-            {canComplete && productionOrder.status === "QUALITY_CHECK" && (
+            {canComplete && !["COMPLETED", "CANCELLED"].includes(productionOrder.status) && (
               <button
                 type="button"
                 onClick={() => openDialog("complete")}
-                className="px-4 py-2 rounded-sm text-sm font-medium bg-teal-100 text-teal-800 hover:bg-teal-200"
+                className="px-4 py-2 rounded-sm text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm"
               >
-                Complete Production
+                Mark as Done
               </button>
             )}
 

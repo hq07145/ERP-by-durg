@@ -1315,6 +1315,7 @@ export async function getOrderFulfillmentExplanation(
   hasMissingCapacity: boolean;
   items: Array<{
     productName: string;
+    qualityGrade?: string | null;
     orderedQty: number;
     stockQty: number;
     prodQty: number;
@@ -1331,7 +1332,7 @@ export async function getOrderFulfillmentExplanation(
 
   const { data: items } = await supabase
     .from("order_items")
-    .select("id, product_id, quantity, products(name, daily_capacity)")
+    .select("id, product_id, quality_grade, quantity, products(name, daily_capacity, quality_grade)")
     .eq("order_id", orderId)
     .eq("business_id", businessId);
 
@@ -1363,6 +1364,7 @@ export async function getOrderFulfillmentExplanation(
 
   const itemBreakdown: Array<{
     productName: string;
+    qualityGrade?: string | null;
     orderedQty: number;
     stockQty: number;
     prodQty: number;
@@ -1373,6 +1375,7 @@ export async function getOrderFulfillmentExplanation(
   (items ?? []).forEach((item: any) => {
     const prod = Array.isArray(item.products) ? item.products[0] : item.products;
     const prodName = prod?.name || "Product";
+    const qualityGrade = item.quality_grade || prod?.quality_grade || null;
     const ordQty = Number(item.quantity) || 0;
     const dailyCap = Number(prod?.daily_capacity) || 0;
     totalOrdered += ordQty;
@@ -1415,6 +1418,7 @@ export async function getOrderFulfillmentExplanation(
 
     itemBreakdown.push({
       productName: prodName,
+      qualityGrade,
       orderedQty: ordQty,
       stockQty: itemStock,
       prodQty: itemProd,

@@ -82,6 +82,19 @@ export async function updateSettingService(key: SettingsKey, value: SettingsValu
     await syncWorkingDaysToCalendar(context.user.business_id, value as WorkingDaysSettings);
   }
 
+  // Sync business_details with businesses table
+  if (key === "business_details" && value) {
+    const bd = value as Partial<BusinessDetails>;
+    const updateObj: Record<string, any> = { updated_at: new Date().toISOString() };
+    if (bd.name) updateObj.name = bd.name;
+    if (bd.legal_name) updateObj.legal_name = bd.legal_name;
+    if (bd.gst_number) updateObj.gst_number = bd.gst_number;
+    if (bd.address) updateObj.address = bd.address;
+    if (bd.phone !== undefined) updateObj.phone = bd.phone;
+    if (bd.email) updateObj.email = bd.email;
+    await supabase.from("businesses").update(updateObj).eq("id", context.user.business_id);
+  }
+
   const { data, error } = await supabase
     .from("business_settings")
     .upsert(
@@ -130,6 +143,17 @@ export async function updateSettingsService(values: SettingsFormValues): Promise
       }
       if (key === "working_hours") {
         calendarAffected = true;
+      }
+      if (key === "business_details" && value) {
+        const bd = value as Partial<BusinessDetails>;
+        const updateObj: Record<string, any> = { updated_at: new Date().toISOString() };
+        if (bd.name) updateObj.name = bd.name;
+        if (bd.legal_name) updateObj.legal_name = bd.legal_name;
+        if (bd.gst_number) updateObj.gst_number = bd.gst_number;
+        if (bd.address) updateObj.address = bd.address;
+        if (bd.phone !== undefined) updateObj.phone = bd.phone;
+        if (bd.email) updateObj.email = bd.email;
+        await supabase.from("businesses").update(updateObj).eq("id", context.user.business_id);
       }
 
       const { data, error } = await supabase

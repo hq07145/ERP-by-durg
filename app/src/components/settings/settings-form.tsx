@@ -110,6 +110,32 @@ export function SettingsForm({ initialSettings, onSave }: SettingsFormProps) {
             />
           </div>
           <div>
+            <label htmlFor="tagline" className="block text-sm font-medium text-gray-700">
+              Tagline / Certification
+            </label>
+            <input
+              id="tagline"
+              type="text"
+              value={settings.business_details?.tagline || ""}
+              onChange={e => handleInputChange("business_details", "tagline", e.target.value)}
+              placeholder="e.g. ISI CERTIFIED COMPANY"
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+            />
+          </div>
+          <div>
+            <label htmlFor="business_type" className="block text-sm font-medium text-gray-700">
+              Business Type / Classification
+            </label>
+            <input
+              id="business_type"
+              type="text"
+              value={settings.business_details?.business_type || ""}
+              onChange={e => handleInputChange("business_details", "business_type", e.target.value)}
+              placeholder="e.g. INLINE-ONLINE DRIP MAKER"
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+            />
+          </div>
+          <div>
             <label htmlFor="gst_number" className="block text-sm font-medium text-gray-700">
               GST Number (GSTIN)
             </label>
@@ -118,7 +144,7 @@ export function SettingsForm({ initialSettings, onSave }: SettingsFormProps) {
               type="text"
               value={settings.business_details?.gst_number || ""}
               onChange={e => handleInputChange("business_details", "gst_number", e.target.value.toUpperCase())}
-              placeholder="e.g. 27ABCDE1234F1Z5"
+              placeholder="e.g. 23AAMPQ5857F1ZE"
               className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm font-mono uppercase"
             />
           </div>
@@ -128,7 +154,7 @@ export function SettingsForm({ initialSettings, onSave }: SettingsFormProps) {
             </label>
             <select
               id="business_state"
-              value={settings.business_details?.state || "Maharashtra"}
+              value={settings.business_details?.state || "Madhya Pradesh"}
               onChange={e => handleInputChange("business_details", "state", e.target.value)}
               className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
             >

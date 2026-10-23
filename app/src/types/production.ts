@@ -23,6 +23,9 @@ export interface ProductionOrder {
   order_item_id: string;
   product_id: string;
   quantity: string | number;
+  completed_quantity?: string | number;
+  scrap_quantity?: string | number;
+  remaining_quantity?: string | number;
   status: ProductionOrderStatus;
   priority: ProductionOrderPriority;
   scheduled_start_date: string | null;
@@ -58,6 +61,9 @@ export interface ProductionOrderListItem {
   product_sku: string | null;
   product_unit: string;
   quantity: string | number;
+  completed_quantity?: string | number;
+  scrap_quantity?: string | number;
+  remaining_quantity?: string | number;
   status: ProductionOrderStatus;
   priority: ProductionOrderPriority;
   scheduled_start_date: string | null;
@@ -99,6 +105,9 @@ export interface ProductionQueueItem {
   product_sku: string | null;
   product_unit: string;
   quantity: number;
+  completed_quantity?: number;
+  scrap_quantity?: number;
+  remaining_quantity?: number;
   priority: ProductionOrderPriority;
   order_date: string;
   product_daily_capacity: number;

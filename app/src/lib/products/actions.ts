@@ -44,6 +44,7 @@ function productValues(formData: FormData, product?: Product): ProductFormValues
   return {
     name: value("name"),
     sku: value("sku"),
+    quality_grade: value("quality_grade"),
     category_id: value("category_id"),
     subcategory_id: value("subcategory_id"),
     description: value("description"),
@@ -82,6 +83,7 @@ function decimalKey(value: string | number, scale: number): string {
 function validateProductValues(values: ProductFormValues): string | null {
   values.name = values.name.trim();
   values.sku = values.sku.trim().toUpperCase();
+  values.quality_grade = (values.quality_grade || "").trim();
   values.description = values.description.trim();
 
   if (!values.name || values.name.length > 160) return "invalid_name";
@@ -250,6 +252,7 @@ export async function saveProductAction(
     business_id: context.user.business_id,
     name: values.name,
     sku: values.sku,
+    quality_grade: values.quality_grade || null,
     category_id: values.category_id || null,
     subcategory_id: values.subcategory_id || null,
     description: values.description || null,

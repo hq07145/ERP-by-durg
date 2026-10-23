@@ -198,8 +198,12 @@ export default async function ProductsPage({
                 <tr key={product.id} className="bg-white align-middle">
                   <td className="px-3 py-3">
                     <Link className="font-semibold text-[var(--foreground)] hover:text-[var(--accent)]" href={`/products/${product.id}`}>{product.name}</Link>
+                    {product.quality_grade ? (
+                      <p className="text-xs font-medium text-teal-800">Quality: {product.quality_grade}</p>
+                    ) : (
+                      <p className="text-xs text-slate-400">Quality not configured</p>
+                    )}
                   </td>
-                  <td className="px-3 py-3 font-mono text-xs">{product.sku}</td>
                   <td className="px-3 py-3 text-[var(--muted)]">{categoryLabel}</td>
                   <td className="px-3 py-3">{product.unit}</td>
                   <td className="px-3 py-3 tabular-nums">{money(product.selling_price, currency)}</td>

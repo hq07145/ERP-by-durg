@@ -112,7 +112,7 @@ export const getAuthContext = cache(async function getAuthContext(): Promise<Aut
     if (entry.allowed) permissions.push(key);
   }
 
-  const businessName = business?.legal_name || business?.name || "Development Business Pvt. Ltd.";
+  const businessName = business?.legal_name || business?.name || "SANKALP IRRIGATION";
 
   return {
     authUserId: authData.user.id,

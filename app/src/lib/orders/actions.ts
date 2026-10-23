@@ -68,14 +68,14 @@ function validateOrder(values: OrderFormValues): string | null {
     if (item.cgst_rate !== undefined && item.cgst_rate !== "" && (!validAmount(item.cgst_rate, 5, 2) || Number(item.cgst_rate) < 0 || Number(item.cgst_rate) > 100)) {
       return "invalid_cgst_rate";
     }
-    const lgstVal = item.lgst_rate !== undefined && item.lgst_rate !== "" ? item.lgst_rate : item.igst_rate;
-    if (lgstVal !== undefined && lgstVal !== "" && (!validAmount(lgstVal, 5, 2) || Number(lgstVal) < 0 || Number(lgstVal) > 100)) {
+    const igstVal = item.igst_rate !== undefined && item.igst_rate !== "" ? item.igst_rate : item.lgst_rate;
+    if (igstVal !== undefined && igstVal !== "" && (!validAmount(igstVal, 5, 2) || Number(igstVal) < 0 || Number(igstVal) > 100)) {
       return "invalid_igst_rate";
     }
 
     const sgst = Number(item.sgst_rate || 0);
     const cgst = Number(item.cgst_rate || 0);
-    const igst = Number(lgstVal || 0);
+    const igst = Number(igstVal || 0);
     if ((sgst > 0 || cgst > 0) && igst > 0) {
       return "mixed_gst_rates";
     }
@@ -175,8 +175,8 @@ export async function createOrderAction(
   ]);
 
   const businessDetails = (businessSettingsRes.data?.value as any) || {};
-  const supplierState = businessDetails.state || null;
-  const supplierGstin = businessDetails.gst_number || null;
+  const supplierState = businessDetails.state || "Madhya Pradesh";
+  const supplierGstin = businessDetails.gst_number || "23AAMPQ5857F1ZE";
   const customerState = customerAddressRes.data?.state || null;
   const customerGstin = customer.gst_number || null;
 
@@ -206,7 +206,7 @@ export async function createOrderAction(
   const productIds = Array.from(new Set(values.items.map((it) => it.product_id)));
   const { data: prods, error: prodError } = await supabase
     .from("products")
-    .select("id, name")
+    .select("id, name, quality_grade")
     .in("id", productIds)
     .eq("business_id", context.user.business_id)
     .eq("active", true);
@@ -214,7 +214,7 @@ export async function createOrderAction(
   if (prodError || !prods || prods.length !== productIds.length) {
     return { error: "invalid_product" };
   }
-  const productMap = new Map<string, { id: string; name: string }>();
+  const productMap = new Map<string, { id: string; name: string; quality_grade?: string | null }>();
   for (const prod of prods) {
     productMap.set(prod.id, prod);
   }
@@ -243,7 +243,7 @@ export async function createOrderAction(
     const it = values.items[i];
     const sgst = Number(it.sgst_rate || 0);
     const cgst = Number(it.cgst_rate || 0);
-    const igst = Number(it.igst_rate || 0);
+    const igst = Number((it.igst_rate ?? it.lgst_rate) || 0);
     if (sgst > 0 || cgst > 0 || igst > 0) {
       const taxCheck = validateItemTaxRates({
         taxType: gstCalc.taxType,
@@ -260,22 +260,31 @@ export async function createOrderAction(
     }
   }
 
-  const itemInserts = gstCalc.items.map((it) => ({
-    product_id: it.productId,
-    product_name: productMap.get(it.productId)?.name || null,
-    quantity: it.quantity,
-    unit_price: it.unitPrice,
-    discount_rate: it.discountRate,
-    tax_rate: it.taxRate,
-    taxable_amount: it.taxableAmount,
-    cgst_rate: it.cgstRate,
-    cgst_amount: it.cgstAmount,
-    sgst_rate: it.sgstRate,
-    sgst_amount: it.sgstAmount,
-    igst_rate: it.igstRate,
-    igst_amount: it.igstAmount,
-    line_total: it.lineTotal,
-  }));
+  const itemInserts = gstCalc.items.map((it, idx) => {
+    const rawItem = values.items[idx];
+    const fallbackGrade = productMap.get(it.productId)?.quality_grade || null;
+    const resolvedGrade = rawItem?.quality_grade?.trim() || fallbackGrade;
+    const resolvedVariantId = rawItem?.variant_id?.trim() || null;
+
+    return {
+      product_id: it.productId,
+      product_name: productMap.get(it.productId)?.name || null,
+      quality_grade: resolvedGrade,
+      variant_id: resolvedVariantId,
+      quantity: it.quantity,
+      unit_price: it.unitPrice,
+      discount_rate: it.discountRate,
+      tax_rate: it.taxRate,
+      taxable_amount: it.taxableAmount,
+      cgst_rate: it.cgstRate,
+      cgst_amount: it.cgstAmount,
+      sgst_rate: it.sgstRate,
+      sgst_amount: it.sgstAmount,
+      igst_rate: it.igstRate,
+      igst_amount: it.igstAmount,
+      line_total: it.lineTotal,
+    };
+  });
 
   // Customer advance calculation & authoritative server-side validation
   const useAdvance = formData.get("use_advance") === "true";
@@ -600,17 +609,17 @@ export async function updateOrderAction(
   ]);
 
   const businessDetails = (businessSettingsRes.data?.value as any) || {};
-  const supplierState = businessDetails.state || null;
-  const supplierGstin = businessDetails.gst_number || null;
+  const supplierState = businessDetails.state || "Madhya Pradesh";
+  const supplierGstin = businessDetails.gst_number || "23AAMPQ5857F1ZE";
   const customerState = customerAddressRes.data?.state || null;
   const customerGstin = customer.gst_number || null;
 
   // 6. Verify products
-  const productMap = new Map<string, { id: string; name: string }>();
+  const productMap = new Map<string, { id: string; name: string; quality_grade?: string | null }>();
   for (const item of values.items) {
     const { data: prod } = await supabase
       .from("products")
-      .select("id, name")
+      .select("id, name, quality_grade")
       .eq("id", item.product_id)
       .eq("business_id", context.user.business_id)
       .eq("active", true)
@@ -643,7 +652,7 @@ export async function updateOrderAction(
     const it = values.items[i];
     const sgst = Number(it.sgst_rate || 0);
     const cgst = Number(it.cgst_rate || 0);
-    const igst = Number(it.igst_rate || 0);
+    const igst = Number((it.igst_rate ?? it.lgst_rate) || 0);
     if (sgst > 0 || cgst > 0 || igst > 0) {
       const taxCheck = validateItemTaxRates({
         taxType: gstCalc.taxType,
@@ -660,24 +669,33 @@ export async function updateOrderAction(
     }
   }
 
-  const itemInserts = gstCalc.items.map((it) => ({
-    business_id: context.user.business_id,
-    order_id: orderId,
-    product_id: it.productId,
-    product_name: productMap.get(it.productId)?.name || null,
-    quantity: it.quantity,
-    unit_price: it.unitPrice,
-    discount_rate: it.discountRate,
-    tax_rate: it.taxRate,
-    taxable_amount: it.taxableAmount,
-    cgst_rate: it.cgstRate,
-    cgst_amount: it.cgstAmount,
-    sgst_rate: it.sgstRate,
-    sgst_amount: it.sgstAmount,
-    igst_rate: it.igstRate,
-    igst_amount: it.igstAmount,
-    line_total: it.lineTotal,
-  }));
+  const itemInserts = gstCalc.items.map((it, idx) => {
+    const rawItem = values.items[idx];
+    const fallbackGrade = productMap.get(it.productId)?.quality_grade || null;
+    const resolvedGrade = rawItem?.quality_grade?.trim() || fallbackGrade;
+    const resolvedVariantId = rawItem?.variant_id?.trim() || null;
+
+    return {
+      business_id: context.user.business_id,
+      order_id: orderId,
+      product_id: it.productId,
+      product_name: productMap.get(it.productId)?.name || null,
+      quality_grade: resolvedGrade,
+      variant_id: resolvedVariantId,
+      quantity: it.quantity,
+      unit_price: it.unitPrice,
+      discount_rate: it.discountRate,
+      tax_rate: it.taxRate,
+      taxable_amount: it.taxableAmount,
+      cgst_rate: it.cgstRate,
+      cgst_amount: it.cgstAmount,
+      sgst_rate: it.sgstRate,
+      sgst_amount: it.sgstAmount,
+      igst_rate: it.igstRate,
+      igst_amount: it.igstAmount,
+      line_total: it.lineTotal,
+    };
+  });
 
   const paid_amount = Number(currentOrder.paid_amount || 0);
   const due_amount = Math.max(0, Number((gstCalc.totalAmount - paid_amount).toFixed(2)));

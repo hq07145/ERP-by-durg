@@ -72,7 +72,7 @@ export default async function OrdersPage({
       .order("name"),
     supabase
       .from("products")
-      .select("id, name, sku, unit, selling_price, tax_rate, daily_capacity, production_min_days, setup_minutes, delivery_min_days, delivery_max_days")
+      .select("id, name, sku, quality_grade, unit, selling_price, tax_rate, daily_capacity, production_min_days, setup_minutes, delivery_min_days, delivery_max_days, variants:product_variants(id, name, sku, price, quality_grade, active)")
       .eq("business_id", context.user.business_id)
       .eq("active", true)
       .order("name"),
@@ -177,29 +177,83 @@ export default async function OrdersPage({
 
   const { data: orders, count, error } = await query;
 
+  if (error) {
+    console.error("Orders list query error:", error);
+  }
+
+  const orderIds = (orders ?? []).map((o: any) => o.id);
+  const poMap = new Map<string, any[]>();
+  if (orderIds.length > 0) {
+    const { data: poRows, error: poError } = await supabase
+      .from("production_orders")
+      .select("id, order_id, status, quantity, completed_quantity")
+      .eq("business_id", context.user.business_id)
+      .in("order_id", orderIds);
+
+    if (poError) {
+      console.error("Production orders batch query error:", poError);
+    } else {
+      (poRows ?? []).forEach((po: any) => {
+        if (po.order_id) {
+          if (!poMap.has(po.order_id)) poMap.set(po.order_id, []);
+          poMap.get(po.order_id)!.push(po);
+        }
+      });
+    }
+  }
+
   const totalCount = count ?? 0;
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
-  const ordersWithCustomer: OrderListItem[] = (orders ?? []).map((o: any) => ({
-    id: o.id,
-    business_id: context.user.business_id,
-    customer_id: o.customer_id,
-    order_number: o.order_number,
-    order_date: o.order_date,
-    priority: o.priority as OrderPriority,
-    status: o.status as OrderStatus,
-    total_amount: o.total_amount,
-    paid_amount: o.paid_amount ?? 0,
-    due_amount: o.due_amount ?? 0,
-    created_at: o.created_at,
-    customer_name: o.customers?.name ?? o.customers?.[0]?.name ?? null,
-    company_name: o.customers?.company_name ?? o.customers?.[0]?.company_name ?? null,
-    item_count: Array.isArray(o.order_items) ? o.order_items.length : 0,
-    earliest_delivery_date: o.earliest_delivery_date,
-    latest_delivery_date: o.latest_delivery_date,
-    expected_delivery_date: o.expected_delivery_date,
-    delivery_status: o.delivery_status as DeliveryStatus,
-  }));
+  const ordersWithCustomer: OrderListItem[] = (orders ?? []).map((o: any) => {
+    const pos = poMap.get(o.id) || [];
+    let prodStatus: string | null = null;
+    if (pos.length > 0) {
+      const activePOs = pos.filter((p: any) => p.status !== "CANCELLED");
+      if (activePOs.length > 0) {
+        const allCompleted = activePOs.every(
+          (p: any) =>
+            ["COMPLETED", "READY_FOR_DISPATCH"].includes(p.status) ||
+            (Number(p.completed_quantity) >= Number(p.quantity) && Number(p.quantity) > 0)
+        );
+        const anyProduced = activePOs.some(
+          (p: any) =>
+            ["IN_PRODUCTION", "QUALITY_CHECK", "COMPLETED"].includes(p.status) ||
+            (Number(p.completed_quantity) || 0) > 0
+        );
+
+        if (allCompleted) {
+          prodStatus = "COMPLETED";
+        } else if (anyProduced) {
+          prodStatus = "IN_PROGRESS";
+        } else {
+          prodStatus = "PENDING";
+        }
+      }
+    }
+
+    return {
+      id: o.id,
+      business_id: context.user.business_id,
+      customer_id: o.customer_id,
+      order_number: o.order_number,
+      order_date: o.order_date,
+      priority: o.priority as OrderPriority,
+      status: o.status as OrderStatus,
+      total_amount: o.total_amount,
+      paid_amount: o.paid_amount ?? 0,
+      due_amount: o.due_amount ?? 0,
+      created_at: o.created_at,
+      customer_name: o.customers?.name ?? o.customers?.[0]?.name ?? null,
+      company_name: o.customers?.company_name ?? o.customers?.[0]?.company_name ?? null,
+      item_count: Array.isArray(o.order_items) ? o.order_items.length : 0,
+      earliest_delivery_date: o.earliest_delivery_date,
+      latest_delivery_date: o.latest_delivery_date,
+      expected_delivery_date: o.expected_delivery_date,
+      delivery_status: o.delivery_status as DeliveryStatus,
+      production_status: prodStatus,
+    };
+  });
 
   const canCreate = hasPermission({ permissions: context.permissions }, "orders.create");
   const canEdit = hasPermission({ permissions: context.permissions }, "orders.edit");

@@ -22,7 +22,7 @@ import {
 } from "@/lib/delivery/actions";
 import {
   validateAndNormalizeVehicleNumber,
-  validateDriverMobile,
+  validateInvoiceNumber,
 } from "@/lib/delivery/validation";
 
 interface CreateDeliveryModalProps {
@@ -60,7 +60,7 @@ export function CreateDeliveryModal({
   });
   const [vehicleNumber, setVehicleNumber] = useState("");
   const [driverName, setDriverName] = useState("");
-  const [driverMobile, setDriverMobile] = useState("");
+  const [invoiceNumber, setInvoiceNumber] = useState("");
   const [notes, setNotes] = useState("");
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -73,10 +73,10 @@ export function CreateDeliveryModal({
       !!selectedOrderId ||
       !!vehicleNumber.trim() ||
       !!driverName.trim() ||
-      !!driverMobile.trim() ||
+      !!invoiceNumber.trim() ||
       !!notes.trim()
     );
-  }, [selectedCustomerId, selectedOrderId, vehicleNumber, driverName, driverMobile, notes]);
+  }, [selectedCustomerId, selectedOrderId, vehicleNumber, driverName, invoiceNumber, notes]);
 
   const handleAttemptClose = useCallback(() => {
     if (isSubmitting) return;
@@ -124,7 +124,7 @@ export function CreateDeliveryModal({
       setDeliveryDate(new Date().toISOString().split("T")[0]);
       setVehicleNumber("");
       setDriverName("");
-      setDriverMobile("");
+      setInvoiceNumber("");
       setNotes("");
       setFormError(null);
       setIsSubmitting(false);
@@ -194,11 +194,11 @@ export function CreateDeliveryModal({
     return validateAndNormalizeVehicleNumber(vehicleNumber);
   }, [vehicleNumber]);
 
-  // Real-time Driver Mobile Validation
-  const mobileValidation = useMemo(() => {
-    if (!driverMobile.trim()) return { isValid: true, normalized: null };
-    return validateDriverMobile(driverMobile);
-  }, [driverMobile]);
+  // Real-time Invoice Number Validation
+  const invoiceValidation = useMemo(() => {
+    if (!invoiceNumber.trim()) return { isValid: false, normalized: "", error: "Invoice number is required." };
+    return validateInvoiceNumber(invoiceNumber);
+  }, [invoiceNumber]);
 
   // Form Submission
   const handleSubmit = async (e: React.FormEvent) => {
@@ -231,12 +231,16 @@ export function CreateDeliveryModal({
       setFormError("Please select a valid delivery date.");
       return;
     }
-    if (!vehicleValidation.isValid) {
-      setFormError(vehicleValidation.error || "Please enter a valid vehicle registration number.");
+    if (!invoiceNumber.trim()) {
+      setFormError("Invoice number is required.");
       return;
     }
-    if (driverMobile.trim() && !mobileValidation.isValid) {
-      setFormError(mobileValidation.error || "Please enter a valid 10-digit driver mobile number.");
+    if (!invoiceValidation.isValid) {
+      setFormError(invoiceValidation.error || "Please enter a valid invoice number.");
+      return;
+    }
+    if (!vehicleValidation.isValid) {
+      setFormError(vehicleValidation.error || "Please enter a valid vehicle registration number.");
       return;
     }
 
@@ -248,8 +252,8 @@ export function CreateDeliveryModal({
         order_id: selectedOrderId,
         delivery_date: deliveryDate,
         vehicle_number: vehicleValidation.normalized,
+        invoice_number: invoiceValidation.normalized,
         driver_name: driverName.trim() || undefined,
-        driver_mobile: mobileValidation.normalized || undefined,
         notes: notes.trim() || undefined,
       });
 
@@ -690,27 +694,28 @@ export function CreateDeliveryModal({
                 />
               </div>
 
-              {/* Driver Mobile */}
+              {/* Invoice Number */}
               <div>
                 <label className="block text-xs font-bold text-slate-800 mb-1.5">
-                  Driver Mobile <span className="text-slate-400 font-normal">(Optional)</span>
+                  Invoice Number <span className="text-rose-500">*</span>
                 </label>
                 <input
-                  type="tel"
-                  value={driverMobile}
-                  onChange={(e) => setDriverMobile(e.target.value)}
-                  placeholder="e.g. 9876543210"
-                  className={`w-full rounded-lg border bg-white px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-1 ${
-                    driverMobile.trim() && !mobileValidation.isValid
+                  type="text"
+                  value={invoiceNumber}
+                  onChange={(e) => setInvoiceNumber(e.target.value)}
+                  required
+                  placeholder="e.g. SAN/26-27/154"
+                  className={`w-full rounded-lg border bg-white px-3 py-2 text-xs font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-1 ${
+                    invoiceNumber.trim() && !invoiceValidation.isValid
                       ? "border-rose-400 focus:border-rose-500 focus:ring-rose-500"
                       : "border-slate-300 focus:border-[#0F766E] focus:ring-[#0F766E]"
                   }`}
                 />
                 <p className="mt-1 text-[10px] text-slate-400">
-                  {driverMobile.trim() && !mobileValidation.isValid ? (
-                    <span className="text-rose-600 font-medium">Valid 10-digit phone</span>
+                  {invoiceNumber.trim() && !invoiceValidation.isValid ? (
+                    <span className="text-rose-600 font-medium">{invoiceValidation.error}</span>
                   ) : (
-                    "10-digit mobile number"
+                    "Letters, numbers, hyphens, and slashes accepted"
                   )}
                 </p>
               </div>
@@ -763,7 +768,7 @@ export function CreateDeliveryModal({
                 !selectedOrderId ||
                 !selectedOrder?.is_fully_ready ||
                 !vehicleValidation.isValid ||
-                (driverMobile.trim() ? !mobileValidation.isValid : false)
+                !invoiceValidation.isValid
               }
               className="inline-flex items-center gap-2 rounded-lg bg-[#0F766E] px-5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#0D655E] transition disabled:opacity-50 disabled:cursor-not-allowed"
             >

@@ -28,7 +28,10 @@ export default async function DeliveryDetailPage({ params }: PageProps) {
   const canDispatch = hasPermission({ permissions: context.permissions }, "delivery.dispatch");
   const canComplete = hasPermission({ permissions: context.permissions }, "delivery.complete");
   const canCancel = hasPermission({ permissions: context.permissions }, "delivery.cancel");
-  const canPack = hasPermission({ permissions: context.permissions }, "delivery.pack");
+  const canPack =
+    hasPermission({ permissions: context.permissions }, "delivery.update") ||
+    canDispatch ||
+    hasPermission({ permissions: context.permissions }, "delivery.create");
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">

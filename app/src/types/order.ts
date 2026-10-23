@@ -106,6 +106,9 @@ export interface OrderItem {
   sgst_amount?: string | number;
   igst_rate?: string | number;
   igst_amount?: string | number;
+  // Quality / grade & variant
+  quality_grade?: string | null;
+  variant_id?: string | null;
 }
 
 export interface OrderItemWithProduct extends OrderItem {
@@ -140,6 +143,8 @@ export interface OrderStatusHistory {
 
 export interface OrderItemFormValues {
   product_id: string;
+  variant_id?: string;
+  quality_grade?: string;
   quantity: string;
   unit_price: string;
   discount_rate: string;
@@ -181,10 +186,12 @@ export interface OrderListItem {
   latest_delivery_date: string | null;
   expected_delivery_date: string | null;
   delivery_status: DeliveryStatus;
+  production_status?: "COMPLETED" | "IN_PROGRESS" | "PARTIAL" | "PENDING" | "NOT_REQUIRED" | string | null;
 }
 
 export interface OrderItemFulfillmentSummary {
   productName: string;
+  qualityGrade?: string | null;
   orderedQty: number;
   stockQty: number;
   prodQty: number;

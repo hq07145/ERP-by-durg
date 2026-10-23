@@ -324,33 +324,14 @@ export async function startProductionWithInventory(
 
 /**
  * Atomically completes production, adds finished goods to inventory,
- * and creates PRODUCTION_OUTPUT transactions.
+ * handles order reservations, and creates PRODUCTION_OUTPUT transactions via database RPC.
  */
 export async function completeProductionWithInventory(
   supabase: SupabaseClient,
   businessId: string,
   userId: string,
   values: CompleteProductionFormValues,
-): Promise<{ success: boolean; message: string | null }> {
-  // 1. Fetch production order
-  const { data: po, error: poErr } = await supabase
-    .from("production_orders")
-    .select("id, status, product_id, quantity, order_id")
-    .eq("id", values.production_order_id)
-    .eq("business_id", businessId)
-    .maybeSingle();
-
-  if (poErr || !po) {
-    return { success: false, message: "Production order not found." };
-  }
-
-  if (!["IN_PRODUCTION", "QUALITY_CHECK"].includes(po.status)) {
-    return {
-      success: false,
-      message: `Cannot complete production from status "${po.status}". Order must be in production or quality check.`,
-    };
-  }
-
+): Promise<{ success: boolean; message: string | null; data?: any }> {
   const producedQty = Number(values.quantity_produced);
   const rejectedQty = Number(values.quantity_rejected) || 0;
 
@@ -362,124 +343,35 @@ export async function completeProductionWithInventory(
     return { success: false, message: "Rejected quantity cannot be negative." };
   }
 
-  // 2. Prevent duplicate completion (Requirement 6)
-  const { data: existingOutput } = await supabase
-    .from("production_output")
-    .select("id")
-    .eq("business_id", businessId)
-    .eq("production_order_id", values.production_order_id)
-    .maybeSingle();
-
-  if (existingOutput) {
-    return { success: false, message: "Production output has already been recorded for this order." };
-  }
-
-  // 3. Insert production_output record
-  const { error: outputErr } = await supabase.from("production_output").insert({
-    business_id: businessId,
-    production_order_id: values.production_order_id,
-    product_id: po.product_id,
-    quantity_produced: producedQty,
-    quantity_rejected: rejectedQty,
-    batch_number: values.batch_number?.trim() || null,
-    produced_at: new Date().toISOString(),
-    created_by: userId,
+  // Call atomic database RPC which locks production order and updates inventory atomically
+  const { data, error } = await supabase.rpc("mark_production_order_done", {
+    p_business_id: businessId,
+    p_user_id: userId,
+    p_production_order_id: values.production_order_id,
+    p_quantity_produced: producedQty,
+    p_quantity_rejected: rejectedQty,
+    p_batch_number: values.batch_number?.trim() || null,
+    p_notes: values.notes?.trim() || null,
   });
 
-  if (outputErr) {
-    return { success: false, message: "Failed to record production output." };
+  if (error) {
+    return { success: false, message: error.message || "Failed to mark production as done." };
   }
 
-  // 4. Add finished goods to inventory
-  const { data: invRow } = await supabase
-    .from("inventory")
-    .select("id, current_stock, reserved_stock, available_stock")
-    .eq("business_id", businessId)
-    .eq("item_type", "finished_good")
-    .eq("item_id", po.product_id)
-    .maybeSingle();
-
-  if (invRow) {
-    const newCurrent = Number(invRow.current_stock) + producedQty;
-    const newAvailable = Number(invRow.available_stock) + producedQty;
-
-    await supabase
-      .from("inventory")
-      .update({
-        current_stock: newCurrent,
-        available_stock: newAvailable,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", invRow.id)
-      .eq("business_id", businessId);
-  } else {
-    await supabase.from("inventory").insert({
-      business_id: businessId,
-      item_type: "finished_good",
-      item_id: po.product_id,
-      current_stock: producedQty,
-      reserved_stock: 0,
-      available_stock: producedQty,
-    });
+  // Recalculate delivery dates if linked to an order
+  if (data?.order_id) {
+    try {
+      await updateOrderDeliveryDatesFromSchedules(supabase, businessId, data.order_id);
+    } catch {
+      // Non-fatal
+    }
   }
 
-  // 5. Create PRODUCTION_OUTPUT inventory transaction
-  const batchText = values.batch_number?.trim() ? ` (Batch: ${values.batch_number.trim()})` : "";
-  await supabase.from("inventory_transactions").insert({
-    business_id: businessId,
-    item_type: "finished_good",
-    item_id: po.product_id,
-    transaction_type: "STOCK_IN",
-    quantity: producedQty,
-    batch_number: values.batch_number?.trim() || null,
-    reference_type: "PRODUCTION_OUTPUT",
-    reference_id: values.production_order_id,
-    notes: `Finished goods from production order ${values.production_order_id}${batchText}`,
-    created_by: userId,
-  });
+  const msg =
+    data?.status === "COMPLETED"
+      ? `Production completed successfully (${producedQty} units added to finished-goods stock).`
+      : `Recorded ${producedQty} units produced. ${data?.remaining_quantity ?? 0} units remaining.`;
 
-  // If rejected units exist, record rejection transaction
-  if (rejectedQty > 0) {
-    await supabase.from("inventory_transactions").insert({
-      business_id: businessId,
-      item_type: "finished_good",
-      item_id: po.product_id,
-      transaction_type: "STOCK_OUT",
-      quantity: rejectedQty,
-      reference_type: "PRODUCTION_REJECTION",
-      reference_id: values.production_order_id,
-      notes: `Rejected units from production order ${values.production_order_id}`,
-      created_by: userId,
-    });
-  }
-
-  // 6. Transition production order to COMPLETED
-  await supabase
-    .from("production_orders")
-    .update({
-      status: "COMPLETED",
-      actual_end_date: new Date().toISOString().split("T")[0],
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", values.production_order_id)
-    .eq("business_id", businessId);
-
-  // 7. Insert completion log
-  await supabase.from("production_logs").insert({
-    business_id: businessId,
-    production_order_id: values.production_order_id,
-    log_type: "STATUS_CHANGE",
-    message: `Production completed: ${producedQty} units produced${rejectedQty > 0 ? `, ${rejectedQty} rejected` : ""}${values.notes?.trim() ? `. ${values.notes.trim()}` : ""}`,
-    quantity_completed: producedQty,
-    created_by: userId,
-  });
-
-  // 8. Recalculate delivery dates
-  try {
-    await updateOrderDeliveryDatesFromSchedules(supabase, businessId, po.order_id);
-  } catch {
-    // Non-fatal
-  }
-
-  return { success: true, message: "Production completed and finished goods added to inventory." };
+  return { success: true, message: msg, data };
 }
+

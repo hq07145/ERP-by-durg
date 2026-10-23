@@ -23,6 +23,8 @@ interface OrderFormProps {
   };
   initialItems?: Array<{
     product_id: string;
+    variant_id?: string;
+    quality_grade?: string;
     quantity: string;
     unit_price: string;
     discount_rate: string;
@@ -49,6 +51,7 @@ interface OrderFormProps {
     id: string;
     name: string;
     sku: string | null;
+    quality_grade?: string | null;
     unit: string;
     selling_price: string | number;
     tax_rate: string | number;
@@ -58,6 +61,14 @@ interface OrderFormProps {
     delivery_min_days?: number | string | null;
     delivery_max_days?: number | string | null;
     available_stock?: number | string | null;
+    variants?: Array<{
+      id: string;
+      name: string;
+      sku?: string | null;
+      quality_grade?: string | null;
+      price?: number | string | null;
+      active?: boolean;
+    }>;
   }[];
   workingDays?: Record<string, boolean>;
   calendarOverrides?: Record<string, boolean>;
@@ -79,8 +90,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   invalid_tax_rate: "Tax rate must be between 0% and 100%.",
   invalid_sgst_rate: "SGST rate must be between 0% and 100%.",
   invalid_cgst_rate: "CGST rate must be between 0% and 100%.",
-  invalid_igst_rate: "LGST rate must be between 0% and 100%.",
-  mixed_gst_rates: "Cannot apply both SGST/CGST and LGST to the same taxable amount as this would double-charge tax. Please use SGST+CGST for intra-state or LGST for inter-state.",
+  invalid_igst_rate: "IGST rate must be between 0% and 100%.",
+  mixed_gst_rates: "Cannot apply both SGST/CGST and IGST to the same taxable amount as this would double-charge tax. Please use SGST+CGST for intra-state or IGST for inter-state.",
   tax_validation_failed: "Tax rate validation failed. Please review your GST rates and transaction type.",
   duplicate_order_number: "An order with this order number already exists in your workspace.",
   notes_too_long: "Notes must not exceed 2000 characters.",
@@ -111,6 +122,8 @@ export function OrderForm({
 }: OrderFormProps) {
   const [items, setItems] = useState<Array<{
     product_id: string;
+    variant_id?: string;
+    quality_grade?: string;
     quantity: string;
     unit_price: string;
     discount_rate: string;
@@ -122,6 +135,8 @@ export function OrderForm({
     initialItems && initialItems.length > 0
       ? initialItems.map((it) => ({
           product_id: it.product_id,
+          variant_id: it.variant_id ?? "",
+          quality_grade: it.quality_grade ?? "",
           quantity: it.quantity,
           unit_price: it.unit_price,
           discount_rate: it.discount_rate || "0",
@@ -133,6 +148,8 @@ export function OrderForm({
       : [
           {
             product_id: "",
+            variant_id: "",
+            quality_grade: "",
             quantity: "",
             unit_price: "",
             discount_rate: "0",
@@ -229,8 +246,8 @@ export function OrderForm({
     }
   };
 
-  const supplierState = businessDetails?.state || "Maharashtra";
-  const supplierGstin = businessDetails?.gst_number || null;
+  const supplierState = businessDetails?.state || "Madhya Pradesh";
+  const supplierGstin = businessDetails?.gst_number || "23AAMPQ5857F1ZE";
   const effectivePos =
     placeOfSupply ||
     getStateForDistrict(district) ||
@@ -248,6 +265,48 @@ export function OrderForm({
       }),
     [supplierState, supplierGstin, selectedCustomer, effectivePos]
   );
+
+  // Auto-align line items tax rates when currentTaxType changes (same-state = CGST+SGST, interstate = IGST)
+  useEffect(() => {
+    setItems((prev) =>
+      prev.map((item) => {
+        const prod = products.find((p) => p.id === item.product_id);
+        const rate =
+          item.tax_rate !== "" && item.tax_rate !== "0"
+            ? parseFloat(item.tax_rate) || 0
+            : prod?.tax_rate != null
+            ? Number(prod.tax_rate)
+            : (parseFloat(item.sgst_rate) || 0) + (parseFloat(item.cgst_rate) || 0) + (parseFloat(item.igst_rate) || 0);
+
+        if (rate <= 0) return item;
+
+        if (currentTaxType === "INTRA_STATE") {
+          // If currently has IGST or zeroed CGST/SGST, switch to CGST 50% + SGST 50%
+          if (parseFloat(item.igst_rate) > 0 || (parseFloat(item.sgst_rate) === 0 && parseFloat(item.cgst_rate) === 0)) {
+            return {
+              ...item,
+              tax_rate: String(rate),
+              sgst_rate: String(rate / 2),
+              cgst_rate: String(rate / 2),
+              igst_rate: "0",
+            };
+          }
+        } else if (currentTaxType === "INTER_STATE") {
+          // If currently has SGST/CGST or zeroed IGST, switch to IGST 100%
+          if (parseFloat(item.sgst_rate) > 0 || parseFloat(item.cgst_rate) > 0 || parseFloat(item.igst_rate) === 0) {
+            return {
+              ...item,
+              tax_rate: String(rate),
+              sgst_rate: "0",
+              cgst_rate: "0",
+              igst_rate: String(rate),
+            };
+          }
+        }
+        return item;
+      })
+    );
+  }, [currentTaxType, products]);
 
   const action = orderId ? updateOrderAction.bind(null, orderId) : createOrderAction;
   const [state, formAction, isServerPending] = useActionState(action, { error: undefined });
@@ -323,6 +382,8 @@ export function OrderForm({
       ...prev,
       {
         product_id: "",
+        variant_id: "",
+        quality_grade: "",
         quantity: "",
         unit_price: "",
         discount_rate: "0",
@@ -361,17 +422,53 @@ export function OrderForm({
       defaultIgst = String(prodTaxRate);
     }
 
+    let initialVariantId = "";
+    let initialQualityGrade = selected?.quality_grade || "";
+    let initialPrice = selected?.selling_price != null ? String(selected.selling_price) : "";
+
+    const activeVariants = (selected?.variants ?? []).filter((v) => v.active !== false);
+    if (activeVariants.length > 0) {
+      const firstVar = activeVariants[0];
+      initialVariantId = firstVar.id;
+      initialQualityGrade = firstVar.quality_grade || firstVar.name || "";
+      if (firstVar.price != null && Number(firstVar.price) > 0) {
+        initialPrice = String(firstVar.price);
+      }
+    }
+
     setItems((prev) =>
       prev.map((item, i) => {
         if (i !== index) return item;
         return {
           ...item,
           product_id: productId,
-          unit_price: selected?.selling_price != null ? String(selected.selling_price) : item.unit_price,
+          variant_id: initialVariantId,
+          quality_grade: initialQualityGrade,
+          unit_price: initialPrice || item.unit_price,
           tax_rate: String(prodTaxRate),
           sgst_rate: defaultSgst,
           cgst_rate: defaultCgst,
           igst_rate: defaultIgst,
+        };
+      })
+    );
+  };
+
+  const handleVariantChange = (index: number, variantId: string) => {
+    setItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== index) return item;
+        const selectedProd = products.find((p) => p.id === item.product_id);
+        const variant = selectedProd?.variants?.find((v) => v.id === variantId);
+        const variantGrade = variant?.quality_grade || variant?.name || "";
+        const variantPrice =
+          variant?.price != null && Number(variant.price) > 0 ? String(variant.price) : item.unit_price;
+
+        return {
+          ...item,
+          variant_id: variantId,
+          quality_grade: variantGrade,
+          unit_price: variantPrice,
         };
       })
     );
@@ -525,31 +622,33 @@ export function OrderForm({
         setClientError(`CGST rate must be between 0% and 100% for item #${i + 1}.`);
         return;
       }
-      const lgst = it.igst_rate.trim() === "" ? 0 : parseFloat(it.igst_rate);
-      if (!Number.isFinite(lgst) || lgst < 0 || lgst > 100) {
-        setClientError(`LGST rate must be between 0% and 100% for item #${i + 1}.`);
+      const igst = it.igst_rate.trim() === "" ? 0 : parseFloat(it.igst_rate);
+      if (!Number.isFinite(igst) || igst < 0 || igst > 100) {
+        setClientError(`IGST rate must be between 0% and 100% for item #${i + 1}.`);
         return;
       }
 
       // Mixed tax mode validation (prevent double-charging tax)
-      if ((sgst > 0 || cgst > 0) && lgst > 0) {
-        setClientError(`Line item #${i + 1}: Cannot apply both SGST/CGST and LGST to the same taxable amount as this would double-charge tax. Please use SGST+CGST for intra-state or LGST for inter-state.`);
+      if ((sgst > 0 || cgst > 0) && igst > 0) {
+        setClientError(`Line item #${i + 1}: Cannot apply both SGST/CGST and IGST to the same taxable amount as this would double-charge tax. Please use SGST+CGST for intra-state or IGST for inter-state.`);
         return;
       }
 
       // State conflict validation
-      if (currentTaxType === "INTRA_STATE" && lgst > 0 && sgst === 0 && cgst === 0) {
-        setClientError(`Line item #${i + 1}: The customer is intra-state (same state). Please use SGST and CGST instead of LGST.`);
+      if (currentTaxType === "INTRA_STATE" && igst > 0 && sgst === 0 && cgst === 0) {
+        setClientError(`Line item #${i + 1}: The customer is intra-state (same state). Please use SGST and CGST instead of IGST.`);
         return;
       }
-      if (currentTaxType === "INTER_STATE" && (sgst > 0 || cgst > 0) && lgst === 0) {
-        setClientError(`Line item #${i + 1}: The customer is inter-state (cross-border). Please use LGST instead of SGST and CGST.`);
+      if (currentTaxType === "INTER_STATE" && (sgst > 0 || cgst > 0) && igst === 0) {
+        setClientError(`Line item #${i + 1}: The customer is inter-state (cross-border). Please use IGST instead of SGST and CGST.`);
         return;
       }
     }
 
     const sanitizedItems = items.map((it) => ({
       ...it,
+      variant_id: it.variant_id?.trim() || undefined,
+      quality_grade: it.quality_grade?.trim() || undefined,
       quantity: it.quantity.trim(),
       unit_price: it.unit_price.trim(),
       discount_rate: it.discount_rate.trim() === "" ? "0" : it.discount_rate.trim(),
@@ -728,6 +827,7 @@ export function OrderForm({
 
     const lines: Array<{
       productName: string;
+      qualityGrade?: string | null;
       unit: string;
       qty: number;
       availableStock: number;
@@ -809,8 +909,11 @@ export function OrderForm({
       const formatDateShort = (d: Date) =>
         d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 
+      const selectedGrade = item.quality_grade || prod?.quality_grade || null;
+
       lines.push({
         productName: prodName,
+        qualityGrade: selectedGrade,
         unit,
         qty,
         availableStock,
@@ -1253,10 +1356,15 @@ export function OrderForm({
                   >
                     <option value="">Select Product</option>
                     {products.map((prod) => {
-                      const avail = prod.available_stock != null ? Number(prod.available_stock) : 0;
+                      const activeVariants = (prod.variants ?? []).filter((v) => v.active !== false);
+                      const qualityLabel = prod.quality_grade
+                        ? `Grade: ${prod.quality_grade}`
+                        : activeVariants.length > 0
+                        ? `(${activeVariants.length} grades available)`
+                        : "Quality not configured";
                       return (
                         <option key={prod.id} value={prod.id}>
-                          {prod.sku ? `${prod.sku} - ` : ""}{prod.name} ({prod.unit}) — Ready Stock: {avail.toLocaleString("en-IN")}
+                          {prod.name} — {qualityLabel} ({prod.unit})
                         </option>
                       );
                     })}
@@ -1266,28 +1374,65 @@ export function OrderForm({
                     if (!selectedProd) return null;
                     const avail = selectedProd.available_stock != null ? Number(selectedProd.available_stock) : 0;
                     const enteredQty = parseFloat(item.quantity) || 0;
+                    const activeVariants = (selectedProd.variants ?? []).filter((v) => v.active !== false);
+
                     return (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
-                        <span className="text-slate-500 font-medium">Ready Stock:</span>
-                        <span
-                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-semibold text-[11px] ${
-                            avail > 0
-                              ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                              : "bg-amber-50 text-amber-700 border border-amber-200"
-                          }`}
-                        >
-                          {avail > 0 ? (
-                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                          ) : (
-                            <Clock className="w-3 h-3 text-amber-600" />
-                          )}
-                          {avail.toLocaleString("en-IN")} {selectedProd.unit} ready
-                        </span>
-                        {enteredQty > 0 && avail > 0 && enteredQty > avail && (
-                          <span className="text-[10px] text-amber-700 font-medium">
-                            ({avail} reserved, {(enteredQty - avail).toLocaleString("en-IN")} produced)
-                          </span>
+                      <div className="mt-2 space-y-1.5">
+                        {activeVariants.length > 0 ? (
+                          <div className="space-y-1">
+                            <label className="block text-[11px] font-semibold text-slate-700">
+                              Quality Grade <span className="text-rose-500">*</span>
+                            </label>
+                            <select
+                              value={item.variant_id || ""}
+                              onChange={(e) => handleVariantChange(index, e.target.value)}
+                              className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs shadow-2xs focus:border-[#0F766E] focus:outline-none focus:ring-1 focus:ring-[#0F766E]"
+                            >
+                              {activeVariants.map((v) => (
+                                <option key={v.id} value={v.id}>
+                                  {v.quality_grade ? `Grade: ${v.quality_grade}` : v.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        ) : selectedProd.quality_grade ? (
+                          <div className="flex items-center gap-1.5 text-xs">
+                            <span className="text-slate-500 font-medium">Quality Grade:</span>
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                              Grade: {selectedProd.quality_grade}
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5 text-xs">
+                            <span className="text-slate-500 font-medium">Quality Grade:</span>
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
+                              Quality not configured
+                            </span>
+                          </div>
                         )}
+
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                          <span className="text-slate-500 font-medium">Ready Stock:</span>
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-semibold text-[11px] ${
+                              avail > 0
+                                ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                                : "bg-amber-50 text-amber-700 border border-amber-200"
+                            }`}
+                          >
+                            {avail > 0 ? (
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            ) : (
+                              <Clock className="w-3 h-3 text-amber-600" />
+                            )}
+                            {avail.toLocaleString("en-IN")} {selectedProd.unit} ready
+                          </span>
+                          {enteredQty > 0 && avail > 0 && enteredQty > avail && (
+                            <span className="text-[10px] text-amber-700 font-medium">
+                              ({avail} reserved, {(enteredQty - avail).toLocaleString("en-IN")} produced)
+                            </span>
+                          )}
+                        </div>
                       </div>
                     );
                   })()}
@@ -1328,7 +1473,7 @@ export function OrderForm({
                   </div>
                 </div>
 
-                {/* Disc %, SGST %, CGST %, LGST % inputs */}
+                {/* Disc %, SGST %, CGST %, IGST % inputs */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">
@@ -1381,13 +1526,13 @@ export function OrderForm({
                   </div>
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      LGST %
+                      IGST %
                     </label>
                     <input
                       type="number"
                       name={`items[${index}][igst_rate]`}
                       value={item.igst_rate}
-                      onChange={(e) => handleLgstChange(index, e.target.value)}
+                      onChange={(e) => handleIgstChange(index, e.target.value)}
                       step="0.01"
                       min="0"
                       max="100"
@@ -1401,28 +1546,28 @@ export function OrderForm({
                 {(() => {
                   const s = parseFloat(item.sgst_rate) || 0;
                   const c = parseFloat(item.cgst_rate) || 0;
-                  const lg = parseFloat(item.igst_rate) || 0;
-                  if ((s > 0 || c > 0) && lg > 0) {
+                  const ig = parseFloat(item.igst_rate) || 0;
+                  if ((s > 0 || c > 0) && ig > 0) {
                     return (
                       <div className="flex items-center gap-1 text-[11px] text-rose-600 font-medium pt-0.5">
                         <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                        <span>Mixed tax mode: Cannot apply both SGST/CGST and LGST to the same item (would double-charge tax).</span>
+                        <span>Mixed tax mode: Cannot apply both SGST/CGST and IGST to the same item (would double-charge tax).</span>
                       </div>
                     );
                   }
-                  if (currentTaxType === "INTRA_STATE" && lg > 0 && s === 0 && c === 0) {
+                  if (currentTaxType === "INTRA_STATE" && ig > 0 && s === 0 && c === 0) {
                     return (
                       <div className="flex items-center gap-1 text-[11px] text-amber-700 font-medium pt-0.5">
                         <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                        <span>Intra-state order: SGST and CGST expected instead of LGST.</span>
+                        <span>Intra-state order: SGST and CGST expected instead of IGST.</span>
                       </div>
                     );
                   }
-                  if (currentTaxType === "INTER_STATE" && (s > 0 || c > 0) && lg === 0) {
+                  if (currentTaxType === "INTER_STATE" && (s > 0 || c > 0) && ig === 0) {
                     return (
                       <div className="flex items-center gap-1 text-[11px] text-amber-700 font-medium pt-0.5">
                         <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                        <span>Inter-state order: LGST expected instead of SGST and CGST.</span>
+                        <span>Inter-state order: IGST expected instead of SGST and CGST.</span>
                       </div>
                     );
                   }
@@ -1453,7 +1598,7 @@ export function OrderForm({
                           {itemGst.taxRate === 0 ? (
                             "0% (Exempt)"
                           ) : itemGst.igstRate > 0 && itemGst.sgstRate === 0 && itemGst.cgstRate === 0 ? (
-                            `LGST (${itemGst.igstRate}%): ₹${itemGst.igstAmount.toFixed(2)}`
+                            `IGST (${itemGst.igstRate}%): ₹${itemGst.igstAmount.toFixed(2)}`
                           ) : (
                             `CGST (${itemGst.cgstRate}%): ₹${itemGst.cgstAmount.toFixed(2)} + SGST (${itemGst.sgstRate}%): ₹${itemGst.sgstAmount.toFixed(2)}`
                           )}
@@ -1484,7 +1629,7 @@ export function OrderForm({
                 <th className="px-2 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider w-16">Disc %</th>
                 <th className="px-2 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider w-16">SGST %</th>
                 <th className="px-2 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider w-16">CGST %</th>
-                <th className="px-2 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider w-16">LGST %</th>
+                <th className="px-2 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider w-16">IGST %</th>
                 <th className="px-2 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider w-24">Taxable (₹)</th>
                 <th className="px-3 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider w-36">GST Breakdown</th>
                 <th className="px-3 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider w-24">Line Total</th>
@@ -1525,10 +1670,15 @@ export function OrderForm({
                       >
                         <option value="">Select Product</option>
                         {products.map((prod) => {
-                          const avail = prod.available_stock != null ? Number(prod.available_stock) : 0;
+                          const activeVariants = (prod.variants ?? []).filter((v) => v.active !== false);
+                          const qualityLabel = prod.quality_grade
+                            ? `Grade: ${prod.quality_grade}`
+                            : activeVariants.length > 0
+                            ? `(${activeVariants.length} grades available)`
+                            : "Quality not configured";
                           return (
                             <option key={prod.id} value={prod.id}>
-                              {prod.sku ? `${prod.sku} - ` : ""}{prod.name} ({prod.unit}) — GST: {Number(prod.tax_rate)}%
+                              {prod.name} — {qualityLabel} ({prod.unit}) — GST: {Number(prod.tax_rate)}%
                             </option>
                           );
                         })}
@@ -1538,27 +1688,64 @@ export function OrderForm({
                         if (!selectedProd) return null;
                         const avail = selectedProd.available_stock != null ? Number(selectedProd.available_stock) : 0;
                         const enteredQty = parseFloat(item.quantity) || 0;
+                        const activeVariants = (selectedProd.variants ?? []).filter((v) => v.active !== false);
+
                         return (
-                          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
-                            <span
-                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold ${
-                                avail > 0
-                                  ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                                  : "bg-amber-50 text-amber-700 border border-amber-200"
-                              }`}
-                            >
-                              {avail > 0 ? (
-                                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
-                              ) : (
-                                <Clock className="w-2.5 h-2.5 text-amber-600" />
-                              )}
-                              Ready: {avail.toLocaleString("en-IN")} {selectedProd.unit}
-                            </span>
-                            {enteredQty > 0 && avail > 0 && enteredQty > avail && (
-                              <span className="text-[10px] text-amber-700 font-medium">
-                                ({avail} reserved, {(enteredQty - avail).toLocaleString("en-IN")} to produce)
-                              </span>
+                          <div className="mt-1.5 space-y-1">
+                            {activeVariants.length > 0 ? (
+                              <div className="space-y-0.5">
+                                <label className="block text-[10px] font-semibold text-slate-600">
+                                  Quality Grade <span className="text-rose-500">*</span>
+                                </label>
+                                <select
+                                  value={item.variant_id || ""}
+                                  onChange={(e) => handleVariantChange(index, e.target.value)}
+                                  className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs shadow-2xs focus:border-[#0F766E] focus:outline-none focus:ring-1 focus:ring-[#0F766E]"
+                                >
+                                  {activeVariants.map((v) => (
+                                    <option key={v.id} value={v.id}>
+                                      {v.quality_grade ? `Grade: ${v.quality_grade}` : v.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            ) : selectedProd.quality_grade ? (
+                              <div className="flex items-center gap-1 text-[11px]">
+                                <span className="text-slate-500 font-medium">Grade:</span>
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px]">
+                                  {selectedProd.quality_grade}
+                                </span>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1 text-[11px]">
+                                <span className="text-slate-500 font-medium">Grade:</span>
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded font-medium bg-amber-50 text-amber-700 border border-amber-200 text-[10px]">
+                                  Quality not configured
+                                </span>
+                              </div>
                             )}
+
+                            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                              <span
+                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                  avail > 0
+                                    ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                                    : "bg-amber-50 text-amber-700 border border-amber-200"
+                                }`}
+                              >
+                                {avail > 0 ? (
+                                  <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
+                                ) : (
+                                  <Clock className="w-2.5 h-2.5 text-amber-600" />
+                                )}
+                                Ready: {avail.toLocaleString("en-IN")} {selectedProd.unit}
+                              </span>
+                              {enteredQty > 0 && avail > 0 && enteredQty > avail && (
+                                <span className="text-[10px] text-amber-700 font-medium">
+                                  ({avail} reserved, {(enteredQty - avail).toLocaleString("en-IN")} to produce)
+                                </span>
+                              )}
+                            </div>
                           </div>
                         );
                       })()}
@@ -1631,13 +1818,13 @@ export function OrderForm({
                         className="w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-sm shadow-2xs focus:border-[#0F766E] focus:outline-none focus:ring-1 focus:ring-[#0F766E] min-h-[44px]"
                       />
                     </td>
-                    {/* LGST % */}
+                    {/* IGST % */}
                     <td className="px-2 py-2.5">
                       <input
                         type="number"
                         name={`items[${index}][igst_rate]`}
                         value={item.igst_rate}
-                        onChange={(e) => handleLgstChange(index, e.target.value)}
+                        onChange={(e) => handleIgstChange(index, e.target.value)}
                         step="0.01"
                         min="0"
                         max="100"
@@ -1654,7 +1841,7 @@ export function OrderForm({
                         <span className="text-slate-400 font-medium">0% (Exempt)</span>
                       ) : itemGst.igstRate > 0 && itemGst.sgstRate === 0 && itemGst.cgstRate === 0 ? (
                         <div className="text-[11px] text-indigo-800 font-medium">
-                          LGST ({itemGst.igstRate}%): <span className="font-mono font-semibold">₹{itemGst.igstAmount.toFixed(2)}</span>
+                          IGST ({itemGst.igstRate}%): <span className="font-mono font-semibold">₹{itemGst.igstAmount.toFixed(2)}</span>
                         </div>
                       ) : (
                         <div className="space-y-0.5 text-[11px] leading-tight text-teal-800">
@@ -1728,7 +1915,7 @@ export function OrderForm({
                 <div className="flex items-center justify-between pb-1 border-b border-slate-100">
                   <span className="font-semibold text-slate-700">Tax Type:</span>
                   <span className="font-bold text-teal-800">
-                    {summary.taxType === "INTRA_STATE" ? "Intra-State (CGST + SGST)" : "Inter-State (LGST)"}
+                    {summary.taxType === "INTRA_STATE" ? "Intra-State (CGST + SGST)" : "Inter-State (IGST)"}
                   </span>
                 </div>
                 {summary.cgst > 0 && (
@@ -1749,7 +1936,7 @@ export function OrderForm({
                 )}
                 {summary.igst > 0 && (
                   <div className="flex justify-between text-slate-600">
-                    <span>LGST (Inter-State):</span>
+                    <span>Integrated GST (IGST):</span>
                     <span className="font-mono font-semibold text-slate-900">
                       +₹{summary.igst.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
@@ -1938,6 +2125,15 @@ export function OrderForm({
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-2">
                     <span className="font-bold text-slate-800">{line.productName}</span>
+                    {line.qualityGrade ? (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-teal-50 text-teal-800 border border-teal-200">
+                        Grade: {line.qualityGrade}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
+                        Quality not configured
+                      </span>
+                    )}
                     <span className="text-slate-500 font-medium">
                       ({line.qty.toLocaleString("en-IN")} {line.unit})
                     </span>

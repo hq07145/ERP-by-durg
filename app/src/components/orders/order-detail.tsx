@@ -69,6 +69,7 @@ interface DeliveryInfo {
   hasMissingCapacity?: boolean;
   itemsSummary?: Array<{
     productName: string;
+    qualityGrade?: string | null;
     orderedQty: number;
     stockQty: number;
     prodQty: number;
@@ -96,6 +97,8 @@ interface OrderDetailProps {
   businessDetails?: {
     name?: string;
     legal_name?: string;
+    tagline?: string;
+    business_type?: string;
     gst_number?: string;
     state?: string;
     address?: string;
@@ -554,7 +557,15 @@ export function OrderDetail({
                     <tr key={item.id} className="hover:bg-slate-50/50 transition">
                       <td className="px-3.5 py-3">
                         <p className="font-semibold text-slate-900">{item.product_name}</p>
-                        {item.product_sku && <p className="font-mono text-xs text-slate-500">{item.product_sku}</p>}
+                        {item.quality_grade ? (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 mt-0.5">
+                            Grade: {item.quality_grade}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-amber-50 text-amber-700 border border-amber-200 mt-0.5">
+                            Quality not configured
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-3 text-slate-700 text-right font-medium">
                         {qty.toFixed(2)} <span className="text-xs text-slate-500">{item.product_unit}</span>
@@ -1246,12 +1257,22 @@ export function OrderDetail({
               <div className="flex flex-col sm:flex-row justify-between items-start gap-4 pb-6 border-b-2 border-slate-900">
                 <div>
                   <h1 className="text-2xl font-bold tracking-tight text-slate-900 uppercase">
-                    {businessDetails?.legal_name || businessDetails?.name || "Manufacturing Operations"}
+                    {businessDetails?.legal_name || businessDetails?.name || "SANKALP IRRIGATION"}
                   </h1>
-                  <p className="text-xs text-slate-500 mt-0.5">{businessDetails?.address || "Factory & Commercial Headquarters"}</p>
+                  {businessDetails?.tagline && (
+                    <p className="text-xs font-semibold text-[#0F766E] tracking-wider uppercase mt-0.5">
+                      {businessDetails.tagline}
+                    </p>
+                  )}
+                  {businessDetails?.business_type && (
+                    <p className="text-[11px] text-slate-600 font-medium uppercase">
+                      {businessDetails.business_type}
+                    </p>
+                  )}
+                  <p className="text-xs text-slate-500 mt-1">{businessDetails?.address || "Icchapur Road, Shahpur, Dist. Burhanpur (M.P.) 450-445"}</p>
                   <div className="text-xs text-slate-700 mt-2 space-y-0.5">
-                    <p><span className="font-semibold">GSTIN:</span> <span className="font-mono font-bold text-slate-900">{order.business_gstin || businessDetails?.gst_number || "Unregistered"}</span></p>
-                    <p><span className="font-semibold">State & Code:</span> {businessDetails?.state || "Maharashtra"} {order.business_gstin ? `(${order.business_gstin.slice(0, 2)})` : ""}</p>
+                    <p><span className="font-semibold">GSTIN:</span> <span className="font-mono font-bold text-slate-900">{order.business_gstin || businessDetails?.gst_number || "23AAMPQ5857F1ZE"}</span></p>
+                    <p><span className="font-semibold">State & Code:</span> {businessDetails?.state || "Madhya Pradesh"} {order.business_gstin ? `(${order.business_gstin.slice(0, 2)})` : businessDetails?.gst_number ? `(${businessDetails.gst_number.slice(0, 2)})` : "(23)"}</p>
                     {businessDetails?.email && <p><span className="font-semibold">Email:</span> {businessDetails.email}</p>}
                     {businessDetails?.phone && <p><span className="font-semibold">Phone:</span> {businessDetails.phone}</p>}
                   </div>
@@ -1337,7 +1358,15 @@ export function OrderDetail({
                           <td className="p-2.5 text-center text-slate-400">{idx + 1}</td>
                           <td className="p-2.5">
                             <p className="font-semibold text-slate-900">{it.product_name}</p>
-                            {it.product_sku && <p className="font-mono text-[10px] text-slate-500">SKU: {it.product_sku}</p>}
+                            {it.quality_grade ? (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 mt-0.5">
+                                Grade: {it.quality_grade}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200 mt-0.5">
+                                Quality not configured
+                              </span>
+                            )}
                           </td>
                           <td className="p-2.5 text-right font-medium">{qty.toFixed(2)} {it.product_unit}</td>
                           <td className="p-2.5 text-right font-mono">{formatCurrency(price)}</td>
@@ -1460,7 +1489,7 @@ export function OrderDetail({
                 <div className="text-right">
                   <div className="h-12 border-b border-dashed border-slate-300 w-44 mb-1"></div>
                   <p className="font-semibold text-slate-800">Authorized Signatory</p>
-                  <p className="text-[10px] text-slate-400">For {businessDetails?.legal_name || businessDetails?.name || "Manufacturing Operations"}</p>
+                  <p className="text-[10px] text-slate-400">For {businessDetails?.legal_name || businessDetails?.name || "SANKALP IRRIGATION"}</p>
                 </div>
               </div>
             </div>

@@ -200,7 +200,7 @@ export default async function ManagerDashboardPage({
           .order("name"),
         supabase
           .from("products")
-          .select("id, name, sku, unit, selling_price, tax_rate, daily_capacity, production_min_days, setup_minutes, delivery_min_days, delivery_max_days")
+          .select("id, name, sku, quality_grade, unit, selling_price, tax_rate, daily_capacity, production_min_days, setup_minutes, delivery_min_days, delivery_max_days, variants:product_variants(id, name, sku, price, quality_grade, active)")
           .eq("business_id", context.user.business_id)
           .eq("active", true)
           .order("name"),

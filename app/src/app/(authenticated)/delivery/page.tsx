@@ -3,7 +3,7 @@ import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
 import { redirect } from "next/navigation";
 import { DeliveryList } from "@/components/delivery/delivery-list";
-import { listDeliveries } from "@/lib/delivery/actions";
+import { listDeliveries, getDeliveryStatusCounts } from "@/lib/delivery/actions";
 import type { DeliveryStatus } from "@/types/delivery";
 
 interface PageProps {
@@ -12,6 +12,7 @@ interface PageProps {
     page?: string;
     pageSize?: string;
     create?: string;
+    q?: string;
   }>;
 }
 
@@ -29,11 +30,13 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
   const page = parseInt(params.page || "1", 10);
   const pageSize = parseInt(params.pageSize || "20", 10);
   const offset = (page - 1) * pageSize;
+  const q = params.q?.trim() || "";
 
   const supabase = await createServerSupabaseClient();
-  const [deliveries, totalResult, customersRes] = await Promise.all([
-    listDeliveries(status, undefined, pageSize, offset),
-    getTotalCount(status),
+  const [deliveries, totalResult, statusCounts, customersRes] = await Promise.all([
+    listDeliveries(status, undefined, pageSize, offset, q),
+    getTotalCount(status, q),
+    getDeliveryStatusCounts(),
     supabase
       ? supabase
           .from("customers")
@@ -52,6 +55,10 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
   const canDispatch = hasPermission({ permissions: context.permissions }, "delivery.dispatch");
   const canComplete = hasPermission({ permissions: context.permissions }, "delivery.complete");
   const canCancel = hasPermission({ permissions: context.permissions }, "delivery.cancel");
+  const canPack =
+    hasPermission({ permissions: context.permissions }, "delivery.update") ||
+    canDispatch ||
+    canCreate;
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -68,10 +75,13 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
         initialCreateModalOpen={params.create === "true"}
         canCreate={canCreate}
         canView={canView}
+        canPack={canPack}
         canDispatch={canDispatch}
         canComplete={canComplete}
         canCancel={canCancel}
         currentStatus={status}
+        statusCounts={statusCounts}
+        searchQuery={q}
         totalCount={totalCount}
         currentPage={page}
         pageSize={pageSize}
@@ -80,7 +90,7 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
   );
 }
 
-async function getTotalCount(status?: DeliveryStatus): Promise<{ count: number } | null> {
+async function getTotalCount(status?: DeliveryStatus, search?: string): Promise<{ count: number } | null> {
   const context = await getAuthContext();
   if (!context) return null;
 
@@ -94,6 +104,13 @@ async function getTotalCount(status?: DeliveryStatus): Promise<{ count: number }
 
   if (status) {
     query = query.eq("status", status);
+  }
+
+  if (search && search.trim()) {
+    const s = search.trim();
+    query = query.or(
+      `delivery_number.ilike.%${s}%,tracking_number.ilike.%${s}%,vehicle.ilike.%${s}%,driver.ilike.%${s}%`
+    );
   }
 
   const { count, error } = await query;

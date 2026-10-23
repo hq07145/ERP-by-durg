@@ -29,13 +29,15 @@ export function getTimezoneOptions(): TimezoneOption[] {
 
 export const DEFAULT_SETTINGS: Record<SettingsKey, SettingsValue> = {
   business_details: {
-    name: "",
-    legal_name: "",
-    gst_number: "",
-    state: "Maharashtra",
-    address: "",
+    name: "SANKALP IRRIGATION",
+    legal_name: "SANKALP IRRIGATION",
+    tagline: "ISI CERTIFIED COMPANY",
+    business_type: "INLINE-ONLINE DRIP MAKER",
+    gst_number: "23AAMPQ5857F1ZE",
+    state: "Madhya Pradesh",
+    address: "Icchapur Road, Shahpur, Dist. Burhanpur (M.P.) 450-445",
     phone: "",
-    email: "",
+    email: "sankalpirrigation80@gmail.com",
   },
   currency: {
     code: "INR",

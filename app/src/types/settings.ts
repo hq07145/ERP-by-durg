@@ -1,6 +1,8 @@
 export interface BusinessDetails {
   name: string;
   legal_name?: string;
+  tagline?: string;
+  business_type?: string;
   gst_number?: string;
   state?: string;
   address?: string;

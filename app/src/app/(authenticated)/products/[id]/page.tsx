@@ -93,6 +93,7 @@ export default async function ProductDetailsPage({
       {notice && <p className="mt-5 border-l-2 border-[var(--accent)] bg-[#eef5f0] px-3 py-2 text-sm text-[var(--accent-strong)]" role="status">{notice}</p>}
 
       <dl className="mt-8 grid gap-x-10 gap-y-7 border-b border-[var(--line)] pb-8 sm:grid-cols-2 lg:grid-cols-3">
+        <div><dt className="text-xs font-semibold uppercase text-[var(--muted)]">Quality / Grade</dt><dd className="mt-1 text-sm font-medium">{product.quality_grade || <span className="text-slate-400 font-normal">Quality not configured</span>}</dd></div>
         <div><dt className="text-xs font-semibold uppercase text-[var(--muted)]">Category</dt><dd className="mt-1 text-sm font-medium">{categoryName}</dd></div>
         <div><dt className="text-xs font-semibold uppercase text-[var(--muted)]">Unit</dt><dd className="mt-1 text-sm font-medium">{product.unit}</dd></div>
         <div><dt className="text-xs font-semibold uppercase text-[var(--muted)]">Selling price</dt><dd className="mt-1 text-sm font-medium tabular-nums">{currencyAmount(product.selling_price, currency)}</dd></div>

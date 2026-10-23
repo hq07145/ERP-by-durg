@@ -165,7 +165,7 @@ export function ReportTable({
           { key: "customer_company", header: "Company" },
           { key: "total_purchases", header: "Purchases", align: "right" },
           { key: "total_paid", header: "Paid", align: "right" },
-          { key: "total_due", header: "Due", align: "right" },
+          { key: "total_due", header: "Amount Due", align: "right" },
           { key: "last_payment_date", header: "Last Payment" },
           { key: "credit_limit", header: "Credit Limit", align: "right" },
         ];

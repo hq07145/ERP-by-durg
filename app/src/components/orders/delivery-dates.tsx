@@ -37,6 +37,7 @@ interface DeliveryDatesProps {
   hasMissingCapacity?: boolean;
   itemsSummary?: Array<{
     productName: string;
+    qualityGrade?: string | null;
     orderedQty: number;
     stockQty: number;
     prodQty: number;
@@ -296,7 +297,19 @@ export function DeliveryDates({
             <div className="mt-3 pt-3 border-t border-slate-200 space-y-1.5">
               {itemsSummary.map((item, i) => (
                 <div key={i} className="flex flex-wrap items-center justify-between text-xs text-slate-700 py-1 border-b border-slate-100 last:border-b-0">
-                  <span className="font-medium text-slate-900">{item.productName} ({item.orderedQty} units)</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium text-slate-900">{item.productName}</span>
+                    {item.qualityGrade ? (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                        Grade: {item.qualityGrade}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200">
+                        Quality not configured
+                      </span>
+                    )}
+                    <span className="text-slate-500">({item.orderedQty} units)</span>
+                  </div>
                   <div className="flex items-center gap-2 text-[11px]">
                     {item.stockQty > 0 && (
                       <span className="text-emerald-700 font-semibold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">

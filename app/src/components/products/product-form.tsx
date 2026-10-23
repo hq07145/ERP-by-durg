@@ -104,6 +104,11 @@ export default function ProductForm({
           <span className={hintClass}>Saved in uppercase and unique within this business.</span>
         </label>
         <label className={labelClass}>
+          Quality / Grade
+          <input className={inputClass} autoComplete="off" maxLength={80} name="quality_grade" onChange={(event) => setValue("quality_grade", event.target.value, event)} value={values.quality_grade} placeholder="e.g. Class 2, Grade 100, ISO 200, Virgin" />
+          <span className={hintClass}>Configured product quality, grade, or specification number.</span>
+        </label>
+        <label className={labelClass}>
           Category
           <select className={selectClass} name="category_id" onChange={(event) => setValue("category_id", event.target.value, event)} value={values.category_id}>
             <option value="">No category</option>

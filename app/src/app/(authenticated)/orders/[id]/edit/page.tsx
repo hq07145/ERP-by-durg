@@ -39,7 +39,7 @@ export default async function EditOrderPage({ params }: PageProps) {
       .maybeSingle(),
     supabase
       .from("order_items")
-      .select("id, product_id, quantity, unit_price, discount_rate, tax_rate, sgst_rate, cgst_rate, igst_rate")
+      .select("id, product_id, quality_grade, variant_id, quantity, unit_price, discount_rate, tax_rate, sgst_rate, cgst_rate, igst_rate")
       .eq("business_id", context.user.business_id)
       .eq("order_id", id)
       .order("created_at"),
@@ -51,7 +51,7 @@ export default async function EditOrderPage({ params }: PageProps) {
       .order("name"),
     supabase
       .from("products")
-      .select("id, name, sku, unit, selling_price, tax_rate, daily_capacity, production_min_days, setup_minutes, delivery_min_days, delivery_max_days")
+      .select("id, name, sku, quality_grade, unit, selling_price, tax_rate, daily_capacity, production_min_days, setup_minutes, delivery_min_days, delivery_max_days, variants:product_variants(id, name, sku, price, quality_grade, active)")
       .eq("business_id", context.user.business_id)
       .eq("active", true)
       .order("name"),
@@ -109,6 +109,8 @@ export default async function EditOrderPage({ params }: PageProps) {
 
   const initialItems = (items ?? []).map((it) => ({
     product_id: it.product_id,
+    variant_id: it.variant_id ?? undefined,
+    quality_grade: it.quality_grade ?? undefined,
     quantity: String(it.quantity),
     unit_price: String(it.unit_price), // Preserves historical unit price snapshot
     discount_rate: String(it.discount_rate ?? "0"),

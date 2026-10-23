@@ -8,6 +8,7 @@ export interface LedgerEntryRow {
   vchNo: string;
   debit: number | null;
   credit: number | null;
+  amountDue?: number | null;
 }
 
 export interface LedgerReportData {
@@ -106,6 +107,7 @@ export function generateLedgerPDF(data: LedgerReportData): string {
   const openingDebit = Number(data.openingDebit) || 0;
   const openingCredit = Number(data.openingCredit) || 0;
   const hasOpening = openingDebit > 0 || openingCredit > 0;
+  const openingDue = openingDebit > openingCredit ? openingDebit - openingCredit : 0;
 
   const TX_PER_PAGE = 26;
   const pagesData: string[][][] = [];
@@ -120,6 +122,7 @@ export function generateLedgerPDF(data: LedgerReportData): string {
   while (txIndex < entries.length || (pageIdx === 0 && entries.length === 0)) {
     const pageRows: string[][] = [];
     const isFirstPage = pageIdx === 0;
+    const runningDue = Math.max(0, runningDebit - runningCredit);
 
     if (isFirstPage && hasOpening) {
       pageRows.push([
@@ -129,6 +132,7 @@ export function generateLedgerPDF(data: LedgerReportData): string {
         "",
         formatIndianCurrency(openingDebit),
         formatIndianCurrency(openingCredit),
+        formatIndianCurrency(openingDue, true),
       ]);
     } else if (!isFirstPage) {
       pageRows.push([
@@ -138,6 +142,7 @@ export function generateLedgerPDF(data: LedgerReportData): string {
         "",
         formatIndianCurrency(runningDebit, true),
         formatIndianCurrency(runningCredit, true),
+        formatIndianCurrency(runningDue, true),
       ]);
     }
 
@@ -151,6 +156,13 @@ export function generateLedgerPDF(data: LedgerReportData): string {
       runningDebit += d;
       runningCredit += c;
 
+      const dueStr =
+        tx.amountDue !== undefined && tx.amountDue !== null
+          ? formatIndianCurrency(tx.amountDue, true)
+          : tx.debit
+          ? formatIndianCurrency(tx.debit, true)
+          : "—";
+
       pageRows.push([
         tx.date || "",
         tx.particulars || "",
@@ -158,8 +170,11 @@ export function generateLedgerPDF(data: LedgerReportData): string {
         tx.vchNo || "",
         formatIndianCurrency(tx.debit),
         formatIndianCurrency(tx.credit),
+        dueStr,
       ]);
     }
+
+    const currentRunningDue = Math.max(0, runningDebit - runningCredit);
 
     if (!isLastPage) {
       pageRows.push([
@@ -169,29 +184,35 @@ export function generateLedgerPDF(data: LedgerReportData): string {
         "",
         formatIndianCurrency(runningDebit, true),
         formatIndianCurrency(runningCredit, true),
+        formatIndianCurrency(currentRunningDue, true),
       ]);
     } else {
       const diff = runningDebit - runningCredit;
       let closingDebit = 0;
       let closingCredit = 0;
+      let closingDue = 0;
 
       if (diff > 0) {
         closingCredit = diff;
+        closingDue = diff;
       } else if (diff < 0) {
         closingDebit = Math.abs(diff);
+        closingDue = 0; // Customer advances are not treated as unpaid dues
       }
 
       const finalTotalDebit = runningDebit + closingDebit;
       const finalTotalCredit = runningCredit + closingCredit;
+      const finalTotalDue = Math.max(0, diff);
 
-      if (hasOpening && diff !== 0) {
+      if (hasOpening || diff !== 0) {
         pageRows.push([
           "",
-          "Closing Balance",
+          diff < 0 ? "Closing Balance (Advance)" : "Closing Balance",
           "",
           "",
           formatIndianCurrency(closingDebit),
           formatIndianCurrency(closingCredit),
+          formatIndianCurrency(closingDue, true),
         ]);
         pageRows.push([
           "",
@@ -200,6 +221,7 @@ export function generateLedgerPDF(data: LedgerReportData): string {
           "",
           formatIndianCurrency(finalTotalDebit, true),
           formatIndianCurrency(finalTotalCredit, true),
+          formatIndianCurrency(finalTotalDue, true),
         ]);
       } else {
         pageRows.push([
@@ -209,6 +231,7 @@ export function generateLedgerPDF(data: LedgerReportData): string {
           "",
           formatIndianCurrency(runningDebit, true),
           formatIndianCurrency(runningCredit, true),
+          formatIndianCurrency(0, true),
         ]);
       }
     }
@@ -226,14 +249,14 @@ export function generateLedgerPDF(data: LedgerReportData): string {
     autoTable(doc, {
       startY: 85,
       margin: { left: margin, right: margin, top: 85, bottom: 45 },
-      head: [["Date", "Particulars", "Vch Type", "Vch No.", "Debit", "Credit"]],
+      head: [["Date", "Particulars", "Vch Type", "Vch No.", "Debit", "Credit", "Amount Due"]],
       body: rows,
       theme: "plain",
       styles: {
         font: "helvetica",
-        fontSize: 8.5,
+        fontSize: 8,
         textColor: [0, 0, 0],
-        cellPadding: { top: 3.5, bottom: 3.5, left: 4, right: 4 },
+        cellPadding: { top: 3.5, bottom: 3.5, left: 3, right: 3 },
         lineWidth: 0,
         lineColor: [0, 0, 0],
         overflow: "linebreak",
@@ -245,12 +268,13 @@ export function generateLedgerPDF(data: LedgerReportData): string {
         lineWidth: { top: 0.75, bottom: 0.75, left: 0, right: 0 },
       },
       columnStyles: {
-        0: { cellWidth: 62 },
+        0: { cellWidth: 55 },
         1: { cellWidth: "auto" },
-        2: { cellWidth: 70 },
-        3: { cellWidth: 80 },
-        4: { cellWidth: 75, halign: "right" },
-        5: { cellWidth: 75, halign: "right" },
+        2: { cellWidth: 58 },
+        3: { cellWidth: 68 },
+        4: { cellWidth: 65, halign: "right" },
+        5: { cellWidth: 65, halign: "right" },
+        6: { cellWidth: 70, halign: "right" },
       },
       didParseCell: function (cellData) {
         const rawRow = cellData.row.raw as any;
@@ -258,9 +282,9 @@ export function generateLedgerPDF(data: LedgerReportData): string {
         if (rowText === "Total") {
           cellData.cell.styles.fontStyle = "bold";
           cellData.cell.styles.lineWidth = { top: 0.75, bottom: 1.5, left: 0, right: 0 };
-        } else if (rowText === "Closing Balance" || rowText === "Opening Balance") {
+        } else if (rowText === "Closing Balance" || rowText === "Opening Balance" || rowText.startsWith("Closing Balance")) {
           cellData.cell.styles.fontStyle = "bold";
-          if (rowText === "Closing Balance") {
+          if (rowText.startsWith("Closing Balance")) {
             cellData.cell.styles.lineWidth = { top: 0.5, bottom: 0, left: 0, right: 0 };
           }
         } else if (rowText === "Carried Forward" || rowText === "Brought Forward") {
@@ -302,6 +326,7 @@ export function generateLedgerExcel(data: LedgerReportData): string {
   const openingDebit = Number(data.openingDebit) || 0;
   const openingCredit = Number(data.openingCredit) || 0;
   const hasOpening = openingDebit > 0 || openingCredit > 0;
+  const openingDue = openingDebit > openingCredit ? openingDebit - openingCredit : 0;
 
   let runningDebit = openingDebit;
   let runningCredit = openingCredit;
@@ -316,6 +341,7 @@ export function generateLedgerExcel(data: LedgerReportData): string {
       <td></td>
       <td class="num">${openingDebit > 0 ? openingDebit.toFixed(2) : ""}</td>
       <td class="num">${openingCredit > 0 ? openingCredit.toFixed(2) : ""}</td>
+      <td class="num">${openingDue > 0 ? openingDue.toFixed(2) : "0.00"}</td>
     </tr>`;
   }
 
@@ -325,6 +351,13 @@ export function generateLedgerExcel(data: LedgerReportData): string {
     runningDebit += d;
     runningCredit += c;
 
+    const dueStr =
+      tx.amountDue !== undefined && tx.amountDue !== null
+        ? Number(tx.amountDue).toFixed(2)
+        : d > 0
+        ? d.toFixed(2)
+        : "";
+
     bodyHtml += `<tr>
       <td>${sanitizeExcel(tx.date)}</td>
       <td>${sanitizeExcel(tx.particulars)}</td>
@@ -332,29 +365,35 @@ export function generateLedgerExcel(data: LedgerReportData): string {
       <td>${sanitizeExcel(tx.vchNo)}</td>
       <td class="num">${d > 0 ? d.toFixed(2) : ""}</td>
       <td class="num">${c > 0 ? c.toFixed(2) : ""}</td>
+      <td class="num">${dueStr}</td>
     </tr>`;
   }
 
   const diff = runningDebit - runningCredit;
   let closingDebit = 0;
   let closingCredit = 0;
+  let closingDue = 0;
   if (diff > 0) {
     closingCredit = diff;
+    closingDue = diff;
   } else if (diff < 0) {
     closingDebit = Math.abs(diff);
+    closingDue = 0;
   }
 
   const finalTotalDebit = runningDebit + closingDebit;
   const finalTotalCredit = runningCredit + closingCredit;
+  const finalTotalDue = Math.max(0, diff);
 
-  if (hasOpening && diff !== 0) {
+  if (hasOpening || diff !== 0) {
     bodyHtml += `<tr class="bold-row">
       <td></td>
-      <td>Closing Balance</td>
+      <td>${diff < 0 ? "Closing Balance (Advance)" : "Closing Balance"}</td>
       <td></td>
       <td></td>
       <td class="num">${closingDebit > 0 ? closingDebit.toFixed(2) : ""}</td>
       <td class="num">${closingCredit > 0 ? closingCredit.toFixed(2) : ""}</td>
+      <td class="num">${closingDue > 0 ? closingDue.toFixed(2) : "0.00"}</td>
     </tr>`;
     bodyHtml += `<tr class="total-row">
       <td></td>
@@ -363,6 +402,7 @@ export function generateLedgerExcel(data: LedgerReportData): string {
       <td></td>
       <td class="num">${finalTotalDebit.toFixed(2)}</td>
       <td class="num">${finalTotalCredit.toFixed(2)}</td>
+      <td class="num">${finalTotalDue.toFixed(2)}</td>
     </tr>`;
   } else {
     bodyHtml += `<tr class="total-row">
@@ -372,6 +412,7 @@ export function generateLedgerExcel(data: LedgerReportData): string {
       <td></td>
       <td class="num">${runningDebit.toFixed(2)}</td>
       <td class="num">${runningCredit.toFixed(2)}</td>
+      <td class="num">${finalTotalDue.toFixed(2)}</td>
     </tr>`;
   }
 
@@ -405,6 +446,7 @@ export function generateLedgerExcel(data: LedgerReportData): string {
         <th>Vch No.</th>
         <th class="num">Debit</th>
         <th class="num">Credit</th>
+        <th class="num">Amount Due</th>
       </tr>
     </thead>
     <tbody>
@@ -425,19 +467,20 @@ export function generateLedgerCSV(data: LedgerReportData): string {
     sanitizeCsv(data.reportTitle),
     sanitizeCsv(data.periodStr),
     "",
-    "Date,Particulars,Vch Type,Vch No.,Debit,Credit",
+    "Date,Particulars,Vch Type,Vch No.,Debit,Credit,Amount Due",
   ];
 
   const openingDebit = Number(data.openingDebit) || 0;
   const openingCredit = Number(data.openingCredit) || 0;
   const hasOpening = openingDebit > 0 || openingCredit > 0;
+  const openingDue = openingDebit > openingCredit ? openingDebit - openingCredit : 0;
 
   let runningDebit = openingDebit;
   let runningCredit = openingCredit;
 
   if (hasOpening) {
     lines.push(
-      `,"Opening Balance",,,${openingDebit > 0 ? openingDebit.toFixed(2) : ""},${openingCredit > 0 ? openingCredit.toFixed(2) : ""}`
+      `,"Opening Balance",,,${openingDebit > 0 ? openingDebit.toFixed(2) : ""},${openingCredit > 0 ? openingCredit.toFixed(2) : ""},${openingDue > 0 ? openingDue.toFixed(2) : "0.00"}`
     );
   }
 
@@ -447,6 +490,13 @@ export function generateLedgerCSV(data: LedgerReportData): string {
     runningDebit += d;
     runningCredit += c;
 
+    const dueStr =
+      tx.amountDue !== undefined && tx.amountDue !== null
+        ? Number(tx.amountDue).toFixed(2)
+        : d > 0
+        ? d.toFixed(2)
+        : "";
+
     lines.push(
       [
         sanitizeCsv(tx.date),
@@ -455,6 +505,7 @@ export function generateLedgerCSV(data: LedgerReportData): string {
         sanitizeCsv(tx.vchNo),
         d > 0 ? d.toFixed(2) : "",
         c > 0 ? c.toFixed(2) : "",
+        dueStr,
       ].join(",")
     );
   }
@@ -462,22 +513,26 @@ export function generateLedgerCSV(data: LedgerReportData): string {
   const diff = runningDebit - runningCredit;
   let closingDebit = 0;
   let closingCredit = 0;
+  let closingDue = 0;
   if (diff > 0) {
     closingCredit = diff;
+    closingDue = diff;
   } else if (diff < 0) {
     closingDebit = Math.abs(diff);
+    closingDue = 0;
   }
 
   const finalTotalDebit = runningDebit + closingDebit;
   const finalTotalCredit = runningCredit + closingCredit;
+  const finalTotalDue = Math.max(0, diff);
 
-  if (hasOpening && diff !== 0) {
+  if (hasOpening || diff !== 0) {
     lines.push(
-      `,"Closing Balance",,,${closingDebit > 0 ? closingDebit.toFixed(2) : ""},${closingCredit > 0 ? closingCredit.toFixed(2) : ""}`
+      `,"${diff < 0 ? "Closing Balance (Advance)" : "Closing Balance"}",,,${closingDebit > 0 ? closingDebit.toFixed(2) : ""},${closingCredit > 0 ? closingCredit.toFixed(2) : ""},${closingDue > 0 ? closingDue.toFixed(2) : "0.00"}`
     );
-    lines.push(`,"Total",,,${finalTotalDebit.toFixed(2)},${finalTotalCredit.toFixed(2)}`);
+    lines.push(`,"Total",,,${finalTotalDebit.toFixed(2)},${finalTotalCredit.toFixed(2)},${finalTotalDue.toFixed(2)}`);
   } else {
-    lines.push(`,"Total",,,${runningDebit.toFixed(2)},${runningCredit.toFixed(2)}`);
+    lines.push(`,"Total",,,${runningDebit.toFixed(2)},${runningCredit.toFixed(2)},${finalTotalDue.toFixed(2)}`);
   }
 
   return BOM + lines.join("\n");

@@ -3,6 +3,7 @@ import type { Product, ProductFormValues } from "@/types/product";
 export const EMPTY_PRODUCT_FORM_VALUES: ProductFormValues = {
   name: "",
   sku: "",
+  quality_grade: "",
   category_id: "",
   subcategory_id: "",
   description: "",
@@ -27,6 +28,7 @@ export function productToFormValues(product?: Product): ProductFormValues {
   return {
     name: product.name,
     sku: product.sku,
+    quality_grade: product.quality_grade ?? "",
     category_id: product.category_id ?? "",
     subcategory_id: product.subcategory_id ?? "",
     description: product.description ?? "",

@@ -7,7 +7,7 @@ import { hasPermission } from "@/lib/permissions/authorization";
 import { redirect } from "next/navigation";
 import { updateOrderDeliveryDatesFromSchedules, scheduleProductionQueue } from "@/lib/production/scheduler";
 import { notifyDeliveryEvent } from "@/lib/notifications/actions";
-import { validateAndNormalizeVehicleNumber, validateDriverMobile } from "@/lib/delivery/validation";
+import { validateAndNormalizeVehicleNumber, validateDriverMobile, validateInvoiceNumber } from "@/lib/delivery/validation";
 import type {
   DeliveryListItem,
   DeliveryWithDetails,
@@ -20,6 +20,7 @@ import type {
   CompleteDeliveryFormValues,
   CancelDeliveryFormValues,
   DeliveryStatus,
+  DeliveryStatusCounts,
   EligibleDeliveryOrder,
   CreateManualDeliveryInput,
   CustomerOrderForDelivery,
@@ -34,7 +35,8 @@ export async function listDeliveries(
   status?: DeliveryStatus,
   orderId?: string,
   limit = 50,
-  offset = 0
+  offset = 0,
+  search?: string
 ): Promise<DeliveryListItem[]> {
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
@@ -45,16 +47,81 @@ export async function listDeliveries(
   const supabase = await createServerSupabaseClient();
   if (!supabase) throw new Error("Supabase client not available");
 
-  const { data, error } = await supabase.rpc("list_deliveries", {
-    p_business_id: context.user.business_id,
-    p_status: status || null,
-    p_order_id: orderId || null,
-    p_limit: limit,
-    p_offset: offset,
-  });
+  let query = supabase
+    .from("deliveries")
+    .select(`
+      id,
+      business_id,
+      order_id,
+      delivery_number,
+      invoice_number,
+      status,
+      expected_delivery_date,
+      tracking_number,
+      vehicle,
+      driver,
+      driver_phone,
+      dispatched_at,
+      delivered_at,
+      created_at,
+      orders (
+        id,
+        order_number,
+        customers (
+          name,
+          company_name
+        )
+      )
+    `)
+    .eq("business_id", context.user.business_id);
 
-  if (error) throw error;
-  return (data ?? []) as DeliveryListItem[];
+  if (status) {
+    query = query.eq("status", status);
+  }
+  if (orderId) {
+    query = query.eq("order_id", orderId);
+  }
+  if (search && search.trim()) {
+    const s = search.trim();
+    query = query.or(
+      `delivery_number.ilike.%${s}%,tracking_number.ilike.%${s}%,vehicle.ilike.%${s}%,driver.ilike.%${s}%,invoice_number.ilike.%${s}%`
+    );
+  }
+
+  query = query.order("created_at", { ascending: false }).range(offset, offset + limit - 1);
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("Error in listDeliveries:", error);
+    throw error;
+  }
+
+  return (data ?? []).map((d: any) => {
+    const orderObj = Array.isArray(d.orders) ? d.orders[0] : d.orders;
+    const customerObj = orderObj
+      ? Array.isArray(orderObj.customers)
+        ? orderObj.customers[0]
+        : orderObj.customers
+      : null;
+    return {
+      id: d.id,
+      business_id: d.business_id,
+      order_id: d.order_id,
+      order_number: orderObj?.order_number || "—",
+      customer_name: customerObj?.company_name || customerObj?.name || null,
+      delivery_number: d.delivery_number,
+      invoice_number: d.invoice_number || null,
+      status: d.status as DeliveryStatus,
+      expected_delivery_date: d.expected_delivery_date,
+      tracking_number: d.tracking_number,
+      vehicle: d.vehicle,
+      driver: d.driver,
+      driver_phone: d.driver_phone,
+      dispatched_at: d.dispatched_at,
+      delivered_at: d.delivered_at,
+      created_at: d.created_at,
+    };
+  });
 }
 
 export async function getDeliveryWithItems(deliveryId: string): Promise<DeliveryWithDetails | null> {
@@ -67,34 +134,109 @@ export async function getDeliveryWithItems(deliveryId: string): Promise<Delivery
   const supabase = await createServerSupabaseClient();
   if (!supabase) throw new Error("Supabase client not available");
 
-  const { data, error } = await supabase.rpc("get_delivery_with_items", {
-    p_business_id: context.user.business_id,
-    p_delivery_id: deliveryId,
+  const businessId = context.user.business_id;
+
+  const { data: d, error: delErr } = await supabase
+    .from("deliveries")
+    .select(`
+      id,
+      business_id,
+      order_id,
+      delivery_number,
+      invoice_number,
+      status,
+      expected_delivery_date,
+      tracking_number,
+      vehicle,
+      driver,
+      driver_phone,
+      dispatched_at,
+      delivered_at,
+      proof_document_url,
+      notes,
+      created_at,
+      updated_at,
+      orders (
+        id,
+        order_number,
+        customer_id,
+        customers (
+          id,
+          name,
+          company_name
+        )
+      ),
+      delivery_items (
+        id,
+        business_id,
+        delivery_id,
+        order_item_id,
+        product_id,
+        ordered_quantity,
+        delivered_quantity,
+        products (
+          id,
+          name,
+          sku,
+          unit
+        )
+      )
+    `)
+    .eq("id", deliveryId)
+    .eq("business_id", businessId)
+    .maybeSingle();
+
+  if (delErr) {
+    console.error("Error fetching delivery with items:", delErr);
+    throw delErr;
+  }
+  if (!d) return null;
+
+  const orderObj = Array.isArray(d.orders) ? d.orders[0] : d.orders;
+  const customerObj = orderObj
+    ? Array.isArray(orderObj.customers)
+      ? orderObj.customers[0]
+      : orderObj.customers
+    : null;
+  const customerName = customerObj?.company_name || customerObj?.name || null;
+
+  const items: DeliveryItem[] = ((d.delivery_items as any[]) || []).map((di: any) => {
+    const prod = Array.isArray(di.products) ? di.products[0] : di.products;
+    return {
+      id: di.id,
+      business_id: di.business_id,
+      delivery_id: di.delivery_id,
+      order_item_id: di.order_item_id,
+      product_id: di.product_id,
+      product_name: prod?.name || "Product",
+      product_sku: prod?.sku || null,
+      ordered_quantity: di.ordered_quantity,
+      delivered_quantity: di.delivered_quantity,
+      unit: prod?.unit || "units",
+    };
   });
 
-  if (error) throw error;
-  if (!data || data.length === 0) return null;
-
-  const d = data[0];
   return {
     id: d.id,
     business_id: d.business_id,
     order_id: d.order_id,
     delivery_number: d.delivery_number,
+    invoice_number: d.invoice_number || null,
     status: d.status as DeliveryStatus,
     expected_delivery_date: d.expected_delivery_date,
     tracking_number: d.tracking_number,
     vehicle: d.vehicle,
     driver: d.driver,
+    driver_phone: d.driver_phone,
     dispatched_at: d.dispatched_at,
     delivered_at: d.delivered_at,
     proof_document_url: d.proof_document_url,
     notes: d.notes,
     created_at: d.created_at,
     updated_at: d.updated_at,
-    order_number: d.order_number,
-    customer_name: d.customer_name,
-    items: (d.items as DeliveryItem[]) || [],
+    order_number: orderObj?.order_number || "—",
+    customer_name: customerName,
+    items,
   };
 }
 
@@ -117,6 +259,44 @@ export async function getDeliveryStatusHistory(deliveryId: string): Promise<Deli
 
   if (error) throw error;
   return (data ?? []) as DeliveryStatusHistory[];
+}
+
+export async function getDeliveryStatusCounts(): Promise<DeliveryStatusCounts> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+  if (!hasPermission({ permissions: context.permissions }, "delivery.view")) {
+    throw new Error("Forbidden: delivery.view");
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) throw new Error("Supabase client not available");
+
+  const { data, error } = await supabase
+    .from("deliveries")
+    .select("status")
+    .eq("business_id", context.user.business_id);
+
+  const counts: DeliveryStatusCounts = {
+    ALL: data?.length ?? 0,
+    READY: 0,
+    PACKED: 0,
+    DISPATCHED: 0,
+    IN_TRANSIT: 0,
+    DELIVERED: 0,
+    CANCELLED: 0,
+    NOT_READY: 0,
+  };
+
+  if (!error && data) {
+    for (const row of data) {
+      const st = row.status as keyof DeliveryStatusCounts;
+      if (counts[st] !== undefined) {
+        counts[st]++;
+      }
+    }
+  }
+
+  return counts;
 }
 
 // ============================================
@@ -386,7 +566,11 @@ export async function packDelivery(
 ): Promise<{ success: boolean; message: string | null }> {
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
-  if (!hasPermission({ permissions: context.permissions }, "delivery.update")) {
+  if (
+    !hasPermission({ permissions: context.permissions }, "delivery.update") &&
+    !hasPermission({ permissions: context.permissions }, "delivery.dispatch") &&
+    !hasPermission({ permissions: context.permissions }, "delivery.create")
+  ) {
     throw new Error("Forbidden: delivery.update");
   }
 
@@ -397,7 +581,7 @@ export async function packDelivery(
 
   const { data: delivery, error: delErr } = await supabase
     .from("deliveries")
-    .select("id, status, order_id")
+    .select("id, status, order_id, delivery_number")
     .eq("id", values.delivery_id)
     .eq("business_id", businessId)
     .maybeSingle();
@@ -410,15 +594,49 @@ export async function packDelivery(
     throw new Error(`Can only pack deliveries in READY status (current: ${delivery.status}).`);
   }
 
-  const { data, error } = await supabase.rpc("pack_delivery", {
+  let rpcFailed = false;
+  const { error: rpcErr } = await supabase.rpc("pack_delivery", {
     p_business_id: businessId,
     p_delivery_id: values.delivery_id,
     p_notes: values.notes || null,
   });
 
-  if (error) throw new Error(error.message || "Failed to pack delivery");
+  if (rpcErr) {
+    console.warn("pack_delivery RPC error, falling back to direct update:", rpcErr.message);
+    rpcFailed = true;
+    const adminClient = createAdminSupabaseClient() || supabase;
+    const { error: directErr } = await adminClient
+      .from("deliveries")
+      .update({
+        status: "PACKED",
+        notes: values.notes || undefined,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", values.delivery_id)
+      .eq("business_id", businessId)
+      .eq("status", "READY");
 
-  return { success: true, message: "Delivery packed successfully" };
+    if (directErr) {
+      throw new Error(directErr.message || "Failed to pack delivery");
+    }
+
+    await adminClient.from("delivery_status_history").insert({
+      business_id: businessId,
+      delivery_id: values.delivery_id,
+      old_status: "READY",
+      new_status: "PACKED",
+      changed_by: context.user.id,
+      reason: values.notes || null,
+    });
+  } else if (values.notes) {
+    await supabase
+      .from("deliveries")
+      .update({ notes: values.notes, updated_at: new Date().toISOString() })
+      .eq("id", values.delivery_id)
+      .eq("business_id", businessId);
+  }
+
+  return { success: true, message: `Delivery ${delivery.delivery_number} packed successfully` };
 }
 
 export async function dispatchDelivery(
@@ -435,7 +653,30 @@ export async function dispatchDelivery(
 
   const businessId = context.user.business_id;
 
-  // 1. Fetch delivery details
+  // 1. Validation: Vehicle Number is required and validated
+  const vehicleValidation = validateAndNormalizeVehicleNumber(values.vehicle || "");
+  if (!vehicleValidation.isValid) {
+    throw new Error(vehicleValidation.error || "Valid vehicle number is required.");
+  }
+  const normalizedVehicle = vehicleValidation.normalized;
+
+  // Driver Phone validation if provided
+  let normalizedDriverPhone: string | null = null;
+  if (values.driver_phone && values.driver_phone.trim()) {
+    const phoneValidation = validateDriverMobile(values.driver_phone);
+    if (!phoneValidation.isValid) {
+      throw new Error(phoneValidation.error || "Invalid driver mobile number.");
+    }
+    normalizedDriverPhone = phoneValidation.normalized;
+  }
+
+  const normalizedDriver = values.driver?.trim() || null;
+  const normalizedTracking = values.tracking_number?.trim() || null;
+  const dispatchTimestamp = values.dispatched_at
+    ? new Date(values.dispatched_at).toISOString()
+    : new Date().toISOString();
+
+  // 2. Fetch delivery details
   const { data: delivery, error: delErr } = await supabase
     .from("deliveries")
     .select("id, delivery_number, status, dispatched_at, order_id")
@@ -458,17 +699,13 @@ export async function dispatchDelivery(
 
   // If status is READY, pack it first so the database RPC allows dispatch
   if (delivery.status === "READY") {
-    const { error: packErr } = await supabase.rpc("pack_delivery", {
-      p_business_id: businessId,
-      p_delivery_id: values.delivery_id,
-      p_notes: "Auto-packed before dispatch",
+    await packDelivery({
+      delivery_id: values.delivery_id,
+      notes: "Auto-packed before dispatch",
     });
-    if (packErr) {
-      throw new Error(`Failed to pack delivery prior to dispatch: ${packErr.message}`);
-    }
   }
 
-  // 2. Validate delivered / dispatched quantities against warehouse finished goods stock (Requirements 3 & 4)
+  // 3. Validate delivered / dispatched quantities against warehouse finished goods stock
   const { data: deliveryItems, error: itemsErr } = await supabase
     .from("delivery_items")
     .select("id, product_id, ordered_quantity, delivered_quantity, products(name, sku)")
@@ -565,7 +802,7 @@ export async function dispatchDelivery(
     });
   }
 
-  // 3. Temporarily adjust available_stock for reserved portion so the DB RPC check passes
+  // 4. Temporarily adjust available_stock for reserved portion so the DB RPC check passes
   const adminClient = createAdminSupabaseClient();
   const clientToUse = adminClient || supabase;
 
@@ -582,15 +819,15 @@ export async function dispatchDelivery(
     }
   }
 
-  // 4. Dispatch via RPC (deducts inventory exactly once at dispatch point, creates transaction, updates dispatched_at)
+  // 5. Dispatch via RPC (deducts inventory exactly once at dispatch point, creates transaction, updates dispatched_at)
   let rpcError: Error | null = null;
   try {
     const { error } = await supabase.rpc("dispatch_delivery", {
       p_business_id: businessId,
       p_delivery_id: values.delivery_id,
-      p_vehicle: values.vehicle || null,
-      p_driver: values.driver || null,
-      p_tracking_number: values.tracking_number || null,
+      p_vehicle: normalizedVehicle,
+      p_driver: normalizedDriver,
+      p_tracking_number: normalizedTracking,
       p_notes: values.notes || null,
     });
 
@@ -618,7 +855,7 @@ export async function dispatchDelivery(
     throw rpcError;
   }
 
-  // 5. Post-dispatch: Release the reservations corresponding to dispatched items
+  // 6. Post-dispatch: Release reservations and ensure driver_phone & dispatched_at are persisted
   for (const adj of reservationAdjustments) {
     if (adj.reservedPortion > 0) {
       const newReserved = Math.max(0, adj.originalReserved - adj.reservedPortion);
@@ -650,10 +887,23 @@ export async function dispatchDelivery(
     }
   }
 
-  // 6. Recalculate order delivery status and dates using existing service (Requirement 7)
+  // 7. Persist driver_phone, dispatched_at, and details on deliveries table
+  await clientToUse
+    .from("deliveries")
+    .update({
+      vehicle: normalizedVehicle,
+      driver: normalizedDriver,
+      driver_phone: normalizedDriverPhone,
+      tracking_number: normalizedTracking,
+      dispatched_at: dispatchTimestamp,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", values.delivery_id)
+    .eq("business_id", businessId);
+
+  // 8. Recalculate order delivery status and schedules
   try {
     await updateOrderDeliveryDatesFromSchedules(supabase, businessId, delivery.order_id);
-    // Recalculate eligible future orders in queue now that this order is dispatched (Requirement A.3 & A.8)
     await scheduleProductionQueue(supabase, businessId);
   } catch (err) {
     console.warn("Could not recalculate delivery dates:", err);
@@ -665,7 +915,7 @@ export async function dispatchDelivery(
     // Non-fatal
   }
 
-  return { success: true, message: "Delivery dispatched successfully" };
+  return { success: true, message: `Delivery ${delivery.delivery_number} dispatched successfully` };
 }
 
 export async function markDeliveryInTransit(
@@ -802,25 +1052,114 @@ export async function cancelDelivery(
   }
 
   if (delivery.status === "DELIVERED") {
-    throw new Error("Cannot cancel a delivery that has already been DELIVERED.");
+    throw new Error("Cannot cancel a delivery that has already been DELIVERED without an authorized reversal workflow.");
   }
 
   if (delivery.status === "CANCELLED") {
     throw new Error("Delivery is already CANCELLED.");
   }
 
-  const { data, error } = await supabase.rpc("cancel_delivery", {
+  const { error: rpcErr } = await supabase.rpc("cancel_delivery", {
     p_business_id: businessId,
     p_delivery_id: values.delivery_id,
     p_reason: values.reason.trim(),
   });
 
-  if (error) throw new Error(error.message || "Failed to cancel delivery");
+  if (rpcErr) {
+    console.warn("cancel_delivery RPC error, executing atomic cancellation fallback:", rpcErr.message);
+    const adminClient = createAdminSupabaseClient() || supabase;
 
+    // If was dispatched or in_transit, return stock exactly once
+    if (["DISPATCHED", "IN_TRANSIT"].includes(delivery.status)) {
+      const { data: items } = await adminClient
+        .from("delivery_items")
+        .select("product_id, delivered_quantity")
+        .eq("delivery_id", values.delivery_id)
+        .eq("business_id", businessId);
+
+      for (const it of items ?? []) {
+        const qty = Number(it.delivered_quantity) || 0;
+        if (qty > 0) {
+          const { data: inv } = await adminClient
+            .from("inventory")
+            .select("id, current_stock, available_stock")
+            .eq("business_id", businessId)
+            .eq("item_type", "finished_good")
+            .eq("item_id", it.product_id)
+            .maybeSingle();
+
+          if (inv) {
+            await adminClient
+              .from("inventory")
+              .update({
+                current_stock: Number(inv.current_stock) + qty,
+                available_stock: Number(inv.available_stock) + qty,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", inv.id);
+
+            await adminClient.from("inventory_transactions").insert({
+              business_id: businessId,
+              item_type: "finished_good",
+              item_id: it.product_id,
+              transaction_type: "STOCK_IN",
+              quantity: qty,
+              reference_type: "delivery_cancellation",
+              reference_id: values.delivery_id,
+              notes: `Finished goods returned from cancelled delivery: ${values.reason.trim()}`,
+              created_by: context.user.id,
+            });
+          }
+        }
+      }
+
+      await adminClient
+        .from("delivery_items")
+        .update({ delivered_quantity: 0, updated_at: new Date().toISOString() })
+        .eq("delivery_id", values.delivery_id);
+    }
+
+    // Update status to CANCELLED
+    await adminClient
+      .from("deliveries")
+      .update({
+        status: "CANCELLED",
+        notes: `Cancelled: ${values.reason.trim()}`,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", values.delivery_id)
+      .eq("business_id", businessId);
+
+    await adminClient.from("delivery_status_history").insert({
+      business_id: businessId,
+      delivery_id: values.delivery_id,
+      old_status: delivery.status,
+      new_status: "CANCELLED",
+      changed_by: context.user.id,
+      reason: values.reason.trim(),
+    });
+  }
+
+  // Recalculate linked order delivery status
   try {
     await updateOrderDeliveryDatesFromSchedules(supabase, businessId, delivery.order_id);
+    const { data: otherActive } = await supabase
+      .from("deliveries")
+      .select("id, status")
+      .eq("order_id", delivery.order_id)
+      .eq("business_id", businessId)
+      .neq("status", "CANCELLED");
+
+    if (!otherActive || otherActive.length === 0) {
+      await supabase
+        .from("orders")
+        .update({ delivery_status: "PENDING", updated_at: new Date().toISOString() })
+        .eq("id", delivery.order_id)
+        .eq("business_id", businessId)
+        .neq("delivery_status", "DELIVERED");
+    }
   } catch (err) {
-    console.warn("Could not recalculate delivery dates:", err);
+    console.warn("Could not recalculate delivery dates after cancellation:", err);
   }
 
   return { success: true, message: "Delivery cancelled successfully" };
@@ -1077,12 +1416,14 @@ export async function createManualDelivery(
   }
   const normalizedVehicle = vehicleValidation.normalized;
 
-  // 3. Validate driver mobile if provided
-  const mobileValidation = validateDriverMobile(values.driver_mobile);
-  if (!mobileValidation.isValid) {
-    throw new Error(mobileValidation.error || "Invalid driver mobile number.");
+  // 3. Validate invoice number (required; accepts letters, numbers, hyphens, slashes)
+  const invoiceValidation = validateInvoiceNumber(values.invoice_number);
+  if (!invoiceValidation.isValid) {
+    throw new Error(invoiceValidation.error || "Valid invoice number is required.");
   }
-  const normalizedDriverMobile = mobileValidation.normalized;
+  const normalizedInvoiceNumber = invoiceValidation.normalized;
+
+  const driverMobileVal = values.driver_mobile?.trim() || null;
   const normalizedDriverName = values.driver_name?.trim() || null;
 
   const supabase = await createServerSupabaseClient();
@@ -1289,11 +1630,12 @@ export async function createManualDelivery(
       business_id: businessId,
       order_id: order.id,
       delivery_number: uniqueDeliveryNumber,
+      invoice_number: normalizedInvoiceNumber,
       status: "DELIVERED",
       expected_delivery_date: order.expected_delivery_date || values.delivery_date,
       vehicle: normalizedVehicle,
       driver: normalizedDriverName,
-      driver_phone: normalizedDriverMobile,
+      driver_phone: driverMobileVal,
       dispatched_at: deliveryTimestamp,
       delivered_at: deliveryTimestamp,
       notes: values.notes?.trim() || null,
@@ -1407,13 +1749,14 @@ export async function createManualDelivery(
     entity_id: deliveryId,
     new_data: {
       delivery_number: uniqueDeliveryNumber,
+      invoice_number: normalizedInvoiceNumber,
       order_number: order.order_number,
       order_id: order.id,
       customer_id: values.customer_id,
       delivery_date: values.delivery_date,
       vehicle: normalizedVehicle,
       driver: normalizedDriverName,
-      driver_phone: normalizedDriverMobile,
+      driver_phone: driverMobileVal,
       status: "DELIVERED",
     },
   });

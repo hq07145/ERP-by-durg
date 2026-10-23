@@ -55,3 +55,30 @@ export function validateDriverMobile(val?: string | null): {
 
   return { isValid: true, normalized: match[1] };
 }
+
+export function validateInvoiceNumber(val?: string | null): {
+  isValid: boolean;
+  normalized: string;
+  error?: string;
+} {
+  const trimmed = val ? val.trim() : "";
+  if (!trimmed) {
+    return {
+      isValid: false,
+      normalized: "",
+      error: "Invoice number is required.",
+    };
+  }
+
+  // Accept letters, numbers, hyphens, slashes, and mixed formats (e.g. SAN/26-27/154)
+  const invoiceRegex = /^[A-Za-z0-9\/\-_.\s]{1,64}$/;
+  if (!invoiceRegex.test(trimmed)) {
+    return {
+      isValid: false,
+      normalized: trimmed,
+      error: "Invalid invoice number format. Allowed characters: letters, numbers, hyphens, and slashes.",
+    };
+  }
+
+  return { isValid: true, normalized: trimmed };
+}

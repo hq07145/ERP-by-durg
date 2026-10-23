@@ -12,6 +12,7 @@ export interface Delivery {
   business_id: string;
   order_id: string;
   delivery_number: string;
+  invoice_number?: string | null;
   status: DeliveryStatus;
   expected_delivery_date: string | null;
   tracking_number: string | null;
@@ -39,6 +40,7 @@ export interface DeliveryListItem {
   order_number: string;
   customer_name: string | null;
   delivery_number: string;
+  invoice_number?: string | null;
   status: DeliveryStatus;
   expected_delivery_date: string | null;
   tracking_number: string | null;
@@ -89,8 +91,21 @@ export interface DispatchDeliveryFormValues {
   delivery_id: string;
   vehicle?: string;
   driver?: string;
+  driver_phone?: string;
+  dispatched_at?: string;
   tracking_number?: string;
   notes?: string;
+}
+
+export interface DeliveryStatusCounts {
+  ALL: number;
+  READY: number;
+  PACKED: number;
+  DISPATCHED: number;
+  IN_TRANSIT: number;
+  DELIVERED: number;
+  CANCELLED: number;
+  NOT_READY: number;
 }
 
 export interface InTransitDeliveryFormValues {
@@ -160,6 +175,7 @@ export interface CreateManualDeliveryInput {
   order_id: string;
   delivery_date: string;
   vehicle_number: string;
+  invoice_number: string;
   driver_name?: string;
   driver_mobile?: string;
   notes?: string;

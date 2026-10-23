@@ -163,7 +163,7 @@ export async function getProductionQueue(): Promise<ProductionQueueItem[]> {
     .from("production_orders")
     .select(
       `
-      id, business_id, order_id, order_item_id, product_id, quantity, status, priority,
+      id, business_id, order_id, order_item_id, product_id, quantity, completed_quantity, scrap_quantity, status, priority,
       scheduled_start_date, scheduled_end_date, actual_start_date, actual_end_date, notes, created_at,
       orders!inner(id, order_number, order_date, priority, expected_delivery_date, status, customers!inner(name, company_name)),
       products!inner(id, name, sku, unit, daily_capacity, production_unit, production_min_days, production_max_days, setup_minutes)
@@ -217,6 +217,10 @@ export async function getProductionQueue(): Promise<ProductionQueueItem[]> {
         po.scheduled_end_date < todayStr &&
         !["COMPLETED", "READY_FOR_DISPATCH", "CANCELLED"].includes(po.status));
 
+    const completedQty = Number(po.completed_quantity) || 0;
+    const scrapQty = Number(po.scrap_quantity) || 0;
+    const remainingQty = Math.max(0, Number(po.quantity) - completedQty);
+
     return {
       production_order_id: po.id,
       order_id: po.order_id,
@@ -227,6 +231,9 @@ export async function getProductionQueue(): Promise<ProductionQueueItem[]> {
       product_sku: productData.sku || null,
       product_unit: productData.unit || "unit",
       quantity: Number(po.quantity),
+      completed_quantity: completedQty,
+      scrap_quantity: scrapQty,
+      remaining_quantity: remainingQty,
       priority: po.priority as ProductionOrderPriority,
       status: po.status as ProductionOrderStatus,
       scheduled_start_date: po.scheduled_start_date || null,
@@ -761,6 +768,12 @@ export async function completeProduction(
   }
 
   return result;
+}
+
+export async function markProductionAsDone(
+  values: CompleteProductionFormValues
+): Promise<{ success: boolean; message: string | null }> {
+  return completeProduction(values);
 }
 
 export async function delayProduction(

@@ -9,7 +9,7 @@ export default async function WorkspaceShell({
   children: React.ReactNode;
 }) {
   const context = await requireAuthContext();
-  const businessName = context.businessName || "Development Business Pvt. Ltd.";
+  const businessName = context.businessName || "SANKALP IRRIGATION";
 
   const permissions = {
     canManageUsers: hasPermission(

@@ -1306,7 +1306,7 @@ export async function getCustomerDueReport(
       }
     }
 
-    const totalDue = Math.round((totalPurchases - totalPaid) * 100) / 100;
+    const totalDue = Math.max(0, Math.round((totalPurchases - totalPaid) * 100) / 100);
     if (filters.minDueAmount && totalDue < Number(filters.minDueAmount)) continue;
 
     const payments = (customer.ledger ?? [])
@@ -1962,7 +1962,7 @@ function getReportConfig(type: ReportType, rows: ReportRow[]): ReportExportData 
         "Email",
         "Total Purchases",
         "Total Paid",
-        "Total Due",
+        "Amount Due",
         "Last Payment Date",
         "Last Payment",
         "Credit Limit",
@@ -2210,7 +2210,17 @@ export async function exportSalesReport(
   const supabase = await createServerSupabaseClient();
   if (!supabase) throw new Error("Supabase client not available");
 
-  const companyName = "Sankalp Irrigation";
+  let companyName = context.businessName || "SANKALP IRRIGATION";
+  if (context.user?.business_id) {
+    const { data: bData } = await supabase
+      .from("businesses")
+      .select("name, legal_name")
+      .eq("id", context.user.business_id)
+      .maybeSingle();
+    if (bData) {
+      companyName = bData.legal_name || bData.name || companyName;
+    }
+  }
 
   const { startDate, endDate } = resolveDateRange(filters);
   const periodStr =
@@ -2725,7 +2735,7 @@ export async function exportSalesReport(
       }
 
       const salesLedgerData: LedgerReportData = {
-        companyName: "Sankalp Irrigation",
+        companyName,
         reportTitle: "Sales Ledger (Transactions)",
         periodStr,
         openingDebit,
@@ -2909,7 +2919,7 @@ export async function exportReport(
   const supabase = await createServerSupabaseClient();
   if (!supabase) throw new Error("Supabase client not available");
 
-  let companyName = "Development Business Pvt. Ltd.";
+  let companyName = context.businessName || "SANKALP IRRIGATION";
   if (context.user?.business_id) {
     const { data: bData } = await supabase
       .from("businesses")
@@ -2919,9 +2929,6 @@ export async function exportReport(
     if (bData) {
       companyName = bData.legal_name || bData.name || companyName;
     }
-  }
-  if (reportType === "sales") {
-    companyName = "Sankalp Irrigation";
   }
 
   const { startDate, endDate } = resolveDateRange(filters);
@@ -3053,9 +3060,10 @@ export async function exportReport(
     let openingDebit = 0;
     let openingCredit = 0;
     const ledgerEntries: LedgerEntryRow[] = [];
-    let reportTitle = "Customer Accounts Ledger";
+    let reportTitle = "Customer Due & Accounts Ledger Report";
 
     const customerId = (filters as CustomerDueReportFilters).customerId;
+    const minDueFilter = Number((filters as CustomerDueReportFilters).minDueAmount || 0);
 
     if (customerId) {
       const { data: cust } = await supabase
@@ -3066,7 +3074,7 @@ export async function exportReport(
         .maybeSingle();
 
       if (cust) {
-        reportTitle = `${cust.name}${cust.company_name ? ` (${cust.company_name})` : ""} - Ledger Account`;
+        reportTitle = `${cust.name}${cust.company_name ? ` (${cust.company_name})` : ""} - Customer Due & Ledger Statement`;
       }
 
       // Compute opening balance prior to startDate
@@ -3091,7 +3099,7 @@ export async function exportReport(
 
       let q = supabase
         .from("customer_ledger")
-        .select("*, orders(order_number), payments(payment_number)")
+        .select("*, orders(id, order_number, total_amount, paid_amount, due_amount, status), payments(id, payment_number, amount, order_id)")
         .eq("business_id", context.user.business_id)
         .eq("customer_id", customerId);
 
@@ -3115,13 +3123,40 @@ export async function exportReport(
             ? "Debit Note"
             : "Journal";
 
+        let amountDue: number | null = null;
+        if (e.entry_type === "INVOICE") {
+          const ord = (e as any).orders;
+          if (ord) {
+            const tot = Number(ord.total_amount || d);
+            const paid = Number(ord.paid_amount || 0);
+            const due = ord.due_amount != null ? Number(ord.due_amount) : Math.max(0, tot - paid);
+            amountDue = Math.max(0, due);
+          } else {
+            amountDue = d;
+          }
+        } else if (e.entry_type === "DEBIT_NOTE") {
+          amountDue = d;
+        }
+
+        const particulars =
+          e.entry_type === "INVOICE"
+            ? (e as any).orders?.order_number
+              ? `Invoice ${(e as any).orders.order_number}`
+              : e.description || "To Sales"
+            : e.entry_type === "PAYMENT"
+            ? (e as any).payments?.order_id
+              ? `Payment received for ${(e as any).orders?.order_number || "order"}`
+              : "Payment received (Advance)"
+            : e.description || "By Payment";
+
         ledgerEntries.push({
           date: formatLedgerDate(e.entry_date),
-          particulars: e.description || (e.entry_type === "INVOICE" ? "To Sales" : "By Payment"),
+          particulars,
           vchType,
           vchNo,
           debit: d > 0 ? d : null,
           credit: c > 0 ? c : null,
+          amountDue,
         });
       }
     } else {
@@ -3146,7 +3181,7 @@ export async function exportReport(
 
       let q = supabase
         .from("customer_ledger")
-        .select("*, customers(name, company_name), orders(order_number), payments(payment_number)")
+        .select("*, customers(id, name, company_name), orders(id, order_number, total_amount, paid_amount, due_amount, status), payments(id, payment_number, amount, order_id)")
         .eq("business_id", context.user.business_id);
 
       if (startDate) q = q.gte("entry_date", startDate);
@@ -3154,7 +3189,32 @@ export async function exportReport(
 
       const { data: cEntries } = await q.order("entry_date", { ascending: true }).order("created_at", { ascending: true });
 
+      // If minDueFilter is provided, find customers whose net due is >= minDueFilter
+      let eligibleCustomerIds: Set<string> | null = null;
+      if (minDueFilter > 0) {
+        const custTotals = new Map<string, { debits: number; credits: number }>();
+        for (const e of cEntries ?? []) {
+          const cid = e.customer_id;
+          if (!cid) continue;
+          const curr = custTotals.get(cid) || { debits: 0, credits: 0 };
+          curr.debits += Number(e.debit || 0);
+          curr.credits += Number(e.credit || 0);
+          custTotals.set(cid, curr);
+        }
+        eligibleCustomerIds = new Set<string>();
+        for (const [cid, totals] of custTotals.entries()) {
+          const due = Math.max(0, totals.debits - totals.credits);
+          if (due >= minDueFilter) {
+            eligibleCustomerIds.add(cid);
+          }
+        }
+      }
+
       for (const e of cEntries ?? []) {
+        if (eligibleCustomerIds && e.customer_id && !eligibleCustomerIds.has(e.customer_id)) {
+          continue;
+        }
+
         const d = Number(e.debit) || 0;
         const c = Number(e.credit) || 0;
         const custName = (e as any).customers?.name || "Customer";
@@ -3170,13 +3230,40 @@ export async function exportReport(
             ? "Debit Note"
             : "Journal";
 
+        let amountDue: number | null = null;
+        if (e.entry_type === "INVOICE") {
+          const ord = (e as any).orders;
+          if (ord) {
+            const tot = Number(ord.total_amount || d);
+            const paid = Number(ord.paid_amount || 0);
+            const due = ord.due_amount != null ? Number(ord.due_amount) : Math.max(0, tot - paid);
+            amountDue = Math.max(0, due);
+          } else {
+            amountDue = d;
+          }
+        } else if (e.entry_type === "DEBIT_NOTE") {
+          amountDue = d;
+        }
+
+        const actionText =
+          e.entry_type === "INVOICE"
+            ? (e as any).orders?.order_number
+              ? `Invoice ${(e as any).orders.order_number}`
+              : e.description || "To Sales"
+            : e.entry_type === "PAYMENT"
+            ? (e as any).payments?.order_id
+              ? `Payment received for ${(e as any).orders?.order_number || "order"}`
+              : "Payment received (Advance)"
+            : e.description || "By Payment";
+
         ledgerEntries.push({
           date: formatLedgerDate(e.entry_date),
-          particulars: `${custName}: ${e.description || (e.entry_type === "INVOICE" ? "To Sales" : "By Payment")}`,
+          particulars: `${custName}: ${actionText}`,
           vchType,
           vchNo,
           debit: d > 0 ? d : null,
           credit: c > 0 ? c : null,
+          amountDue,
         });
       }
     }
