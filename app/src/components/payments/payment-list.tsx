@@ -101,10 +101,10 @@ export function PaymentList({
           status: targetStatus,
           notes: "",
         });
-        setStatusMessage({ success: true, message: "Payment status updated successfully." });
+        setStatusMessage({ success: true, message: "Payment Status updated successfully." });
         router.refresh();
       } catch (error) {
-        setStatusMessage({ success: false, message: error instanceof Error ? error.message : "Failed to update status" });
+        setStatusMessage({ success: false, message: error instanceof Error ? error.message : "Failed to update Status" });
       }
     }
   };

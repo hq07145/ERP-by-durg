@@ -153,7 +153,7 @@ export function DeliveryDetail({
           notes: packNotes.trim() || undefined,
         });
         setShowPackModal(false);
-        setSuccessMessage("Delivery status updated to PACKED.");
+        setSuccessMessage("Delivery Status updated to PACKED.");
         router.refresh();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to pack delivery");

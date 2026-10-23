@@ -67,14 +67,14 @@ export function CancelOrderModal({
         } else if (result.error === "forbidden") {
           setError("You do not have permission to cancel orders.");
         } else if (result.error === "timeout") {
-          setError("Cancellation request is taking longer than expected. Please check order status or refresh the page.");
+          setError("Cancellation request is taking longer than expected. Please check Order Status or refresh the page.");
         } else if (result.error === "order_not_found") {
           setError("Order could not be found.");
         } else {
           setError(
             result.error
               ? `Failed to cancel order: ${result.error}`
-              : "Failed to cancel order. Please verify order status and try again."
+              : "Failed to cancel order. Please verify Order Status and try again."
           );
         }
         return;

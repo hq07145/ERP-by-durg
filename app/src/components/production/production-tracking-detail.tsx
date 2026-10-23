@@ -396,7 +396,7 @@ export function ProductionTrackingDetail({
                   className="w-full rounded-sm border border-gray-300 p-3 text-sm focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]"
                   required
                 >
-                  <option value="">Select status</option>
+                  <option value="">Select Status</option>
                   <option value="PASSED">Passed</option>
                   <option value="FAILED">Failed</option>
                   <option value="CONDITIONAL_PASS">Conditional Pass</option>

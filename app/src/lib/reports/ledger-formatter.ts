@@ -1011,3 +1011,405 @@ export function generateSalesLedgerCSV(data: SalesReportExportData): string {
 
   return BOM + lines.join("\n");
 }
+
+// ============================================
+// STATE-WISE SALES & GST REPORT FORMATTERS
+// ============================================
+
+export interface StateWiseGstReportData {
+  companyName: string;
+  reportTitle: string;
+  periodStr: string;
+  headers: string[];
+  rows: any[][];
+  totals: any[];
+}
+
+export function generateStateWiseGstCSV(data: StateWiseGstReportData): string {
+  const BOM = "\uFEFF";
+  const lines: string[] = [
+    sanitizeCsv(data.companyName),
+    sanitizeCsv(data.reportTitle),
+    sanitizeCsv(data.periodStr),
+    "",
+    data.headers.map(sanitizeCsv).join(","),
+  ];
+
+  for (const row of data.rows) {
+    lines.push(row.map(sanitizeCsv).join(","));
+  }
+
+  if (data.totals) {
+    lines.push(data.totals.map(sanitizeCsv).join(","));
+  }
+
+  return BOM + lines.join("\n");
+}
+
+export function generateStateWiseGstExcel(data: StateWiseGstReportData): string {
+  const BOM = "\uFEFF";
+  let bodyHtml = "";
+
+  for (const row of data.rows) {
+    bodyHtml += "<tr>";
+    row.forEach((v, idx) => {
+      const isNum = idx >= 5;
+      bodyHtml += `<td class="${isNum ? "num" : ""}">${sanitizeExcel(v)}</td>`;
+    });
+    bodyHtml += "</tr>";
+  }
+
+  if (data.totals) {
+    bodyHtml += '<tr class="total-row">';
+    data.totals.forEach((v, idx) => {
+      const isNum = idx >= 5;
+      bodyHtml += `<td class="${isNum ? "num" : ""}">${sanitizeExcel(v)}</td>`;
+    });
+    bodyHtml += "</tr>";
+  }
+
+  return `${BOM}<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: Calibri, Arial, sans-serif; font-size: 10pt; color: #000000; }
+    h2 { font-size: 14pt; margin: 0; text-align: center; }
+    h3 { font-size: 11pt; margin: 4px 0; text-align: center; }
+    .period { font-size: 9pt; margin: 2px 0 16px 0; text-align: center; color: #333333; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+    th { border-top: 1.5pt solid #000000; border-bottom: 1.5pt solid #000000; font-weight: bold; text-align: left; padding: 6px; }
+    th.num { text-align: right; }
+    td { padding: 4px 6px; border-bottom: 0.5pt solid #f0f0f0; }
+    td.num { text-align: right; mso-number-format: "\\#\\,\\#\\#0\\.00"; }
+    .total-row { font-weight: bold; border-top: 1pt solid #000000; border-bottom: 2pt double #000000; }
+  </style>
+</head>
+<body>
+  <h2>${sanitizeExcel(data.companyName)}</h2>
+  <h3>${sanitizeExcel(data.reportTitle)}</h3>
+  <p class="period">${sanitizeExcel(data.periodStr)}</p>
+  <table>
+    <thead>
+      <tr>${data.headers.map((h, i) => `<th class="${i >= 5 ? "num" : ""}">${sanitizeExcel(h)}</th>`).join("")}</tr>
+    </thead>
+    <tbody>
+      ${bodyHtml}
+    </tbody>
+  </table>
+</body>
+</html>`;
+}
+
+export function generateStateWiseGstPDF(data: StateWiseGstReportData): string {
+  const doc = new jsPDF({
+    orientation: "landscape",
+    unit: "pt",
+    format: "a4",
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 18;
+
+  // Format headers specifically for PDF with clean 2-line wraps to guarantee zero overlap
+  const pdfHeaders = data.headers.map((h) => {
+    if (h.includes("Amount Paid")) return "Amount Paid\n(₹)";
+    if (h.includes("Amount Due")) return "Amount Due\n(₹)";
+    if (h === "Taxable Amount") return "Taxable\nAmount";
+    if (h === "Dealer Name & Address") return "Dealer Name\n& Address";
+    if (h === "GST Number") return "GST\nNumber";
+    return h;
+  });
+
+  autoTable(doc, {
+    startY: 85,
+    margin: { left: margin, right: margin, top: 85, bottom: 40 },
+    head: [pdfHeaders],
+    body: [...data.rows, data.totals],
+    theme: "plain",
+    showHead: "everyPage",
+    styles: {
+      font: "helvetica",
+      fontSize: 7.2,
+      textColor: [0, 0, 0],
+      cellPadding: { top: 3.5, bottom: 3.5, left: 2.5, right: 2.5 },
+      lineWidth: 0,
+      lineColor: [0, 0, 0],
+      overflow: "linebreak",
+    },
+    headStyles: {
+      fontStyle: "bold",
+      fillColor: false,
+      textColor: [0, 0, 0],
+      lineWidth: { top: 0.75, bottom: 0.75, left: 0, right: 0 },
+      valign: "bottom",
+    },
+    columnStyles: {
+      0: { halign: "center", cellWidth: 26 }, // Sr. No
+      1: { cellWidth: 54 }, // District
+      // Col 2: Dealer Name & Address flexes naturally to fill available space (~195 pt)
+      3: { cellWidth: 72 }, // GST number
+      4: { halign: "center", cellWidth: 42 }, // Month
+      5: { halign: "right", cellWidth: 60 }, // Taxable Amount
+      6: { halign: "right", cellWidth: 46 }, // IGST
+      7: { halign: "right", cellWidth: 46 }, // CGST
+      8: { halign: "right", cellWidth: 46 }, // SGST
+      9: { halign: "right", cellWidth: 32 }, // Cess
+      10: { halign: "right", cellWidth: 62 }, // Total
+      11: { halign: "right", cellWidth: 62 }, // Amount Paid
+      12: { halign: "right", cellWidth: 62 }, // Amount Due
+    },
+    didParseCell: function (cellData) {
+      if (cellData.row.index === data.rows.length) {
+        cellData.cell.styles.fontStyle = "bold";
+        cellData.cell.styles.lineWidth = { top: 0.75, bottom: 1.5, left: 0, right: 0 };
+      }
+    },
+    didDrawPage: function (pageInfo) {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(13);
+      doc.text(data.companyName, pageWidth / 2, 35, { align: "center" });
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10.5);
+      doc.text(data.reportTitle, pageWidth / 2, 50, { align: "center" });
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8.5);
+      doc.text(data.periodStr, pageWidth / 2, 63, { align: "center" });
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.text(`Page ${pageInfo.pageNumber}`, pageWidth - margin, pageHeight - 20, { align: "right" });
+    },
+  });
+
+  const buffer = Buffer.from(doc.output("arraybuffer"));
+  return buffer.toString("base64");
+}
+
+// ============================================
+// DETAILED SALES TRANSACTIONS REPORT FORMATTERS
+// ============================================
+
+export interface DetailedSalesTransactionsData {
+  companyName: string;
+  reportTitle: string;
+  periodStr: string;
+  headers: string[];
+  productStartIndex: number;
+  rows: any[][];
+  totals: any[];
+}
+
+export function generateDetailedSalesCSV(data: DetailedSalesTransactionsData): string {
+  const BOM = "\uFEFF";
+  const lines: string[] = [
+    sanitizeCsv(data.companyName),
+    sanitizeCsv(data.reportTitle),
+    sanitizeCsv(data.periodStr),
+    "",
+    data.headers.map(sanitizeCsv).join(","),
+  ];
+
+  for (const row of data.rows) {
+    lines.push(row.map(sanitizeCsv).join(","));
+  }
+
+  if (data.totals) {
+    lines.push(data.totals.map(sanitizeCsv).join(","));
+  }
+
+  return BOM + lines.join("\n");
+}
+
+export function generateDetailedSalesExcel(data: DetailedSalesTransactionsData): string {
+  const BOM = "\uFEFF";
+  let bodyHtml = "";
+
+  for (const row of data.rows) {
+    bodyHtml += "<tr>";
+    row.forEach((v, idx) => {
+      const isNum = idx >= data.productStartIndex;
+      bodyHtml += `<td class="${isNum ? "num" : ""}">${sanitizeExcel(v)}</td>`;
+    });
+    bodyHtml += "</tr>";
+  }
+
+  if (data.totals) {
+    bodyHtml += '<tr class="total-row">';
+    data.totals.forEach((v, idx) => {
+      const isNum = idx >= data.productStartIndex;
+      bodyHtml += `<td class="${isNum ? "num" : ""}">${sanitizeExcel(v)}</td>`;
+    });
+    bodyHtml += "</tr>";
+  }
+
+  return `${BOM}<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: Calibri, Arial, sans-serif; font-size: 10pt; color: #000000; }
+    h2 { font-size: 14pt; margin: 0; text-align: center; }
+    h3 { font-size: 11pt; margin: 4px 0; text-align: center; }
+    .period { font-size: 9pt; margin: 2px 0 16px 0; text-align: center; color: #333333; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+    th { border-top: 1.5pt solid #000000; border-bottom: 1.5pt solid #000000; font-weight: bold; text-align: left; padding: 6px; }
+    th.num { text-align: right; }
+    td { padding: 4px 6px; border-bottom: 0.5pt solid #f0f0f0; }
+    td.num { text-align: right; mso-number-format: "\\#\\,\\#\\#0\\.00"; }
+    .total-row { font-weight: bold; border-top: 1pt solid #000000; border-bottom: 2pt double #000000; }
+  </style>
+</head>
+<body>
+  <h2>${sanitizeExcel(data.companyName)}</h2>
+  <h3>${sanitizeExcel(data.reportTitle)}</h3>
+  <p class="period">${sanitizeExcel(data.periodStr)}</p>
+  <table>
+    <thead>
+      <tr>${data.headers.map((h, i) => `<th class="${i >= data.productStartIndex ? "num" : ""}">${sanitizeExcel(h)}</th>`).join("")}</tr>
+    </thead>
+    <tbody>
+      ${bodyHtml}
+    </tbody>
+  </table>
+</body>
+</html>`;
+}
+
+export function generateDetailedSalesPDF(data: DetailedSalesTransactionsData): string {
+  const doc = new jsPDF({
+    orientation: "landscape",
+    unit: "pt",
+    format: "a4",
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 18;
+  const usableWidth = pageWidth - margin * 2; // ~805.89 pt
+
+  const totalCols = data.headers.length;
+  // Non-product columns: 6 leading (Sr, Dist, Dealer, GST, Bill No, Bill Date) + 4 trailing (Total Qty, Bill Amt, Paid, Due)
+  const numProducts = Math.max(0, totalCols - 10);
+
+  // Dynamic font sizing based on column count
+  const fontSize = totalCols > 16 ? 5.8 : totalCols > 13 ? 6.4 : totalCols > 10 ? 6.8 : 7.2;
+
+  // Format headers specifically for PDF with clean multiline labels to prevent overlap
+  const pdfHeaders = data.headers.map((h) => {
+    if (h.includes("Amount Paid")) return "Amount Paid\n(₹)";
+    if (h.includes("Amount Due")) return "Amount Due\n(₹)";
+    if (h === "Bill Amount") return "Bill\nAmount";
+    if (h === "Total Qty") return "Total\nQty";
+    if (h === "Bill Number") return "Bill\nNumber";
+    if (h === "Bill Date") return "Bill\nDate";
+    if (h === "GST Number") return "GST\nNumber";
+    if (h === "Dealer Name & Address") return "Dealer Name\n& Address";
+    if (h.includes(" (") && h.length > 18) {
+      const idx = h.lastIndexOf(" (");
+      return h.substring(0, idx) + "\n" + h.substring(idx + 1);
+    }
+    return h;
+  });
+
+  // Calculate proportional column widths
+  const srWidth = 24;
+  const distWidth = totalCols > 16 ? 44 : 50;
+  const gstWidth = totalCols > 16 ? 58 : 66;
+  const billNoWidth = totalCols > 16 ? 48 : 52;
+  const billDateWidth = totalCols > 16 ? 38 : 42;
+  const totalQtyWidth = totalCols > 16 ? 36 : 40;
+  const billAmtWidth = totalCols > 16 ? 54 : 58;
+  const paidWidth = totalCols > 16 ? 54 : 58;
+  const dueWidth = totalCols > 16 ? 54 : 58;
+
+  const fixedExceptDealer =
+    srWidth + distWidth + gstWidth + billNoWidth + billDateWidth +
+    totalQtyWidth + billAmtWidth + paidWidth + dueWidth;
+
+  const remainingForDealerAndProducts = usableWidth - fixedExceptDealer;
+
+  // Allocate product width (leave at least 95pt for dealer name & address)
+  const productColWidth = numProducts > 0
+    ? Math.max(26, Math.min(65, Math.floor((remainingForDealerAndProducts - 95) / numProducts)))
+    : 0;
+
+  const colStyles: Record<number, any> = {
+    0: { halign: "center", cellWidth: srWidth },
+    1: { cellWidth: distWidth },
+    // Col 2: Dealer Name & Address flexes naturally to fill remaining space
+    3: { cellWidth: gstWidth },
+    4: { cellWidth: billNoWidth },
+    5: { halign: "center", cellWidth: billDateWidth },
+  };
+
+  // Product columns
+  for (let c = data.productStartIndex; c < data.productStartIndex + numProducts; c++) {
+    colStyles[c] = { halign: "right", cellWidth: productColWidth };
+  }
+
+  // Trailing summary columns: Total Qty, Bill Amount, Amount Paid, Amount Due
+  const totalQtyCol = totalCols - 4;
+  const billAmtCol = totalCols - 3;
+  const paidCol = totalCols - 2;
+  const dueCol = totalCols - 1;
+
+  colStyles[totalQtyCol] = { halign: "right", cellWidth: totalQtyWidth };
+  colStyles[billAmtCol] = { halign: "right", cellWidth: billAmtWidth };
+  colStyles[paidCol] = { halign: "right", cellWidth: paidWidth };
+  colStyles[dueCol] = { halign: "right", cellWidth: dueWidth };
+
+  autoTable(doc, {
+    startY: 85,
+    margin: { left: margin, right: margin, top: 85, bottom: 40 },
+    head: [pdfHeaders],
+    body: [...data.rows, data.totals],
+    theme: "plain",
+    showHead: "everyPage",
+    styles: {
+      font: "helvetica",
+      fontSize,
+      textColor: [0, 0, 0],
+      cellPadding: { top: 3, bottom: 3, left: 2, right: 2 },
+      lineWidth: 0,
+      lineColor: [0, 0, 0],
+      overflow: "linebreak",
+    },
+    headStyles: {
+      fontStyle: "bold",
+      fillColor: false,
+      textColor: [0, 0, 0],
+      lineWidth: { top: 0.75, bottom: 0.75, left: 0, right: 0 },
+      valign: "bottom",
+    },
+    columnStyles: colStyles,
+    didParseCell: function (cellData) {
+      if (cellData.row.index === data.rows.length) {
+        cellData.cell.styles.fontStyle = "bold";
+        cellData.cell.styles.lineWidth = { top: 0.75, bottom: 1.5, left: 0, right: 0 };
+      }
+    },
+    didDrawPage: function (pageInfo) {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(13);
+      doc.text(data.companyName, pageWidth / 2, 35, { align: "center" });
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10.5);
+      doc.text(data.reportTitle, pageWidth / 2, 50, { align: "center" });
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8.5);
+      doc.text(data.periodStr, pageWidth / 2, 63, { align: "center" });
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.text(`Page ${pageInfo.pageNumber}`, pageWidth - margin, pageHeight - 20, { align: "right" });
+    },
+  });
+
+  const buffer = Buffer.from(doc.output("arraybuffer"));
+  return buffer.toString("base64");
+}
+

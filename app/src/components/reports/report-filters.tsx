@@ -84,7 +84,7 @@ const BASE_FILTER_CONFIGS: Record<
   orders: [
     { key: "dateRange", label: "Period", type: "date" },
     { key: "customerId", label: "Customer", type: "select" },
-    { key: "status", label: "Status", type: "select", options: STATUS_OPTIONS.order_status },
+    { key: "status", label: "Order Status", type: "select", options: STATUS_OPTIONS.order_status },
     {
       key: "priority",
       label: "Priority",
@@ -101,7 +101,7 @@ const BASE_FILTER_CONFIGS: Record<
     { key: "dateRange", label: "Period", type: "date" },
     { key: "customerId", label: "Customer", type: "select" },
     { key: "orderId", label: "Order #", type: "select" },
-    { key: "status", label: "Status", type: "select", options: STATUS_OPTIONS.payment_status },
+    { key: "status", label: "Payment Status", type: "select", options: STATUS_OPTIONS.payment_status },
     {
       key: "paymentMethod",
       label: "Method",
@@ -159,7 +159,7 @@ const BASE_FILTER_CONFIGS: Record<
   production: [
     { key: "dateRange", label: "Period", type: "date" },
     { key: "productId", label: "Product", type: "select" },
-    { key: "status", label: "Status", type: "select", options: STATUS_OPTIONS.production_status },
+    { key: "status", label: "Production Status", type: "select", options: STATUS_OPTIONS.production_status },
     {
       key: "priority",
       label: "Priority",
@@ -179,7 +179,7 @@ const BASE_FILTER_CONFIGS: Record<
   delivery: [
     { key: "dateRange", label: "Period", type: "date" },
     { key: "orderId", label: "Order #", type: "select" },
-    { key: "status", label: "Status", type: "select", options: STATUS_OPTIONS.delivery_status },
+    { key: "status", label: "Delivery Status", type: "select", options: STATUS_OPTIONS.delivery_status },
   ],
 };
 

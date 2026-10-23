@@ -76,7 +76,7 @@ export function PurchaseList({ purchases, canCreate }: PurchaseListProps) {
           onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
           className="w-full sm:w-52 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 min-h-10"
         >
-          <option value="all">All Status</option>
+          <option value="all">All Statuses</option>
           <option value="DRAFT">Draft</option>
           <option value="ORDERED">Ordered</option>
           <option value="PARTIAL">Partial</option>

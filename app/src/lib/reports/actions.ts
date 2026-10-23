@@ -52,6 +52,12 @@ import {
   generateOperationalPDF,
   generateOperationalExcel,
   generateOperationalCSV,
+  generateStateWiseGstCSV,
+  generateStateWiseGstExcel,
+  generateStateWiseGstPDF,
+  generateDetailedSalesCSV,
+  generateDetailedSalesExcel,
+  generateDetailedSalesPDF,
   type LedgerEntryRow,
   type OperationalReportData,
 } from "@/lib/reports/ledger-formatter";
@@ -667,6 +673,7 @@ interface ProductQueryResult {
 interface OrderItemQueryResult {
   id: string;
   product_id: string;
+  product_name?: string | null;
   quantity: number;
   unit_price: number;
   discount_rate: number;
@@ -696,6 +703,8 @@ interface OrderQueryResult {
   due_amount: number;
   district?: string | null;
   place_of_supply?: string | null;
+  customer_gstin?: string | null;
+  business_gstin?: string | null;
   earliest_delivery_date: string | null;
   latest_delivery_date: string | null;
   expected_delivery_date: string | null;
@@ -2174,6 +2183,376 @@ async function fetchReportData(type: ReportType, filters: ReportFilters): Promis
   return getReportConfig(type, rows);
 }
 
+export type SalesReportVariant = "state_wise_gst" | "detailed_transactions";
+
+export async function exportSalesReport(
+  variant: SalesReportVariant,
+  filters: SalesReportFilters,
+  format: ExportFormat
+): Promise<{ content: string; contentType: string; filename: string }> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+
+  const isAdminOrSuper = context.roleKey === "admin" || context.roleKey === "super_admin";
+  if (!isAdminOrSuper) {
+    throw new Error("Forbidden: Exporting sales report is restricted to Admin and Super Admin");
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) throw new Error("Supabase client not available");
+
+  const companyName = "Sankalp Irrigation";
+
+  const { startDate, endDate } = resolveDateRange(filters);
+  const periodStr =
+    startDate && endDate
+      ? `${formatLedgerDate(startDate)} to ${formatLedgerDate(endDate)}`
+      : startDate
+      ? `From ${formatLedgerDate(startDate)}`
+      : endDate
+      ? `Up to ${formatLedgerDate(endDate)}`
+      : "All Time";
+
+  const dateStr = new Date().toISOString().split("T")[0];
+
+  let query = supabase
+    .from("orders")
+    .select(
+      `
+      id, order_number, order_date, status, subtotal, discount_amount, tax_amount, cgst_amount, sgst_amount, igst_amount, tax_type, total_amount, paid_amount, due_amount, district, place_of_supply,
+      customer_gstin, business_gstin,
+      customer:customers!inner(
+        id, name, company_name, phone, email, gst_number,
+        customer_addresses(address, city, state, postal_code, district, address_type)
+      ),
+      items:order_items(
+        id, product_id, product_name, quantity, unit_price, discount_rate, tax_rate, line_total, taxable_amount, cgst_amount, sgst_amount, igst_amount,
+        product:products(id, name, sku)
+      )
+    `
+    )
+    .eq("business_id", context.user.business_id);
+
+  if (filters.status) {
+    query = query.eq("status", filters.status);
+  } else {
+    query = query.neq("status", "CANCELLED");
+  }
+
+  if (startDate) query = query.gte("order_date", startDate);
+  if (endDate) query = query.lte("order_date", endDate);
+  if (filters.customerId) query = query.eq("customer_id", filters.customerId);
+
+  const { data: rawOrders, error } = await query.order("order_date", { ascending: true });
+  if (error) throw error;
+
+  const filteredOrders = ((rawOrders as unknown as OrderQueryResult[]) ?? []).filter((order) => {
+    const addrs = order.customer?.customer_addresses as CustomerAddressQueryResult[] | undefined;
+    const primaryAddr = addrs?.find((a) => a.address_type === "PRIMARY") ?? addrs?.[0];
+    const rawDistrict = (order.district && order.district.trim()) || primaryAddr?.district?.trim() || null;
+    const rawState = (order.place_of_supply && order.place_of_supply.trim()) || primaryAddr?.state?.trim() || null;
+
+    if (!matchesDistrict(rawDistrict, rawState, filters.district)) {
+      return false;
+    }
+
+    if (filters.productId) {
+      const allItems = order.items ?? [];
+      const hasProduct = allItems.some((it) => it.product_id === filters.productId);
+      if (!hasProduct) return false;
+    }
+
+    return true;
+  });
+
+  await auditExport(context, "sales", filters, format, filteredOrders.length);
+
+  if (variant === "state_wise_gst") {
+    const filename = `state_wise_sales_gst_report_${dateStr}.${format === "excel" ? "xls" : format}`;
+    const headers = [
+      "Sr. No.",
+      "District",
+      "Dealer Name & Address",
+      "GST Number",
+      "Month",
+      "Taxable Amount",
+      "IGST",
+      "CGST",
+      "SGST",
+      "Cess",
+      "Total",
+      "Amount Paid (₹)",
+      "Amount Due (₹)",
+    ];
+
+    let totalTaxable = 0;
+    let totalIGST = 0;
+    let totalCGST = 0;
+    let totalSGST = 0;
+    let totalSum = 0;
+    let totalPaidSum = 0;
+    let totalDueSum = 0;
+
+    const rows = filteredOrders.map((order, idx) => {
+      const addrs = order.customer?.customer_addresses as any[] | undefined;
+      const primaryAddr = addrs?.find((a: any) => a.address_type === "PRIMARY") ?? addrs?.[0];
+      const rawDistrict = (order.district && order.district.trim()) || primaryAddr?.district?.trim() || "-";
+      const districtDisplay = resolveDistrictDisplayName(rawDistrict, null);
+
+      const custName = order.customer?.name || "Customer";
+      const compName = order.customer?.company_name;
+      const dealerName = compName && compName !== custName ? `${compName} (${custName})` : custName;
+      const addrComponents = [
+        primaryAddr?.address,
+        primaryAddr?.city,
+        primaryAddr?.district,
+        primaryAddr?.state,
+        primaryAddr?.postal_code,
+      ].filter(Boolean);
+      const dealerWithAddr = addrComponents.length > 0 ? `${dealerName}, ${addrComponents.join(", ")}` : dealerName;
+
+      const gstNo = order.customer_gstin || (order.customer as any)?.gst_number || "Unregistered";
+
+      const orderD = new Date(order.order_date);
+      const monthStr = !isNaN(orderD.getTime())
+        ? orderD.toLocaleString("en-US", { month: "short", year: "numeric" })
+        : "-";
+
+      const taxable =
+        Number(
+          order.subtotal != null
+            ? order.subtotal
+            : Number(order.total_amount || 0) - Number(order.tax_amount || 0)
+        ) || 0;
+      const igst = Number(order.igst_amount || 0);
+      const cgst = Number(order.cgst_amount || 0);
+      const sgst = Number(order.sgst_amount || 0);
+      const total = Number(order.total_amount || 0);
+
+      const paidAmt = Number(order.paid_amount || 0);
+      const dueAmt =
+        order.status === "CANCELLED"
+          ? 0
+          : Math.max(0, Number(order.due_amount != null ? order.due_amount : total - paidAmt));
+
+      totalTaxable += taxable;
+      totalIGST += igst;
+      totalCGST += cgst;
+      totalSGST += sgst;
+      totalSum += total;
+      totalPaidSum += paidAmt;
+      totalDueSum += dueAmt;
+
+      return [
+        idx + 1,
+        districtDisplay,
+        dealerWithAddr,
+        gstNo,
+        monthStr,
+        formatIndianCurrency(taxable, true),
+        formatIndianCurrency(igst, true),
+        formatIndianCurrency(cgst, true),
+        formatIndianCurrency(sgst, true),
+        "0.00",
+        formatIndianCurrency(total, true),
+        formatIndianCurrency(paidAmt, true),
+        formatIndianCurrency(dueAmt, true),
+      ];
+    });
+
+    const totalsRow = [
+      "TOTALS",
+      "",
+      "",
+      "",
+      "",
+      formatIndianCurrency(totalTaxable, true),
+      formatIndianCurrency(totalIGST, true),
+      formatIndianCurrency(totalCGST, true),
+      formatIndianCurrency(totalSGST, true),
+      "0.00",
+      formatIndianCurrency(totalSum, true),
+      formatIndianCurrency(totalPaidSum, true),
+      formatIndianCurrency(totalDueSum, true),
+    ];
+
+    const reportData = {
+      companyName,
+      reportTitle: "State-wise Sales & GST Report",
+      periodStr,
+      headers,
+      rows,
+      totals: totalsRow,
+    };
+
+    switch (format) {
+      case "csv":
+        return {
+          content: generateStateWiseGstCSV(reportData),
+          contentType: "text/csv; charset=utf-8",
+          filename,
+        };
+      case "excel":
+        return {
+          content: generateStateWiseGstExcel(reportData),
+          contentType: "application/vnd.ms-excel; charset=utf-8",
+          filename,
+        };
+      case "pdf":
+        return {
+          content: generateStateWiseGstPDF(reportData),
+          contentType: "application/pdf",
+          filename,
+        };
+    }
+  } else {
+    // Detailed Sales Transactions with dynamic product columns
+    const filename = `detailed_sales_transactions_${dateStr}.${format === "excel" ? "xls" : format}`;
+
+    const productMap = new Map<string, { id: string; name: string; sku: string | null }>();
+    for (const order of filteredOrders) {
+      for (const item of order.items || []) {
+        if (!productMap.has(item.product_id)) {
+          productMap.set(item.product_id, {
+            id: item.product_id,
+            name: item.product_name || item.product?.name || "Product",
+            sku: item.product?.sku || null,
+          });
+        }
+      }
+    }
+    const productList = Array.from(productMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+
+    const headers = [
+      "Sr. No.",
+      "District",
+      "Dealer Name & Address",
+      "GST Number",
+      "Bill Number",
+      "Bill Date",
+      ...productList.map((p) => (p.sku ? `${p.name} (${p.sku})` : p.name)),
+      "Total Qty",
+      "Bill Amount",
+      "Amount Paid (₹)",
+      "Amount Due (₹)",
+    ];
+
+    const productTotals = new Array(productList.length).fill(0);
+    let overallQtySum = 0;
+    let overallAmountSum = 0;
+    let overallPaidSum = 0;
+    let overallDueSum = 0;
+
+    const rows = filteredOrders.map((order, idx) => {
+      const addrs = order.customer?.customer_addresses as any[] | undefined;
+      const primaryAddr = addrs?.find((a: any) => a.address_type === "PRIMARY") ?? addrs?.[0];
+      const rawDistrict = (order.district && order.district.trim()) || primaryAddr?.district?.trim() || "-";
+      const districtDisplay = resolveDistrictDisplayName(rawDistrict, null);
+
+      const custName = order.customer?.name || "Customer";
+      const compName = order.customer?.company_name;
+      const dealerName = compName && compName !== custName ? `${compName} (${custName})` : custName;
+      const addrComponents = [
+        primaryAddr?.address,
+        primaryAddr?.city,
+        primaryAddr?.district,
+        primaryAddr?.state,
+        primaryAddr?.postal_code,
+      ].filter(Boolean);
+      const dealerWithAddr = addrComponents.length > 0 ? `${dealerName}, ${addrComponents.join(", ")}` : dealerName;
+
+      const gstNo = order.customer_gstin || (order.customer as any)?.gst_number || "Unregistered";
+      const billNo = order.order_number;
+      const billDate = formatLedgerDate(order.order_date);
+
+      const itemMap = new Map<string, number>();
+      let orderTotalQty = 0;
+      for (const it of order.items || []) {
+        const q = Number(it.quantity) || 0;
+        itemMap.set(it.product_id, (itemMap.get(it.product_id) || 0) + q);
+        orderTotalQty += q;
+      }
+
+      const productQtyCells = productList.map((p, pIdx) => {
+        const q = itemMap.get(p.id) || 0;
+        productTotals[pIdx] += q;
+        return q > 0 ? q : 0;
+      });
+
+      const billAmount = Number(order.total_amount || 0);
+      const paidAmt = Number(order.paid_amount || 0);
+      const dueAmt =
+        order.status === "CANCELLED"
+          ? 0
+          : Math.max(0, Number(order.due_amount != null ? order.due_amount : billAmount - paidAmt));
+
+      overallQtySum += orderTotalQty;
+      overallAmountSum += billAmount;
+      overallPaidSum += paidAmt;
+      overallDueSum += dueAmt;
+
+      return [
+        idx + 1,
+        districtDisplay,
+        dealerWithAddr,
+        gstNo,
+        billNo,
+        billDate,
+        ...productQtyCells,
+        orderTotalQty,
+        formatIndianCurrency(billAmount, true),
+        formatIndianCurrency(paidAmt, true),
+        formatIndianCurrency(dueAmt, true),
+      ];
+    });
+
+    const totalsRow = [
+      "TOTALS",
+      "",
+      "",
+      "",
+      "",
+      "",
+      ...productTotals,
+      overallQtySum,
+      formatIndianCurrency(overallAmountSum, true),
+      formatIndianCurrency(overallPaidSum, true),
+      formatIndianCurrency(overallDueSum, true),
+    ];
+
+    const reportData = {
+      companyName,
+      reportTitle: "Detailed Sales Transactions",
+      periodStr,
+      headers,
+      productStartIndex: 6,
+      rows,
+      totals: totalsRow,
+    };
+
+    switch (format) {
+      case "csv":
+        return {
+          content: generateDetailedSalesCSV(reportData),
+          contentType: "text/csv; charset=utf-8",
+          filename,
+        };
+      case "excel":
+        return {
+          content: generateDetailedSalesExcel(reportData),
+          contentType: "application/vnd.ms-excel; charset=utf-8",
+          filename,
+        };
+      case "pdf":
+        return {
+          content: generateDetailedSalesPDF(reportData),
+          contentType: "application/pdf",
+          filename,
+        };
+    }
+  }
+}
+
 export async function exportReport(
   reportType: ReportType,
   filters: ReportFilters,
@@ -2210,6 +2589,9 @@ export async function exportReport(
     if (bData) {
       companyName = bData.legal_name || bData.name || companyName;
     }
+  }
+  if (reportType === "sales") {
+    companyName = "Sankalp Irrigation";
   }
 
   const { startDate, endDate } = resolveDateRange(filters);

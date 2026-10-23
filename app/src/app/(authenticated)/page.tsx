@@ -39,7 +39,7 @@ export default async function AccountPage({
           <dd className="mt-1 text-sm font-medium">{context.role?.name ?? "No role assigned"}</dd>
         </div>
         <div>
-          <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Account status</dt>
+          <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Account Status</dt>
           <dd className="mt-1 text-sm font-medium">{context.user.status}</dd>
         </div>
         <div>

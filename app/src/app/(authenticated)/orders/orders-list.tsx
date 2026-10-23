@@ -291,7 +291,7 @@ export function OrdersList({
       {notice === "order_status_updated" && (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-800 flex items-center gap-3 shadow-sm" role="status">
           <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-          <span className="text-sm font-medium">Order status updated successfully.</span>
+          <span className="text-sm font-medium">Order Status updated successfully.</span>
         </div>
       )}
       {notice === "priority_changed" && (
@@ -469,7 +469,7 @@ export function OrdersList({
                   onChange={(e) => updateFilters({ payment: e.target.value })}
                   className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 focus:border-[#0F766E] focus:outline-none focus:ring-1 focus:ring-[#0F766E] min-h-9"
                 >
-                  <option value="all">All Payment States</option>
+                  <option value="all">All Payment Statuses</option>
                   <option value="UNPAID">Unpaid (Zero Paid)</option>
                   <option value="PARTIAL">Partially Paid</option>
                   <option value="PAID">Fully Paid (Zero Due)</option>

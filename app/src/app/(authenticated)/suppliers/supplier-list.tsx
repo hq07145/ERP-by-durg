@@ -56,7 +56,7 @@ export function SupplierList({ suppliers, canCreate }: SupplierListProps) {
           onChange={(e) => setStatusFilter(e.target.value as "all" | "ACTIVE" | "INACTIVE")}
           className="w-full sm:w-48 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 min-h-10"
         >
-          <option value="all">All Status</option>
+          <option value="all">All Statuses</option>
           <option value="ACTIVE">Active</option>
           <option value="INACTIVE">Inactive</option>
         </select>

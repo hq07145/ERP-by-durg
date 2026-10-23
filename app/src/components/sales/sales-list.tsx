@@ -200,7 +200,7 @@ export function SalesList({
               ))}
             </select>
             <select
-              aria-label="Filter by order status"
+              aria-label="Filter by Order Status"
               value={status ?? ""}
               onChange={(e) => handleStatus(e.target.value || undefined)}
               className="rounded-sm border border-gray-300 px-3 py-1.5 text-sm bg-white focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]"
