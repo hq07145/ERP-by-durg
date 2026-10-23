@@ -86,10 +86,10 @@ export async function getNotifications(
  */
 export async function getUnreadCount(): Promise<number> {
   const context = await getAuthContext();
-  if (!context) redirect("/login?error=account_unavailable");
+  if (!context) return 0;
 
   const supabase = await createServerSupabaseClient();
-  if (!supabase) throw new Error("Supabase client not available");
+  if (!supabase) return 0;
 
   const { data, error } = await supabase.rpc("get_unread_notification_count", {
     p_user_id: context.user.id,

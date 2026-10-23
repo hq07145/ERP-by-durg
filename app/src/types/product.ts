@@ -34,6 +34,11 @@ export interface Product {
   min_stock: string | number;
   reorder_level: string | number;
   quality_grade?: string | null;
+  qty_is_4985?: number | null;
+  qty_is_12786?: number | null;
+  qty_is_13487?: number | null;
+  qty_is_13488?: number | null;
+  qty_is_12785?: number | null;
   active: boolean;
   created_at: string;
   updated_at: string;
@@ -57,6 +62,11 @@ export interface ProductFormValues {
   name: string;
   sku: string;
   quality_grade: string;
+  qty_is_4985?: string;
+  qty_is_12786?: string;
+  qty_is_13487?: string;
+  qty_is_13488?: string;
+  qty_is_12785?: string;
   category_id: string;
   subcategory_id: string;
   description: string;

@@ -110,6 +110,11 @@ export interface SalesReportRow {
   product_name: string;
   product_sku: string | null;
   quantity: string | number;
+  qty_is_4985?: number;
+  qty_is_12786?: number;
+  qty_is_13487?: number;
+  qty_is_13488?: number;
+  qty_is_12785?: number;
   unit_price: string | number;
   discount_rate: string | number;
   tax_rate: string | number;

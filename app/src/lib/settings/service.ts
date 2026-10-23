@@ -3,6 +3,7 @@ import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
 import { scheduleProductionQueue } from "@/lib/production/scheduler";
 import type {
+  BusinessDetails,
   BusinessSetting,
   SettingsKey,
   SettingsValue,

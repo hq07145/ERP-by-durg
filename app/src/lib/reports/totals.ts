@@ -20,6 +20,11 @@ export function calculateReportTotals(reportType: ReportType, rows: ReportRow[])
   switch (reportType) {
     case "sales":
       totals["quantity"] = sumKey("quantity");
+      totals["qty_is_4985"] = sumKey("qty_is_4985");
+      totals["qty_is_12786"] = sumKey("qty_is_12786");
+      totals["qty_is_13487"] = sumKey("qty_is_13487");
+      totals["qty_is_13488"] = sumKey("qty_is_13488");
+      totals["qty_is_12785"] = sumKey("qty_is_12785");
       totals["line_total"] = sumKey("line_total");
       totals["gross_amount"] = sumKey("gross_amount");
       totals["discount_amount"] = sumKey("discount_amount");

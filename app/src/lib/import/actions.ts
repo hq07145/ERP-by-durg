@@ -370,24 +370,37 @@ export async function executeImportAction(payload: {
               .eq("sku", sku)
               .maybeSingle();
 
+            const parseQty = (val: any) => {
+              if (val === null || val === undefined || String(val).trim() === "") return 0;
+              const n = parseFloat(String(val).replace(/[^0-9.-]/g, ""));
+              return isNaN(n) ? 0 : Math.max(0, n);
+            };
+
             const normUnit = normalizeProductUnit(row.unit);
 
             if (existingProduct) {
+              const updatePayload: Record<string, any> = {
+                name,
+                category_id: categoryId,
+                unit: normUnit,
+                production_unit: normUnit,
+                selling_price: sellingPrice,
+                tax_rate: taxRate,
+                min_stock: minStock,
+                daily_capacity: dailyCapacity,
+                description: row.description || null,
+                active: true,
+                updated_at: new Date().toISOString(),
+              };
+              if (row.qty_is_4985 !== undefined && row.qty_is_4985 !== null) updatePayload.qty_is_4985 = parseQty(row.qty_is_4985);
+              if (row.qty_is_12786 !== undefined && row.qty_is_12786 !== null) updatePayload.qty_is_12786 = parseQty(row.qty_is_12786);
+              if (row.qty_is_13487 !== undefined && row.qty_is_13487 !== null) updatePayload.qty_is_13487 = parseQty(row.qty_is_13487);
+              if (row.qty_is_13488 !== undefined && row.qty_is_13488 !== null) updatePayload.qty_is_13488 = parseQty(row.qty_is_13488);
+              if (row.qty_is_12785 !== undefined && row.qty_is_12785 !== null) updatePayload.qty_is_12785 = parseQty(row.qty_is_12785);
+
               const { error } = await supabase
                 .from("products")
-                .update({
-                  name,
-                  category_id: categoryId,
-                  unit: normUnit,
-                  production_unit: normUnit,
-                  selling_price: sellingPrice,
-                  tax_rate: taxRate,
-                  min_stock: minStock,
-                  daily_capacity: dailyCapacity,
-                  description: row.description || null,
-                  active: true,
-                  updated_at: new Date().toISOString(),
-                })
+                .update(updatePayload)
                 .eq("id", existingProduct.id);
               if (error) throw error;
             } else {
@@ -404,6 +417,11 @@ export async function executeImportAction(payload: {
                 daily_capacity: dailyCapacity,
                 description: row.description || null,
                 active: true,
+                qty_is_4985: parseQty(row.qty_is_4985),
+                qty_is_12786: parseQty(row.qty_is_12786),
+                qty_is_13487: parseQty(row.qty_is_13487),
+                qty_is_13488: parseQty(row.qty_is_13488),
+                qty_is_12785: parseQty(row.qty_is_12785),
               });
               if (error) throw error;
             }
@@ -650,7 +668,7 @@ export async function executeImportAction(payload: {
 
         const { data: products } = await supabase
           .from("products")
-          .select("id, sku, name, selling_price, tax_rate")
+          .select("id, sku, name, selling_price, tax_rate, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785")
           .eq("business_id", businessId);
 
         const productBySku = new Map<string, any>();
@@ -761,6 +779,11 @@ export async function executeImportAction(payload: {
                 product_id: prd.id,
                 product_name: prd.name,
                 quantity: qty,
+                qty_is_4985: prd.qty_is_4985 ?? 0,
+                qty_is_12786: prd.qty_is_12786 ?? 0,
+                qty_is_13487: prd.qty_is_13487 ?? 0,
+                qty_is_13488: prd.qty_is_13488 ?? 0,
+                qty_is_12785: prd.qty_is_12785 ?? 0,
                 unit_price: unitPrice,
                 discount_rate: discRate,
                 tax_rate: taxRate,
@@ -804,6 +827,11 @@ export async function executeImportAction(payload: {
               product_id: itm.product_id,
               product_name: itm.product_name,
               quantity: itm.quantity,
+              qty_is_4985: itm.qty_is_4985 ?? 0,
+              qty_is_12786: itm.qty_is_12786 ?? 0,
+              qty_is_13487: itm.qty_is_13487 ?? 0,
+              qty_is_13488: itm.qty_is_13488 ?? 0,
+              qty_is_12785: itm.qty_is_12785 ?? 0,
               unit_price: itm.unit_price,
               discount_rate: itm.discount_rate,
               tax_rate: itm.tax_rate,

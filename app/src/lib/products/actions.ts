@@ -40,7 +40,7 @@ function getString(formData: FormData, key: string, fallback: string): string {
 function productValues(formData: FormData, product?: Product): ProductFormValues {
   const defaults = productToFormValues(product);
 
-  const value = (key: keyof ProductFormValues) => getString(formData, key, defaults[key]);
+  const value = (key: keyof ProductFormValues) => getString(formData, key, defaults[key] ?? "");
   return {
     name: value("name"),
     sku: value("sku"),
@@ -253,6 +253,11 @@ export async function saveProductAction(
     name: values.name,
     sku: values.sku,
     quality_grade: values.quality_grade || null,
+    qty_is_4985: values.qty_is_4985 ? Number(values.qty_is_4985) : 0,
+    qty_is_12786: values.qty_is_12786 ? Number(values.qty_is_12786) : 0,
+    qty_is_13487: values.qty_is_13487 ? Number(values.qty_is_13487) : 0,
+    qty_is_13488: values.qty_is_13488 ? Number(values.qty_is_13488) : 0,
+    qty_is_12785: values.qty_is_12785 ? Number(values.qty_is_12785) : 0,
     category_id: values.category_id || null,
     subcategory_id: values.subcategory_id || null,
     description: values.description || null,

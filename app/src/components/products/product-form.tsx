@@ -136,9 +136,41 @@ export default function ProductForm({
         </label>
         <label className={labelClass}>
           Unit
-          <select className={selectClass} name="unit" onChange={(event) => setValue("unit", event.target.value, event)} value={values.unit}>
-            {PRODUCT_UNITS.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
-          </select>
+        </label>
+        <select className={selectClass} name="unit" onChange={(event) => setValue("unit", event.target.value, event)} value={values.unit}>
+          {PRODUCT_UNITS.map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+        </select>
+      </fieldset>
+
+      <fieldset className="grid gap-5 border-t border-[var(--line)] pt-5 sm:grid-cols-2 lg:grid-cols-3">
+        <legend className="px-1 text-lg font-semibold col-span-full">Quality Standard Quantities (IS Standards)</legend>
+        <p className="text-xs text-[var(--muted)] col-span-full -mt-3">
+          Configure individual standard quantities for IS quality numbers associated with this product.
+        </p>
+        <label className={labelClass}>
+          IS:4985 PVC Pipe Qty
+          <input className={inputClass} type="number" min="0" step="0.01" name="qty_is_4985" onChange={(event) => setValue("qty_is_4985", event.target.value, event)} value={values.qty_is_4985 ?? "0"} placeholder="0.00" />
+          <span className={hintClass}>IS:4985 PVC Pipe quantity</span>
+        </label>
+        <label className={labelClass}>
+          IS:12786 Plain Lateral Qty
+          <input className={inputClass} type="number" min="0" step="0.01" name="qty_is_12786" onChange={(event) => setValue("qty_is_12786", event.target.value, event)} value={values.qty_is_12786 ?? "0"} placeholder="0.00" />
+          <span className={hintClass}>IS:12786 Plain Lateral quantity</span>
+        </label>
+        <label className={labelClass}>
+          IS:13487 Emitter Qty
+          <input className={inputClass} type="number" min="0" step="0.01" name="qty_is_13487" onChange={(event) => setValue("qty_is_13487", event.target.value, event)} value={values.qty_is_13487 ?? "0"} placeholder="0.00" />
+          <span className={hintClass}>IS:13487 Emitter quantity</span>
+        </label>
+        <label className={labelClass}>
+          IS:13488 Emitting Pipe Qty
+          <input className={inputClass} type="number" min="0" step="0.01" name="qty_is_13488" onChange={(event) => setValue("qty_is_13488", event.target.value, event)} value={values.qty_is_13488 ?? "0"} placeholder="0.00" />
+          <span className={hintClass}>IS:13488 Emitting Pipe quantity</span>
+        </label>
+        <label className={labelClass}>
+          IS:12785 Filters Qty
+          <input className={inputClass} type="number" min="0" step="0.01" name="qty_is_12785" onChange={(event) => setValue("qty_is_12785", event.target.value, event)} value={values.qty_is_12785 ?? "0"} placeholder="0.00" />
+          <span className={hintClass}>IS:12785 Filters quantity</span>
         </label>
       </fieldset>
 

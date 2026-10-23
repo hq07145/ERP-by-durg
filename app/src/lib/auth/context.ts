@@ -18,12 +18,35 @@ export function normalizeRoleKey(name: string): string {
   return name.trim().toLowerCase().replace(/[\s-]+/g, "_");
 }
 
+interface CachedContext {
+  context: AuthContext;
+  expiresAt: number;
+}
+
+const authCache = new Map<string, CachedContext>();
+const CACHE_TTL_MS = 60 * 1000; // 60 seconds
+
+export function invalidateAuthCache(authUserId?: string) {
+  if (authUserId) {
+    authCache.delete(authUserId);
+  } else {
+    authCache.clear();
+  }
+}
+
 export const getAuthContext = cache(async function getAuthContext(): Promise<AuthContext | null> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) return null;
 
   const { data: authData, error: authError } = await supabase.auth.getUser();
   if (authError || !authData.user) return null;
+
+  const userId = authData.user.id;
+  const now = Date.now();
+  const cached = authCache.get(userId);
+  if (cached && cached.expiresAt > now) {
+    return cached.context;
+  }
 
   // Use server admin client to resolve role & permissions in a single unified PostgREST query
   const admin = createAdminSupabaseClient() || supabase;
@@ -114,7 +137,7 @@ export const getAuthContext = cache(async function getAuthContext(): Promise<Aut
 
   const businessName = business?.legal_name || business?.name || "SANKALP IRRIGATION";
 
-  return {
+  const result: AuthContext = {
     authUserId: authData.user.id,
     user: profile,
     role,
@@ -122,6 +145,9 @@ export const getAuthContext = cache(async function getAuthContext(): Promise<Aut
     permissions: [...new Set(permissions)],
     businessName,
   };
+
+  authCache.set(userId, { context: result, expiresAt: Date.now() + CACHE_TTL_MS });
+  return result;
 });
 
 export async function requireAuthContext(): Promise<AuthContext> {

@@ -106,6 +106,32 @@ export default async function ProductDetailsPage({
         {product.description && <div className="sm:col-span-2 lg:col-span-3"><dt className="text-xs font-semibold uppercase text-[var(--muted)]">Description</dt><dd className="mt-1 whitespace-pre-wrap text-sm">{product.description}</dd></div>}
       </dl>
 
+      <div className="mt-8 border-b border-[var(--line)] pb-8">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--muted)]">Quality Standard Quantities (IS Standards)</h2>
+        <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          <div className="rounded-lg border border-[var(--line)] bg-slate-50/50 p-3.5">
+            <p className="text-xs font-medium text-[var(--muted)]">IS:4985 PVC Pipe</p>
+            <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_4985 || 0)}</p>
+          </div>
+          <div className="rounded-lg border border-[var(--line)] bg-slate-50/50 p-3.5">
+            <p className="text-xs font-medium text-[var(--muted)]">IS:12786 Plain Lateral</p>
+            <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_12786 || 0)}</p>
+          </div>
+          <div className="rounded-lg border border-[var(--line)] bg-slate-50/50 p-3.5">
+            <p className="text-xs font-medium text-[var(--muted)]">IS:13487 Emitter</p>
+            <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_13487 || 0)}</p>
+          </div>
+          <div className="rounded-lg border border-[var(--line)] bg-slate-50/50 p-3.5">
+            <p className="text-xs font-medium text-[var(--muted)]">IS:13488 Emitting Pipe</p>
+            <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_13488 || 0)}</p>
+          </div>
+          <div className="rounded-lg border border-[var(--line)] bg-slate-50/50 p-3.5">
+            <p className="text-xs font-medium text-[var(--muted)]">IS:12785 Filters</p>
+            <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_12785 || 0)}</p>
+          </div>
+        </div>
+      </div>
+
       <ProductBomSection
         productId={product.id}
         businessId={context.user.business_id}

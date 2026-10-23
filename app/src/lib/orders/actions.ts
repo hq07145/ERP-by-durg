@@ -206,7 +206,7 @@ export async function createOrderAction(
   const productIds = Array.from(new Set(values.items.map((it) => it.product_id)));
   const { data: prods, error: prodError } = await supabase
     .from("products")
-    .select("id, name, quality_grade")
+    .select("id, name, quality_grade, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785")
     .in("id", productIds)
     .eq("business_id", context.user.business_id)
     .eq("active", true);
@@ -214,7 +214,19 @@ export async function createOrderAction(
   if (prodError || !prods || prods.length !== productIds.length) {
     return { error: "invalid_product" };
   }
-  const productMap = new Map<string, { id: string; name: string; quality_grade?: string | null }>();
+  const productMap = new Map<
+    string,
+    {
+      id: string;
+      name: string;
+      quality_grade?: string | null;
+      qty_is_4985?: number | null;
+      qty_is_12786?: number | null;
+      qty_is_13487?: number | null;
+      qty_is_13488?: number | null;
+      qty_is_12785?: number | null;
+    }
+  >();
   for (const prod of prods) {
     productMap.set(prod.id, prod);
   }
@@ -262,16 +274,22 @@ export async function createOrderAction(
 
   const itemInserts = gstCalc.items.map((it, idx) => {
     const rawItem = values.items[idx];
-    const fallbackGrade = productMap.get(it.productId)?.quality_grade || null;
+    const prod = productMap.get(it.productId);
+    const fallbackGrade = prod?.quality_grade || null;
     const resolvedGrade = rawItem?.quality_grade?.trim() || fallbackGrade;
     const resolvedVariantId = rawItem?.variant_id?.trim() || null;
 
     return {
       product_id: it.productId,
-      product_name: productMap.get(it.productId)?.name || null,
+      product_name: prod?.name || null,
       quality_grade: resolvedGrade,
       variant_id: resolvedVariantId,
       quantity: it.quantity,
+      qty_is_4985: (rawItem as any)?.qty_is_4985 != null ? Number((rawItem as any).qty_is_4985) : Number(prod?.qty_is_4985 || 0),
+      qty_is_12786: (rawItem as any)?.qty_is_12786 != null ? Number((rawItem as any).qty_is_12786) : Number(prod?.qty_is_12786 || 0),
+      qty_is_13487: (rawItem as any)?.qty_is_13487 != null ? Number((rawItem as any).qty_is_13487) : Number(prod?.qty_is_13487 || 0),
+      qty_is_13488: (rawItem as any)?.qty_is_13488 != null ? Number((rawItem as any).qty_is_13488) : Number(prod?.qty_is_13488 || 0),
+      qty_is_12785: (rawItem as any)?.qty_is_12785 != null ? Number((rawItem as any).qty_is_12785) : Number(prod?.qty_is_12785 || 0),
       unit_price: it.unitPrice,
       discount_rate: it.discountRate,
       tax_rate: it.taxRate,
@@ -615,11 +633,23 @@ export async function updateOrderAction(
   const customerGstin = customer.gst_number || null;
 
   // 6. Verify products
-  const productMap = new Map<string, { id: string; name: string; quality_grade?: string | null }>();
+  const productMap = new Map<
+    string,
+    {
+      id: string;
+      name: string;
+      quality_grade?: string | null;
+      qty_is_4985?: number | null;
+      qty_is_12786?: number | null;
+      qty_is_13487?: number | null;
+      qty_is_13488?: number | null;
+      qty_is_12785?: number | null;
+    }
+  >();
   for (const item of values.items) {
     const { data: prod } = await supabase
       .from("products")
-      .select("id, name, quality_grade")
+      .select("id, name, quality_grade, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785")
       .eq("id", item.product_id)
       .eq("business_id", context.user.business_id)
       .eq("active", true)
@@ -671,7 +701,8 @@ export async function updateOrderAction(
 
   const itemInserts = gstCalc.items.map((it, idx) => {
     const rawItem = values.items[idx];
-    const fallbackGrade = productMap.get(it.productId)?.quality_grade || null;
+    const prod = productMap.get(it.productId);
+    const fallbackGrade = prod?.quality_grade || null;
     const resolvedGrade = rawItem?.quality_grade?.trim() || fallbackGrade;
     const resolvedVariantId = rawItem?.variant_id?.trim() || null;
 
@@ -679,10 +710,15 @@ export async function updateOrderAction(
       business_id: context.user.business_id,
       order_id: orderId,
       product_id: it.productId,
-      product_name: productMap.get(it.productId)?.name || null,
+      product_name: prod?.name || null,
       quality_grade: resolvedGrade,
       variant_id: resolvedVariantId,
       quantity: it.quantity,
+      qty_is_4985: (rawItem as any)?.qty_is_4985 != null ? Number((rawItem as any).qty_is_4985) : Number(prod?.qty_is_4985 || 0),
+      qty_is_12786: (rawItem as any)?.qty_is_12786 != null ? Number((rawItem as any).qty_is_12786) : Number(prod?.qty_is_12786 || 0),
+      qty_is_13487: (rawItem as any)?.qty_is_13487 != null ? Number((rawItem as any).qty_is_13487) : Number(prod?.qty_is_13487 || 0),
+      qty_is_13488: (rawItem as any)?.qty_is_13488 != null ? Number((rawItem as any).qty_is_13488) : Number(prod?.qty_is_13488 || 0),
+      qty_is_12785: (rawItem as any)?.qty_is_12785 != null ? Number((rawItem as any).qty_is_12785) : Number(prod?.qty_is_12785 || 0),
       unit_price: it.unitPrice,
       discount_rate: it.discountRate,
       tax_rate: it.taxRate,

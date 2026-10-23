@@ -673,6 +673,11 @@ interface ProductQueryResult {
   id: string;
   name: string;
   sku: string | null;
+  qty_is_4985?: number | null;
+  qty_is_12786?: number | null;
+  qty_is_13487?: number | null;
+  qty_is_13488?: number | null;
+  qty_is_12785?: number | null;
 }
 
 interface OrderItemQueryResult {
@@ -680,6 +685,11 @@ interface OrderItemQueryResult {
   product_id: string;
   product_name?: string | null;
   quantity: number;
+  qty_is_4985?: number | null;
+  qty_is_12786?: number | null;
+  qty_is_13487?: number | null;
+  qty_is_13488?: number | null;
+  qty_is_12785?: number | null;
   unit_price: number;
   discount_rate: number;
   tax_rate: number;
@@ -870,7 +880,8 @@ export async function getSalesReportBundle(
       ),
       items:order_items(
         id, product_id, quantity, unit_price, discount_rate, tax_rate, line_total, taxable_amount, cgst_amount, sgst_amount, igst_amount,
-        product:products!inner(id, name, sku)
+        qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785,
+        product:products!inner(id, name, sku, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785)
       )
     `
     )
@@ -990,6 +1001,11 @@ export async function getSalesReportBundle(
         product_name: item.product?.name ?? "",
         product_sku: item.product?.sku ?? null,
         quantity: q,
+        qty_is_4985: Number(item.qty_is_4985 != null ? item.qty_is_4985 : item.product?.qty_is_4985 ?? 0),
+        qty_is_12786: Number(item.qty_is_12786 != null ? item.qty_is_12786 : item.product?.qty_is_12786 ?? 0),
+        qty_is_13487: Number(item.qty_is_13487 != null ? item.qty_is_13487 : item.product?.qty_is_13487 ?? 0),
+        qty_is_13488: Number(item.qty_is_13488 != null ? item.qty_is_13488 : item.product?.qty_is_13488 ?? 0),
+        qty_is_12785: Number(item.qty_is_12785 != null ? item.qty_is_12785 : item.product?.qty_is_12785 ?? 0),
         unit_price: u,
         discount_rate: discRate,
         tax_rate: taxRate,
@@ -1827,6 +1843,11 @@ function getReportConfig(type: ReportType, rows: ReportRow[]): ReportExportData 
         "Product",
         "SKU",
         "Qty",
+        "IS:4985",
+        "IS:12786",
+        "IS:13487",
+        "IS:13488",
+        "IS:12785",
         "Unit Price",
         "CGST",
         "SGST",
@@ -1848,6 +1869,11 @@ function getReportConfig(type: ReportType, rows: ReportRow[]): ReportExportData 
         r.product_name,
         r.product_sku ?? "",
         r.quantity,
+        r.qty_is_4985 ?? 0,
+        r.qty_is_12786 ?? 0,
+        r.qty_is_13487 ?? 0,
+        r.qty_is_13488 ?? 0,
+        r.qty_is_12785 ?? 0,
         formatCurrencyVal(Number(r.unit_price)),
         formatCurrencyVal(Number(r.cgst_amount || 0)),
         formatCurrencyVal(Number(r.sgst_amount || 0)),
@@ -1869,6 +1895,11 @@ function getReportConfig(type: ReportType, rows: ReportRow[]): ReportExportData 
         "",
         "",
         totalsMap["quantity"] ?? 0,
+        totalsMap["qty_is_4985"] ?? 0,
+        totalsMap["qty_is_12786"] ?? 0,
+        totalsMap["qty_is_13487"] ?? 0,
+        totalsMap["qty_is_13488"] ?? 0,
+        totalsMap["qty_is_12785"] ?? 0,
         "",
         formatCurrencyVal(totalsMap["cgst_amount"]),
         formatCurrencyVal(totalsMap["sgst_amount"]),

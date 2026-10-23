@@ -133,6 +133,7 @@ export default async function ProductsPage({
           <p className="mt-2 text-sm text-[var(--muted)]">Product and production-day capacity settings.</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Link className="rounded-sm border border-[var(--line)] px-3 py-2 text-sm font-medium hover:bg-white" href="/import?module=products">Bulk upload</Link>
           <Link className="rounded-sm border border-[var(--line)] px-3 py-2 text-sm font-medium hover:bg-white" href="/categories">Categories</Link>
           {canCreate && <Link className="rounded-sm bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--accent-strong)]" href="/products/new">New product</Link>}
         </div>
@@ -194,6 +195,12 @@ export default async function ProductsPage({
               const category = product.category_id ? categoryMap.get(product.category_id) : undefined;
               const subcategory = product.subcategory_id ? categoryMap.get(product.subcategory_id) : undefined;
               const categoryLabel = category ? `${category.name}${subcategory ? ` / ${subcategory.name}` : ""}` : "-";
+              const hasQualityQuantities =
+                Number(product.qty_is_4985 || 0) > 0 ||
+                Number(product.qty_is_12786 || 0) > 0 ||
+                Number(product.qty_is_13487 || 0) > 0 ||
+                Number(product.qty_is_13488 || 0) > 0 ||
+                Number(product.qty_is_12785 || 0) > 0;
               return (
                 <tr key={product.id} className="bg-white align-middle">
                   <td className="px-3 py-3">
@@ -203,7 +210,17 @@ export default async function ProductsPage({
                     ) : (
                       <p className="text-xs text-slate-400">Quality not configured</p>
                     )}
+                    {hasQualityQuantities && (
+                      <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-[var(--muted)]">
+                        {Number(product.qty_is_4985 || 0) > 0 && <span className="rounded bg-slate-100 px-1 py-0.5">IS:4985 ({Number(product.qty_is_4985)})</span>}
+                        {Number(product.qty_is_12786 || 0) > 0 && <span className="rounded bg-slate-100 px-1 py-0.5">IS:12786 ({Number(product.qty_is_12786)})</span>}
+                        {Number(product.qty_is_13487 || 0) > 0 && <span className="rounded bg-slate-100 px-1 py-0.5">IS:13487 ({Number(product.qty_is_13487)})</span>}
+                        {Number(product.qty_is_13488 || 0) > 0 && <span className="rounded bg-slate-100 px-1 py-0.5">IS:13488 ({Number(product.qty_is_13488)})</span>}
+                        {Number(product.qty_is_12785 || 0) > 0 && <span className="rounded bg-slate-100 px-1 py-0.5">IS:12785 ({Number(product.qty_is_12785)})</span>}
+                      </div>
+                    )}
                   </td>
+                  <td className="px-3 py-3 font-mono text-xs text-[var(--muted)]">{product.sku}</td>
                   <td className="px-3 py-3 text-[var(--muted)]">{categoryLabel}</td>
                   <td className="px-3 py-3">{product.unit}</td>
                   <td className="px-3 py-3 tabular-nums">{money(product.selling_price, currency)}</td>

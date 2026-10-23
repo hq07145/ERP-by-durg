@@ -28,8 +28,18 @@ export function NotificationBell({ initialUnreadCount = 0 }: NotificationBellPro
   const pathname = usePathname();
   const isInitialMount = useRef(true);
 
+  const lastFetchRef = useRef<number>(0);
+
   // Fetch unread count
-  const fetchUnreadCount = useCallback(async () => {
+  const fetchUnreadCount = useCallback(async (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastFetchRef.current < 20000) {
+      return; // Skip if polled within the last 20 seconds
+    }
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      return; // Don't poll in background tabs
+    }
+    lastFetchRef.current = now;
     try {
       const response = await fetch("/api/notifications/unread-count");
       if (response.ok) {
@@ -68,10 +78,10 @@ export function NotificationBell({ initialUnreadCount = 0 }: NotificationBellPro
     }
   }, []);
 
-  // Load unread count on mount and route changes
+  // Load unread count on mount and route changes (throttled)
   useEffect(() => {
     fetchUnreadCount();
-    const interval = setInterval(fetchUnreadCount, 60000);
+    const interval = setInterval(() => fetchUnreadCount(false), 120000);
     return () => clearInterval(interval);
   }, [fetchUnreadCount, pathname]);
 
@@ -79,7 +89,7 @@ export function NotificationBell({ initialUnreadCount = 0 }: NotificationBellPro
   useEffect(() => {
     if (isOpen) {
       fetchNotifications(0, false);
-      fetchUnreadCount();
+      fetchUnreadCount(true);
     }
   }, [isOpen, fetchNotifications, fetchUnreadCount]);
 
