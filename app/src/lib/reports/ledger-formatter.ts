@@ -1378,7 +1378,16 @@ export function generateSaleDetailsProductWisePDF(data: SaleDetailsProductWiseDa
   const numProducts = data.products.length;
   const totalCols = 6 + numProducts + 1;
 
-  const fontSize = totalCols > 16 ? 5.8 : totalCols > 12 ? 6.4 : totalCols > 9 ? 6.8 : 7.2;
+  const fontSize =
+    numProducts === 1
+      ? 7.6
+      : totalCols > 16
+      ? 5.8
+      : totalCols > 12
+      ? 6.4
+      : totalCols > 9
+      ? 6.8
+      : 7.2;
 
   const headRow1: any[] = [
     { content: "Sr. No.", rowSpan: 2, styles: { halign: "center", valign: "middle" } },
@@ -1403,18 +1412,20 @@ export function generateSaleDetailsProductWisePDF(data: SaleDetailsProductWiseDa
   ];
 
   const srWidth = 24;
-  const distWidth = totalCols > 14 ? 46 : 52;
-  const gstWidth = totalCols > 14 ? 60 : 68;
-  const billNoWidth = totalCols > 14 ? 50 : 56;
-  const billDateWidth = totalCols > 14 ? 40 : 44;
-  const totalQtyWidth = totalCols > 14 ? 38 : 42;
+  const distWidth = numProducts === 1 ? 62 : totalCols > 14 ? 46 : 52;
+  const gstWidth = numProducts === 1 ? 84 : totalCols > 14 ? 60 : 68;
+  const billNoWidth = numProducts === 1 ? 62 : totalCols > 14 ? 50 : 56;
+  const billDateWidth = numProducts === 1 ? 48 : totalCols > 14 ? 40 : 44;
+  const totalQtyWidth = numProducts === 1 ? 55 : totalCols > 14 ? 38 : 42;
 
   const fixedNonDealerNonProduct =
     srWidth + distWidth + gstWidth + billNoWidth + billDateWidth + totalQtyWidth;
   const remainingForDealerAndProducts = usableWidth - fixedNonDealerNonProduct;
 
   const productColWidth =
-    numProducts > 0
+    numProducts === 1
+      ? 75
+      : numProducts > 0
       ? Math.max(26, Math.min(65, Math.floor((remainingForDealerAndProducts - 110) / numProducts)))
       : 0;
 

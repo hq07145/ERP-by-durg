@@ -6,9 +6,17 @@ import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
 import { productToFormValues } from "@/lib/products/form-values";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { PRODUCT_UNITS, type Product, type ProductFormValues } from "@/types/product";
+import {
+  PRODUCT_UNITS,
+  QUALITY_STANDARDS,
+  QUALITY_STANDARD_MAP,
+  type Product,
+  type ProductFormValues,
+} from "@/types/product";
 
 export type ProductActionState = {
+  success?: boolean;
+  productId?: string;
   error?: string;
 };
 
@@ -24,12 +32,13 @@ function hasProductPermission(permissions: string[], permission: string): boolea
 
 async function authorizeProductAction(permission: string) {
   const context = await getAuthContext();
-  if (!context) redirect("/login?error=account_unavailable");
+  if (!context) return { error: "account_unavailable" as const };
   if (!hasProductPermission(context.permissions, permission)) {
-    redirect("/products?error=forbidden");
+    return { error: "forbidden" as const };
   }
   const supabase = await createServerSupabaseClient();
-  return supabase ? { context, supabase } : null;
+  if (!supabase) return { error: "auth_unconfigured" as const };
+  return { context, supabase };
 }
 
 function getString(formData: FormData, key: string, fallback: string): string {
@@ -45,6 +54,12 @@ function productValues(formData: FormData, product?: Product): ProductFormValues
     name: value("name"),
     sku: value("sku"),
     quality_grade: value("quality_grade"),
+    quality_standard: value("quality_standard"),
+    qty_is_4985: value("qty_is_4985"),
+    qty_is_12786: value("qty_is_12786"),
+    qty_is_13487: value("qty_is_13487"),
+    qty_is_13488: value("qty_is_13488"),
+    qty_is_12785: value("qty_is_12785"),
     category_id: value("category_id"),
     subcategory_id: value("subcategory_id"),
     description: value("description"),
@@ -75,9 +90,17 @@ function integerValue(value: string, max: number): number | null {
   return Number.isSafeInteger(parsed) && parsed <= max ? parsed : null;
 }
 
-function decimalKey(value: string | number, scale: number): string {
-  const [whole = "0", fraction = ""] = String(value).split(".");
-  return `${BigInt(whole).toString()}.${fraction.padEnd(scale, "0")}`;
+function areDecimalsEqual(
+  val1: string | number | null | undefined,
+  val2: string | number | null | undefined,
+  precision = 2,
+): boolean {
+  if (val1 === val2) return true;
+  const n1 = Number(val1);
+  const n2 = Number(val2);
+  if (isNaN(n1) && isNaN(n2)) return true;
+  if (isNaN(n1) || isNaN(n2)) return false;
+  return Math.abs(n1 - n2) < Math.pow(10, -precision) / 2;
 }
 
 function validateProductValues(values: ProductFormValues): string | null {
@@ -85,6 +108,10 @@ function validateProductValues(values: ProductFormValues): string | null {
   values.sku = values.sku.trim().toUpperCase();
   values.quality_grade = (values.quality_grade || "").trim();
   values.description = values.description.trim();
+  values.selling_price = values.selling_price.trim();
+  values.tax_rate = values.tax_rate.trim();
+  values.min_stock = values.min_stock.trim();
+  values.reorder_level = values.reorder_level.trim();
 
   if (!values.name || values.name.length > 160) return "invalid_name";
   if (!values.sku || values.sku.length > 64) return "invalid_sku";
@@ -119,6 +146,17 @@ function validateProductValues(values: ProductFormValues): string | null {
     return "invalid_delivery_range";
   }
   if (values.subcategory_id && !values.category_id) return "invalid_category";
+  if (!values.quality_standard || !QUALITY_STANDARDS.includes(values.quality_standard as any)) {
+    return "invalid_quality_standard";
+  }
+  const stdMap = QUALITY_STANDARD_MAP[values.quality_standard as (typeof QUALITY_STANDARDS)[number]];
+  const stdQty = stdMap ? values[stdMap.key] : undefined;
+  if (stdQty !== undefined && stdQty !== "") {
+    const parsedQty = decimalValue(stdQty, 12, 2);
+    if (parsedQty === null || Number(parsedQty) < 0) {
+      return "invalid_quality_quantity";
+    }
+  }
   return null;
 }
 
@@ -167,28 +205,28 @@ function hasChangedSensitiveValues(
   values: ProductFormValues,
 ): string | null {
   if (
-    (decimalKey(product.selling_price, 2) !== decimalKey(values.selling_price, 2) ||
-      decimalKey(product.tax_rate, 2) !== decimalKey(values.tax_rate, 2)) &&
+    (!areDecimalsEqual(product.selling_price, values.selling_price, 2) ||
+      !areDecimalsEqual(product.tax_rate, values.tax_rate, 2)) &&
     !hasProductPermission(permissions, "products.change_price")
   ) return "price_permission_required";
 
   if (
-    String(product.daily_capacity) !== values.daily_capacity &&
+    Number(product.daily_capacity) !== Number(values.daily_capacity) &&
     !hasProductPermission(permissions, "products.change_capacity")
   ) return "capacity_permission_required";
 
   const productionChanged =
     product.production_unit !== values.production_unit ||
-    String(product.production_min_days) !== values.production_min_days ||
-    String(product.production_max_days) !== values.production_max_days ||
-    String(product.setup_minutes) !== values.setup_minutes;
+    Number(product.production_min_days) !== Number(values.production_min_days) ||
+    Number(product.production_max_days) !== Number(values.production_max_days) ||
+    Number(product.setup_minutes) !== Number(values.setup_minutes);
   if (productionChanged && !hasProductPermission(permissions, "products.change_production_time")) {
     return "production_permission_required";
   }
 
   const deliveryChanged =
-    String(product.delivery_min_days) !== values.delivery_min_days ||
-    String(product.delivery_max_days) !== values.delivery_max_days;
+    Number(product.delivery_min_days) !== Number(values.delivery_min_days) ||
+    Number(product.delivery_max_days) !== Number(values.delivery_max_days);
   if (deliveryChanged && !hasProductPermission(permissions, "products.change_delivery_time")) {
     return "delivery_permission_required";
   }
@@ -210,9 +248,9 @@ export async function saveProductAction(
 ): Promise<ProductActionState> {
   const productId = String(formData.get("product_id") ?? "");
   const actionPermission = productId ? "products.edit" : "products.create";
-  const actionContext = await authorizeProductAction(actionPermission);
-  if (!actionContext) return { error: "auth_unconfigured" };
-  const { context, supabase } = actionContext;
+  const authResult = await authorizeProductAction(actionPermission);
+  if ("error" in authResult) return { error: authResult.error };
+  const { context, supabase } = authResult;
 
   let existingProduct: Product | undefined;
   if (productId) {
@@ -238,7 +276,7 @@ export async function saveProductAction(
   const categoryChanged = !existingProduct ||
     existingProduct.category_id !== (values.category_id || null) ||
     existingProduct.subcategory_id !== (values.subcategory_id || null);
-  if (categoryChanged) {
+  if (categoryChanged && values.category_id) {
     const categoryError = await validateCategoryAssignment(
       supabase,
       context.user.business_id,
@@ -248,16 +286,18 @@ export async function saveProductAction(
     if (categoryError) return { error: categoryError };
   }
 
+  const selectedStd = values.quality_standard;
   const payload = {
     business_id: context.user.business_id,
     name: values.name,
     sku: values.sku,
     quality_grade: values.quality_grade || null,
-    qty_is_4985: values.qty_is_4985 ? Number(values.qty_is_4985) : 0,
-    qty_is_12786: values.qty_is_12786 ? Number(values.qty_is_12786) : 0,
-    qty_is_13487: values.qty_is_13487 ? Number(values.qty_is_13487) : 0,
-    qty_is_13488: values.qty_is_13488 ? Number(values.qty_is_13488) : 0,
-    qty_is_12785: values.qty_is_12785 ? Number(values.qty_is_12785) : 0,
+    quality_standard: selectedStd || null,
+    qty_is_4985: selectedStd === "IS:4985 PVC Pipe" ? (values.qty_is_4985 ? Number(values.qty_is_4985) : 0) : 0,
+    qty_is_12786: selectedStd === "IS:12786 Plain Lateral" ? (values.qty_is_12786 ? Number(values.qty_is_12786) : 0) : 0,
+    qty_is_13487: selectedStd === "IS:13487 Emitter" ? (values.qty_is_13487 ? Number(values.qty_is_13487) : 0) : 0,
+    qty_is_13488: selectedStd === "IS:13488 Emitting Pipe" ? (values.qty_is_13488 ? Number(values.qty_is_13488) : 0) : 0,
+    qty_is_12785: selectedStd === "IS:12785 Filters" ? (values.qty_is_12785 ? Number(values.qty_is_12785) : 0) : 0,
     category_id: values.category_id || null,
     subcategory_id: values.subcategory_id || null,
     description: values.description || null,
@@ -295,22 +335,33 @@ export async function saveProductAction(
   if (!savedId) return { error: "product_not_found" };
 
   if (existingProduct) {
-    try {
-      const { scheduleProductionQueue } = await import("@/lib/production/scheduler");
-      await scheduleProductionQueue(supabase, context.user.business_id);
-    } catch {
-      // Non-fatal if queue is empty
+    const capacityOrTimingChanged =
+      String(existingProduct.daily_capacity) !== values.daily_capacity ||
+      String(existingProduct.production_min_days) !== values.production_min_days ||
+      String(existingProduct.production_max_days) !== values.production_max_days ||
+      String(existingProduct.setup_minutes) !== values.setup_minutes;
+
+    if (capacityOrTimingChanged) {
+      try {
+        const { scheduleProductionQueue } = await import("@/lib/production/scheduler");
+        await Promise.race([
+          scheduleProductionQueue(supabase, context.user.business_id),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("scheduler_timeout")), 1500)),
+        ]);
+      } catch {
+        // Non-fatal if queue is empty or timed out
+      }
     }
   }
 
   revalidatePath("/products");
   revalidatePath(`/products/${savedId}`);
-  redirect(existingProduct ? `/products/${savedId}?notice=product_updated` : `/products/${savedId}?notice=product_created`);
+  return { success: true, productId: savedId };
 }
 
 export async function toggleProductStatusAction(formData: FormData): Promise<never> {
   const actionContext = await authorizeProductAction("products.edit");
-  if (!actionContext) redirect("/products?error=auth_unconfigured");
+  if (!actionContext || "error" in actionContext) redirect("/products?error=auth_unconfigured");
   const { context, supabase } = actionContext;
   const productId = String(formData.get("product_id") ?? "");
   const { data: product, error: fetchError } = await supabase
@@ -338,7 +389,7 @@ export async function createCategoryAction(
   formData: FormData,
 ): Promise<CategoryActionState> {
   const actionContext = await authorizeProductAction("products.create");
-  if (!actionContext) return { error: "auth_unconfigured" };
+  if (!actionContext || "error" in actionContext) return { error: "auth_unconfigured" };
   const { context, supabase } = actionContext;
   const name = String(formData.get("name") ?? "").trim();
   const parentId = String(formData.get("parent_id") ?? "");
@@ -376,7 +427,7 @@ export async function createCategoryAction(
 
 export async function toggleCategoryStatusAction(formData: FormData): Promise<never> {
   const actionContext = await authorizeProductAction("products.edit");
-  if (!actionContext) redirect("/categories?error=auth_unconfigured");
+  if (!actionContext || "error" in actionContext) redirect("/categories?error=auth_unconfigured");
   const { context, supabase } = actionContext;
   const categoryId = String(formData.get("category_id") ?? "");
   const { data: category, error: fetchError } = await supabase

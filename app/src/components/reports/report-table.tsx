@@ -123,6 +123,7 @@ export function ReportTable({
           { key: "customer_name", header: "Customer" },
           { key: "customer_district", header: "District" },
           { key: "product_name", header: "Product" },
+          { key: "quality_standard", header: "Quality Standard" },
           { key: "quantity", header: "Qty", align: "right" },
           { key: "qty_is_4985", header: "IS:4985", align: "right" },
           { key: "qty_is_12786", header: "IS:12786", align: "right" },

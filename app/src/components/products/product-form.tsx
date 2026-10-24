@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useState, type ChangeEvent } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 import { saveProductAction } from "@/lib/products/actions";
 import { PRODUCT_UNITS, type ProductCategory, type ProductFormValues } from "@/types/product";
 
@@ -11,6 +12,7 @@ const labelClass = "grid gap-1.5 text-sm font-medium";
 const hintClass = "text-xs font-normal leading-5 text-[var(--muted)]";
 
 const errors: Record<string, string> = {
+  account_unavailable: "Your session has expired. Please sign in again.",
   auth_unconfigured: "Supabase is not configured for this environment.",
   forbidden: "You do not have permission to make this change.",
   invalid_name: "Enter a product name of 1 to 160 characters.",
@@ -29,6 +31,9 @@ const errors: Record<string, string> = {
   invalid_reorder_level: "Reorder level must be non-negative, with up to three decimals.",
   invalid_category: "Choose an active category and a matching active subcategory.",
   invalid_status: "Choose a valid product status.",
+  invalid_values: "One or more values violate valid constraints.",
+  invalid_quality_standard: "Please select a quality standard.",
+  invalid_quality_quantity: "Please enter a valid quantity for the selected quality standard.",
   price_permission_required: "You need products.change_price to change the selling price or tax rate.",
   capacity_permission_required: "You need products.change_capacity to change daily capacity.",
   production_permission_required: "You need products.change_production_time to change production settings.",
@@ -57,8 +62,21 @@ export default function ProductForm({
   canChangeProductionTime,
   canChangeDeliveryTime,
 }: ProductFormProps) {
-  const [state, formAction, pending] = useActionState(saveProductAction, {});
+  const router = useRouter();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [values, setValues] = useState(initialValues);
+
+  // Safety timer to prevent being stuck forever on network failure
+  useEffect(() => {
+    if (!isSubmitting) return;
+    const timer = setTimeout(() => {
+      setIsSubmitting(false);
+      setErrorMessage("The save request is taking longer than expected. Please check if your changes were saved or try again.");
+    }, 20000);
+    return () => clearTimeout(timer);
+  }, [isSubmitting]);
+
   const roots = categories.filter((category) =>
     !category.parent_id && (category.status === "ACTIVE" || category.id === initialValues.category_id),
   );
@@ -80,11 +98,54 @@ export default function ProductForm({
     }));
   }
 
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (isSubmitting) return;
+
+    if (!values.quality_standard) {
+      setErrorMessage("Please select a quality standard.");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+
+    setIsSubmitting(true);
+    setErrorMessage(null);
+
+    try {
+      const formData = new FormData(event.currentTarget);
+      const result = await saveProductAction({}, formData);
+
+      if (result.error) {
+        setErrorMessage(
+          errors[result.error] ??
+            (result.error ? `Save failed: ${result.error}` : "The product could not be saved. Check the values and try again.")
+        );
+        setIsSubmitting(false);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        return;
+      }
+
+      if (result.success && result.productId) {
+        const targetUrl = productId
+          ? `/products/${result.productId}?notice=product_updated`
+          : `/products/${result.productId}?notice=product_created`;
+        router.push(targetUrl);
+        router.refresh();
+      } else {
+        setErrorMessage("Failed to save product. Please try again.");
+        setIsSubmitting(false);
+      }
+    } catch (err: any) {
+      console.error("[ProductForm] Save error:", err);
+      setErrorMessage(err?.message || "An unexpected error occurred while saving.");
+      setIsSubmitting(false);
+    }
+  }
+
   const disabledByPermission = (allowed: boolean) => Boolean(productId) && !allowed;
-  const errorMessage = state.error ? errors[state.error] ?? "The product could not be saved." : null;
 
   return (
-    <form action={formAction} className="space-y-9">
+    <form onSubmit={handleSubmit} className="space-y-9">
       {productId && <input type="hidden" name="product_id" value={productId} />}
       {errorMessage && (
         <p className="border-l-2 border-[var(--signal)] bg-[#fbf0ec] px-3 py-2 text-sm text-[var(--signal)]" role="alert">
@@ -142,36 +203,123 @@ export default function ProductForm({
         </select>
       </fieldset>
 
-      <fieldset className="grid gap-5 border-t border-[var(--line)] pt-5 sm:grid-cols-2 lg:grid-cols-3">
+      <fieldset className="grid gap-5 border-t border-[var(--line)] pt-5 sm:grid-cols-2">
         <legend className="px-1 text-lg font-semibold col-span-full">Quality Standard Quantities (IS Standards)</legend>
         <p className="text-xs text-[var(--muted)] col-span-full -mt-3">
-          Configure individual standard quantities for IS quality numbers associated with this product.
+          Select a quality standard and configure the quantity for this product.
         </p>
+
         <label className={labelClass}>
-          IS:4985 PVC Pipe Qty
-          <input className={inputClass} type="number" min="0" step="0.01" name="qty_is_4985" onChange={(event) => setValue("qty_is_4985", event.target.value, event)} value={values.qty_is_4985 ?? "0"} placeholder="0.00" />
-          <span className={hintClass}>IS:4985 PVC Pipe quantity</span>
+          Quality Standard <span className="text-[var(--signal)]">*</span>
+          <select
+            className={selectClass}
+            name="quality_standard"
+            required
+            onChange={(event) => {
+              const newStd = event.target.value;
+              setValue("quality_standard", newStd, event);
+            }}
+            value={values.quality_standard || ""}
+          >
+            <option value="">Select Quality Standard</option>
+            <option value="IS:4985 PVC Pipe">IS:4985 PVC Pipe</option>
+            <option value="IS:12786 Plain Lateral">IS:12786 Plain Lateral</option>
+            <option value="IS:13487 Emitter">IS:13487 Emitter</option>
+            <option value="IS:13488 Emitting Pipe">IS:13488 Emitting Pipe</option>
+            <option value="IS:12785 Filters">IS:12785 Filters</option>
+          </select>
+          <span className={hintClass}>Required: choose one IS quality standard.</span>
         </label>
-        <label className={labelClass}>
-          IS:12786 Plain Lateral Qty
-          <input className={inputClass} type="number" min="0" step="0.01" name="qty_is_12786" onChange={(event) => setValue("qty_is_12786", event.target.value, event)} value={values.qty_is_12786 ?? "0"} placeholder="0.00" />
-          <span className={hintClass}>IS:12786 Plain Lateral quantity</span>
-        </label>
-        <label className={labelClass}>
-          IS:13487 Emitter Qty
-          <input className={inputClass} type="number" min="0" step="0.01" name="qty_is_13487" onChange={(event) => setValue("qty_is_13487", event.target.value, event)} value={values.qty_is_13487 ?? "0"} placeholder="0.00" />
-          <span className={hintClass}>IS:13487 Emitter quantity</span>
-        </label>
-        <label className={labelClass}>
-          IS:13488 Emitting Pipe Qty
-          <input className={inputClass} type="number" min="0" step="0.01" name="qty_is_13488" onChange={(event) => setValue("qty_is_13488", event.target.value, event)} value={values.qty_is_13488 ?? "0"} placeholder="0.00" />
-          <span className={hintClass}>IS:13488 Emitting Pipe quantity</span>
-        </label>
-        <label className={labelClass}>
-          IS:12785 Filters Qty
-          <input className={inputClass} type="number" min="0" step="0.01" name="qty_is_12785" onChange={(event) => setValue("qty_is_12785", event.target.value, event)} value={values.qty_is_12785 ?? "0"} placeholder="0.00" />
-          <span className={hintClass}>IS:12785 Filters quantity</span>
-        </label>
+
+        {values.quality_standard === "IS:4985 PVC Pipe" && (
+          <label className={labelClass}>
+            IS:4985 PVC Pipe Qty <span className="text-[var(--signal)]">*</span>
+            <input
+              className={inputClass}
+              type="number"
+              min="0"
+              step="0.01"
+              name="qty_is_4985"
+              required
+              onChange={(event) => setValue("qty_is_4985", event.target.value, event)}
+              value={values.qty_is_4985 ?? ""}
+              placeholder="0.00"
+            />
+            <span className={hintClass}>IS:4985 PVC Pipe quantity</span>
+          </label>
+        )}
+
+        {values.quality_standard === "IS:12786 Plain Lateral" && (
+          <label className={labelClass}>
+            IS:12786 Plain Lateral Qty <span className="text-[var(--signal)]">*</span>
+            <input
+              className={inputClass}
+              type="number"
+              min="0"
+              step="0.01"
+              name="qty_is_12786"
+              required
+              onChange={(event) => setValue("qty_is_12786", event.target.value, event)}
+              value={values.qty_is_12786 ?? ""}
+              placeholder="0.00"
+            />
+            <span className={hintClass}>IS:12786 Plain Lateral quantity</span>
+          </label>
+        )}
+
+        {values.quality_standard === "IS:13487 Emitter" && (
+          <label className={labelClass}>
+            IS:13487 Emitter Qty <span className="text-[var(--signal)]">*</span>
+            <input
+              className={inputClass}
+              type="number"
+              min="0"
+              step="0.01"
+              name="qty_is_13487"
+              required
+              onChange={(event) => setValue("qty_is_13487", event.target.value, event)}
+              value={values.qty_is_13487 ?? ""}
+              placeholder="0.00"
+            />
+            <span className={hintClass}>IS:13487 Emitter quantity</span>
+          </label>
+        )}
+
+        {values.quality_standard === "IS:13488 Emitting Pipe" && (
+          <label className={labelClass}>
+            IS:13488 Emitting Pipe Qty <span className="text-[var(--signal)]">*</span>
+            <input
+              className={inputClass}
+              type="number"
+              min="0"
+              step="0.01"
+              name="qty_is_13488"
+              required
+              onChange={(event) => setValue("qty_is_13488", event.target.value, event)}
+              value={values.qty_is_13488 ?? ""}
+              placeholder="0.00"
+            />
+            <span className={hintClass}>IS:13488 Emitting Pipe quantity</span>
+          </label>
+        )}
+
+        {values.quality_standard === "IS:12785 Filters" && (
+          <label className={labelClass}>
+            IS:12785 Filters Qty <span className="text-[var(--signal)]">*</span>
+            <input
+              className={inputClass}
+              type="number"
+              min="0"
+              step="0.01"
+              name="qty_is_12785"
+              required
+              onChange={(event) => setValue("qty_is_12785", event.target.value, event)}
+              value={values.qty_is_12785 ?? ""}
+              placeholder="0.00"
+            />
+            <span className={hintClass}>IS:12785 Filters quantity</span>
+          </label>
+        )}
       </fieldset>
 
       <fieldset className="grid gap-5 border-t border-[var(--line)] pt-5 md:grid-cols-2">
@@ -278,8 +426,8 @@ export default function ProductForm({
       </fieldset>
 
       <div className="flex flex-wrap items-center gap-3 border-t border-[var(--line)] pt-5">
-        <button className="min-h-10 rounded-sm bg-[var(--accent)] px-5 text-sm font-semibold text-white hover:bg-[var(--accent-strong)] disabled:cursor-wait disabled:opacity-60" disabled={pending} type="submit">
-          {pending ? "Saving..." : productId ? "Save changes" : "Create product"}
+        <button className="min-h-10 rounded-sm bg-[var(--accent)] px-5 text-sm font-semibold text-white hover:bg-[var(--accent-strong)] disabled:cursor-wait disabled:opacity-60" disabled={isSubmitting} type="submit">
+          {isSubmitting ? "Saving..." : productId ? "Save changes" : "Create product"}
         </button>
         <Link className="rounded-sm px-4 py-2.5 text-sm font-medium text-[var(--muted)] hover:bg-[#eaf0eb]" href={productId ? `/products/${productId}` : "/products"}>
           Cancel

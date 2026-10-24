@@ -199,7 +199,9 @@ export function SalesReportClient() {
         totals={districtTotals}
         selectedDistrict={filters.district}
         onSelectDistrict={handleDistrictSelect}
-        onExportReport={handleDirectDownload}
+        onExportReport={(variant, format) => {
+          handleDirectDownload(variant, format);
+        }}
         isLoading={isLoading}
       />
 

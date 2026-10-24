@@ -1,9 +1,10 @@
-import type { Product, ProductFormValues } from "@/types/product";
+import { getProductQualityStandard, type Product, type ProductFormValues } from "@/types/product";
 
 export const EMPTY_PRODUCT_FORM_VALUES: ProductFormValues = {
   name: "",
   sku: "",
   quality_grade: "",
+  quality_standard: "",
   qty_is_4985: "0",
   qty_is_12786: "0",
   qty_is_13487: "0",
@@ -30,10 +31,13 @@ export const EMPTY_PRODUCT_FORM_VALUES: ProductFormValues = {
 export function productToFormValues(product?: Product): ProductFormValues {
   if (!product) return { ...EMPTY_PRODUCT_FORM_VALUES };
 
+  const standard = getProductQualityStandard(product);
+
   return {
     name: product.name,
     sku: product.sku,
     quality_grade: product.quality_grade ?? "",
+    quality_standard: standard || "",
     qty_is_4985: product.qty_is_4985 != null ? String(product.qty_is_4985) : "0",
     qty_is_12786: product.qty_is_12786 != null ? String(product.qty_is_12786) : "0",
     qty_is_13487: product.qty_is_13487 != null ? String(product.qty_is_13487) : "0",

@@ -376,6 +376,60 @@ export async function executeImportAction(payload: {
               return isNaN(n) ? 0 : Math.max(0, n);
             };
 
+            const resolveQualityData = () => {
+              let stdRaw = String(row.quality_standard || row.standard || "").trim().toLowerCase();
+              let explicitQty =
+                row.quality_quantity !== undefined && row.quality_quantity !== null && String(row.quality_quantity).trim() !== ""
+                  ? parseQty(row.quality_quantity)
+                  : row.quality_qty !== undefined && row.quality_qty !== null && String(row.quality_qty).trim() !== ""
+                  ? parseQty(row.quality_qty)
+                  : null;
+
+              let standard: string | null = null;
+              let q4985 = parseQty(row.qty_is_4985);
+              let q12786 = parseQty(row.qty_is_12786);
+              let q13487 = parseQty(row.qty_is_13487);
+              let q13488 = parseQty(row.qty_is_13488);
+              let q12785 = parseQty(row.qty_is_12785);
+
+              if (stdRaw.includes("4985") || stdRaw.includes("pvc")) {
+                standard = "IS:4985 PVC Pipe";
+                q4985 = explicitQty !== null ? explicitQty : (q4985 || 0);
+              } else if (stdRaw.includes("12786") || stdRaw.includes("lateral")) {
+                standard = "IS:12786 Plain Lateral";
+                q12786 = explicitQty !== null ? explicitQty : (q12786 || 0);
+              } else if (stdRaw.includes("13487") || (stdRaw.includes("emitter") && !stdRaw.includes("pipe"))) {
+                standard = "IS:13487 Emitter";
+                q13487 = explicitQty !== null ? explicitQty : (q13487 || 0);
+              } else if (stdRaw.includes("13488") || stdRaw.includes("emitting")) {
+                standard = "IS:13488 Emitting Pipe";
+                q13488 = explicitQty !== null ? explicitQty : (q13488 || 0);
+              } else if (stdRaw.includes("12785") || stdRaw.includes("filter")) {
+                standard = "IS:12785 Filters";
+                q12785 = explicitQty !== null ? explicitQty : (q12785 || 0);
+              } else if (q4985 > 0) {
+                standard = "IS:4985 PVC Pipe";
+              } else if (q12786 > 0) {
+                standard = "IS:12786 Plain Lateral";
+              } else if (q13487 > 0) {
+                standard = "IS:13487 Emitter";
+              } else if (q13488 > 0) {
+                standard = "IS:13488 Emitting Pipe";
+              } else if (q12785 > 0) {
+                standard = "IS:12785 Filters";
+              }
+
+              return {
+                quality_standard: standard,
+                qty_is_4985: standard === "IS:4985 PVC Pipe" ? q4985 : 0,
+                qty_is_12786: standard === "IS:12786 Plain Lateral" ? q12786 : 0,
+                qty_is_13487: standard === "IS:13487 Emitter" ? q13487 : 0,
+                qty_is_13488: standard === "IS:13488 Emitting Pipe" ? q13488 : 0,
+                qty_is_12785: standard === "IS:12785 Filters" ? q12785 : 0,
+              };
+            };
+            const qualityData = resolveQualityData();
+
             const normUnit = normalizeProductUnit(row.unit);
 
             if (existingProduct) {
@@ -392,11 +446,23 @@ export async function executeImportAction(payload: {
                 active: true,
                 updated_at: new Date().toISOString(),
               };
-              if (row.qty_is_4985 !== undefined && row.qty_is_4985 !== null) updatePayload.qty_is_4985 = parseQty(row.qty_is_4985);
-              if (row.qty_is_12786 !== undefined && row.qty_is_12786 !== null) updatePayload.qty_is_12786 = parseQty(row.qty_is_12786);
-              if (row.qty_is_13487 !== undefined && row.qty_is_13487 !== null) updatePayload.qty_is_13487 = parseQty(row.qty_is_13487);
-              if (row.qty_is_13488 !== undefined && row.qty_is_13488 !== null) updatePayload.qty_is_13488 = parseQty(row.qty_is_13488);
-              if (row.qty_is_12785 !== undefined && row.qty_is_12785 !== null) updatePayload.qty_is_12785 = parseQty(row.qty_is_12785);
+              if (
+                row.quality_standard !== undefined ||
+                row.quality_quantity !== undefined ||
+                row.quality_qty !== undefined ||
+                row.qty_is_4985 !== undefined ||
+                row.qty_is_12786 !== undefined ||
+                row.qty_is_13487 !== undefined ||
+                row.qty_is_13488 !== undefined ||
+                row.qty_is_12785 !== undefined
+              ) {
+                updatePayload.quality_standard = qualityData.quality_standard;
+                updatePayload.qty_is_4985 = qualityData.qty_is_4985;
+                updatePayload.qty_is_12786 = qualityData.qty_is_12786;
+                updatePayload.qty_is_13487 = qualityData.qty_is_13487;
+                updatePayload.qty_is_13488 = qualityData.qty_is_13488;
+                updatePayload.qty_is_12785 = qualityData.qty_is_12785;
+              }
 
               const { error } = await supabase
                 .from("products")
@@ -417,11 +483,12 @@ export async function executeImportAction(payload: {
                 daily_capacity: dailyCapacity,
                 description: row.description || null,
                 active: true,
-                qty_is_4985: parseQty(row.qty_is_4985),
-                qty_is_12786: parseQty(row.qty_is_12786),
-                qty_is_13487: parseQty(row.qty_is_13487),
-                qty_is_13488: parseQty(row.qty_is_13488),
-                qty_is_12785: parseQty(row.qty_is_12785),
+                quality_standard: qualityData.quality_standard,
+                qty_is_4985: qualityData.qty_is_4985,
+                qty_is_12786: qualityData.qty_is_12786,
+                qty_is_13487: qualityData.qty_is_13487,
+                qty_is_13488: qualityData.qty_is_13488,
+                qty_is_12785: qualityData.qty_is_12785,
               });
               if (error) throw error;
             }
@@ -668,7 +735,7 @@ export async function executeImportAction(payload: {
 
         const { data: products } = await supabase
           .from("products")
-          .select("id, sku, name, selling_price, tax_rate, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785")
+          .select("id, sku, name, selling_price, tax_rate, quality_standard, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785")
           .eq("business_id", businessId);
 
         const productBySku = new Map<string, any>();
@@ -778,6 +845,7 @@ export async function executeImportAction(payload: {
               validItemsPayload.push({
                 product_id: prd.id,
                 product_name: prd.name,
+                quality_standard: prd.quality_standard ?? null,
                 quantity: qty,
                 qty_is_4985: prd.qty_is_4985 ?? 0,
                 qty_is_12786: prd.qty_is_12786 ?? 0,
@@ -826,6 +894,7 @@ export async function executeImportAction(payload: {
               order_id: newOrder.id,
               product_id: itm.product_id,
               product_name: itm.product_name,
+              quality_standard: itm.quality_standard ?? null,
               quantity: itm.quantity,
               qty_is_4985: itm.qty_is_4985 ?? 0,
               qty_is_12786: itm.qty_is_12786 ?? 0,

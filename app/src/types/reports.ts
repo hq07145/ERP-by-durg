@@ -109,6 +109,7 @@ export interface SalesReportRow {
   product_id: string;
   product_name: string;
   product_sku: string | null;
+  quality_standard?: string | null;
   quantity: string | number;
   qty_is_4985?: number;
   qty_is_12786?: number;

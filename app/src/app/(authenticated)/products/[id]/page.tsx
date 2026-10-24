@@ -7,7 +7,7 @@ import ConfirmSubmit from "@/components/confirm-submit";
 import ProductBomSection from "@/components/bom/product-bom-section";
 import { getAuthContext } from "@/lib/auth/context";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import type { Product, ProductCategory } from "@/types/product";
+import { getProductQualityStandard, getProductQualityQuantity, type Product, type ProductCategory } from "@/types/product";
 
 export const dynamic = "force-dynamic";
 
@@ -106,31 +106,46 @@ export default async function ProductDetailsPage({
         {product.description && <div className="sm:col-span-2 lg:col-span-3"><dt className="text-xs font-semibold uppercase text-[var(--muted)]">Description</dt><dd className="mt-1 whitespace-pre-wrap text-sm">{product.description}</dd></div>}
       </dl>
 
-      <div className="mt-8 border-b border-[var(--line)] pb-8">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--muted)]">Quality Standard Quantities (IS Standards)</h2>
-        <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-          <div className="rounded-lg border border-[var(--line)] bg-slate-50/50 p-3.5">
-            <p className="text-xs font-medium text-[var(--muted)]">IS:4985 PVC Pipe</p>
-            <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_4985 || 0)}</p>
+      {(() => {
+        const selectedStandard = getProductQualityStandard(product);
+        const qualityQty = getProductQualityQuantity(product);
+        return (
+          <div className="mt-8 border-b border-[var(--line)] pb-8">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--muted)]">Quality Standard Quantities (IS Standards)</h2>
+              {selectedStandard ? (
+                <span className="rounded bg-teal-50 px-2 py-0.5 text-xs font-semibold text-teal-800 border border-teal-200">
+                  Selected Standard: {selectedStandard} ({qualityQty})
+                </span>
+              ) : (
+                <span className="text-xs text-[var(--muted)]">No standard selected</span>
+              )}
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+              <div className={`rounded-lg border p-3.5 ${selectedStandard === "IS:4985 PVC Pipe" ? "border-teal-500 bg-teal-50/50 shadow-sm" : "border-[var(--line)] bg-slate-50/50"}`}>
+                <p className="text-xs font-medium text-[var(--muted)]">IS:4985 PVC Pipe</p>
+                <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_4985 || 0)}</p>
+              </div>
+              <div className={`rounded-lg border p-3.5 ${selectedStandard === "IS:12786 Plain Lateral" ? "border-teal-500 bg-teal-50/50 shadow-sm" : "border-[var(--line)] bg-slate-50/50"}`}>
+                <p className="text-xs font-medium text-[var(--muted)]">IS:12786 Plain Lateral</p>
+                <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_12786 || 0)}</p>
+              </div>
+              <div className={`rounded-lg border p-3.5 ${selectedStandard === "IS:13487 Emitter" ? "border-teal-500 bg-teal-50/50 shadow-sm" : "border-[var(--line)] bg-slate-50/50"}`}>
+                <p className="text-xs font-medium text-[var(--muted)]">IS:13487 Emitter</p>
+                <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_13487 || 0)}</p>
+              </div>
+              <div className={`rounded-lg border p-3.5 ${selectedStandard === "IS:13488 Emitting Pipe" ? "border-teal-500 bg-teal-50/50 shadow-sm" : "border-[var(--line)] bg-slate-50/50"}`}>
+                <p className="text-xs font-medium text-[var(--muted)]">IS:13488 Emitting Pipe</p>
+                <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_13488 || 0)}</p>
+              </div>
+              <div className={`rounded-lg border p-3.5 ${selectedStandard === "IS:12785 Filters" ? "border-teal-500 bg-teal-50/50 shadow-sm" : "border-[var(--line)] bg-slate-50/50"}`}>
+                <p className="text-xs font-medium text-[var(--muted)]">IS:12785 Filters</p>
+                <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_12785 || 0)}</p>
+              </div>
+            </div>
           </div>
-          <div className="rounded-lg border border-[var(--line)] bg-slate-50/50 p-3.5">
-            <p className="text-xs font-medium text-[var(--muted)]">IS:12786 Plain Lateral</p>
-            <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_12786 || 0)}</p>
-          </div>
-          <div className="rounded-lg border border-[var(--line)] bg-slate-50/50 p-3.5">
-            <p className="text-xs font-medium text-[var(--muted)]">IS:13487 Emitter</p>
-            <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_13487 || 0)}</p>
-          </div>
-          <div className="rounded-lg border border-[var(--line)] bg-slate-50/50 p-3.5">
-            <p className="text-xs font-medium text-[var(--muted)]">IS:13488 Emitting Pipe</p>
-            <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_13488 || 0)}</p>
-          </div>
-          <div className="rounded-lg border border-[var(--line)] bg-slate-50/50 p-3.5">
-            <p className="text-xs font-medium text-[var(--muted)]">IS:12785 Filters</p>
-            <p className="mt-1.5 text-xl font-bold text-slate-800 tabular-nums">{Number(product.qty_is_12785 || 0)}</p>
-          </div>
-        </div>
-      </div>
+        );
+      })()}
 
       <ProductBomSection
         productId={product.id}

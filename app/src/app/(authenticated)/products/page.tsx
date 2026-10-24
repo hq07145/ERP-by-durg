@@ -196,6 +196,7 @@ export default async function ProductsPage({
               const subcategory = product.subcategory_id ? categoryMap.get(product.subcategory_id) : undefined;
               const categoryLabel = category ? `${category.name}${subcategory ? ` / ${subcategory.name}` : ""}` : "-";
               const hasQualityQuantities =
+                Boolean(product.quality_standard) ||
                 Number(product.qty_is_4985 || 0) > 0 ||
                 Number(product.qty_is_12786 || 0) > 0 ||
                 Number(product.qty_is_13487 || 0) > 0 ||
@@ -212,6 +213,11 @@ export default async function ProductsPage({
                     )}
                     {hasQualityQuantities && (
                       <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-[var(--muted)]">
+                        {product.quality_standard && (
+                          <span className="rounded bg-teal-50 px-1.5 py-0.5 font-medium text-teal-800 border border-teal-200">
+                            {product.quality_standard}
+                          </span>
+                        )}
                         {Number(product.qty_is_4985 || 0) > 0 && <span className="rounded bg-slate-100 px-1 py-0.5">IS:4985 ({Number(product.qty_is_4985)})</span>}
                         {Number(product.qty_is_12786 || 0) > 0 && <span className="rounded bg-slate-100 px-1 py-0.5">IS:12786 ({Number(product.qty_is_12786)})</span>}
                         {Number(product.qty_is_13487 || 0) > 0 && <span className="rounded bg-slate-100 px-1 py-0.5">IS:13487 ({Number(product.qty_is_13487)})</span>}

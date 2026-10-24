@@ -30,6 +30,7 @@ import type {
   DistrictSalesSummaryItem,
 } from "@/types/reports";
 import { REPORT_CONFIGS } from "@/types/reports";
+import { getProductQualityStandard } from "@/types/product";
 import {
   resolveFinancialDateRange,
   getProfitByPeriodFinancials,
@@ -673,6 +674,7 @@ interface ProductQueryResult {
   id: string;
   name: string;
   sku: string | null;
+  quality_standard?: string | null;
   qty_is_4985?: number | null;
   qty_is_12786?: number | null;
   qty_is_13487?: number | null;
@@ -684,6 +686,7 @@ interface OrderItemQueryResult {
   id: string;
   product_id: string;
   product_name?: string | null;
+  quality_standard?: string | null;
   quantity: number;
   qty_is_4985?: number | null;
   qty_is_12786?: number | null;
@@ -880,8 +883,8 @@ export async function getSalesReportBundle(
       ),
       items:order_items(
         id, product_id, quantity, unit_price, discount_rate, tax_rate, line_total, taxable_amount, cgst_amount, sgst_amount, igst_amount,
-        qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785,
-        product:products!inner(id, name, sku, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785)
+        quality_standard, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785,
+        product:products!inner(id, name, sku, quality_standard, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785)
       )
     `
     )
@@ -1000,6 +1003,7 @@ export async function getSalesReportBundle(
         product_id: item.product?.id ?? "",
         product_name: item.product?.name ?? "",
         product_sku: item.product?.sku ?? null,
+        quality_standard: item.quality_standard || item.product?.quality_standard || getProductQualityStandard(item.product || undefined) || null,
         quantity: q,
         qty_is_4985: Number(item.qty_is_4985 != null ? item.qty_is_4985 : item.product?.qty_is_4985 ?? 0),
         qty_is_12786: Number(item.qty_is_12786 != null ? item.qty_is_12786 : item.product?.qty_is_12786 ?? 0),
@@ -1635,7 +1639,11 @@ export async function getReportFilterLookups(): Promise<{
       .select("id, name, customer_addresses(district)")
       .eq("business_id", context.user.business_id)
       .order("name"),
-    supabase.from("products").select("id, name").eq("business_id", context.user.business_id).order("name"),
+    supabase
+      .from("products")
+      .select("id, name, sku, quality_standard, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785")
+      .eq("business_id", context.user.business_id)
+      .order("name"),
     supabase.from("raw_materials").select("id, name").eq("business_id", context.user.business_id).order("name"),
     supabase
       .from("orders")
@@ -1666,10 +1674,17 @@ export async function getReportFilterLookups(): Promise<{
   const districtOptions = getIndianDistrictsDropdownOptions(Array.from(districtSet));
 
   const customersList = (custRes.data ?? []).map((c: any) => ({ id: c.id, name: c.name }));
+  const mappedProducts = (prodRes.data ?? []).map((p: any) => {
+    const std = p.quality_standard || getProductQualityStandard(p);
+    return {
+      id: p.id,
+      name: std ? `${p.name} (${std})` : p.name,
+    };
+  });
 
   return {
     customers: customersList,
-    products: prodRes.data ?? [],
+    products: mappedProducts,
     rawMaterials: matRes.data ?? [],
     orders: orderRes.data ?? [],
     districts: districtOptions,
@@ -1842,6 +1857,7 @@ function getReportConfig(type: ReportType, rows: ReportRow[]): ReportExportData 
         "District",
         "Product",
         "SKU",
+        "Quality Standard",
         "Qty",
         "IS:4985",
         "IS:12786",
@@ -1868,6 +1884,7 @@ function getReportConfig(type: ReportType, rows: ReportRow[]): ReportExportData 
         r.customer_district || "Unknown District",
         r.product_name,
         r.product_sku ?? "",
+        r.quality_standard ?? "",
         r.quantity,
         r.qty_is_4985 ?? 0,
         r.qty_is_12786 ?? 0,
@@ -1889,6 +1906,7 @@ function getReportConfig(type: ReportType, rows: ReportRow[]): ReportExportData 
       ]);
       const totals = [
         "TOTALS",
+        "",
         "",
         "",
         "",
@@ -2456,56 +2474,63 @@ export async function exportSalesReport(
         };
     }
   } else if (variant === "sale_details_product_wise") {
-    const filename = `sale_details_product_wise_${dateStr}.${format === "excel" ? "xls" : format}`;
+    let productList: { id: string; name: string; sku: string | null }[] = [];
+    let reportTitleSuffix = "";
+    let fileSuffix = "all_products";
 
-    // Collect all distinct product IDs present in filtered orders
-    const productIdsInOrders = new Set<string>();
-    for (const order of filteredOrders) {
-      for (const item of order.items || []) {
-        if (item.product_id) {
-          productIdsInOrders.add(item.product_id);
-        }
+    if (filters.productId) {
+      const { data: dbProduct, error: prodErr } = await supabase
+        .from("products")
+        .select("id, name, sku, quality_grade, quality_standard, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785")
+        .eq("id", filters.productId)
+        .eq("business_id", context.user.business_id)
+        .maybeSingle();
+
+      if (prodErr || !dbProduct) {
+        throw new Error("Selected product was not found in your business.");
       }
-    }
 
-    // Fetch the latest configured product names and SKUs directly from the products table
-    const dbProductMap = new Map<string, { id: string; name: string; sku: string | null }>();
-    if (productIdsInOrders.size > 0) {
+      const selectedStandard = dbProduct.quality_standard || getProductQualityStandard(dbProduct);
+      const selectedProductName = dbProduct.name || "Product";
+      const displayName = selectedStandard ? `${selectedProductName} (${selectedStandard})` : selectedProductName;
+      productList = [
+        {
+          id: dbProduct.id,
+          name: displayName,
+          sku: dbProduct.sku || null,
+        },
+      ];
+      reportTitleSuffix = ` (${displayName})`;
+      fileSuffix = displayName.replace(/[^a-zA-Z0-9_-]/g, "_");
+    } else {
+      // Load all products for the business
       const { data: dbProducts } = await supabase
         .from("products")
-        .select("id, name, sku")
-        .in("id", Array.from(productIdsInOrders));
+        .select("id, name, sku, quality_grade, quality_standard, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785")
+        .eq("business_id", context.user.business_id)
+        .order("name");
 
-      for (const p of dbProducts || []) {
-        dbProductMap.set(p.id, {
+      productList = (dbProducts || []).map((p) => {
+        const std = p.quality_standard || getProductQualityStandard(p);
+        return {
           id: p.id,
-          name: p.name || "Product",
+          name: std ? `${p.name} (${std})` : p.name,
           sku: p.sku || null,
-        });
-      }
+        };
+      });
     }
 
-    const productMap = new Map<string, { id: string; name: string; sku: string | null }>();
-    for (const order of filteredOrders) {
-      for (const item of order.items || []) {
-        if (!item.product_id) continue;
-        if (!productMap.has(item.product_id)) {
-          const dbProd = dbProductMap.get(item.product_id);
-          const resolvedName = dbProd?.name || item.product?.name || item.product_name || "Product";
-          productMap.set(item.product_id, {
-            id: item.product_id,
-            name: resolvedName,
-            sku: dbProd?.sku || item.product?.sku || null,
-          });
-        }
-      }
-    }
-    const productList = Array.from(productMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+    // Filter to relevant orders
+    const relevantOrders = filters.productId
+      ? filteredOrders.filter((order) => {
+          return (order.items || []).some((it) => it.product_id === filters.productId);
+        })
+      : filteredOrders;
 
     const productTotals = new Array(productList.length).fill(0);
-    let overallQtySum = 0;
+    let grandTotalQty = 0;
 
-    const rows = filteredOrders.map((order, idx) => {
+    const rows = relevantOrders.map((order, idx) => {
       const addrs = order.customer?.customer_addresses as any[] | undefined;
       const primaryAddr = addrs?.find((a: any) => a.address_type === "PRIMARY") ?? addrs?.[0];
       const rawDistrict = (order.district && order.district.trim()) || primaryAddr?.district?.trim() || "-";
@@ -2527,21 +2552,21 @@ export async function exportSalesReport(
       const billNo = order.order_number;
       const billDate = formatLedgerDate(order.order_date);
 
-      const itemMap = new Map<string, number>();
+      // Quantities for each product in productList
       let orderTotalQty = 0;
-      for (const it of order.items || []) {
-        const q = Number(it.quantity) || 0;
-        itemMap.set(it.product_id, (itemMap.get(it.product_id) || 0) + q);
-        orderTotalQty += q;
-      }
-
-      const productQtyCells = productList.map((p, pIdx) => {
-        const q = itemMap.get(p.id) || 0;
+      const productQtys = productList.map((p, pIdx) => {
+        let q = 0;
+        for (const it of order.items || []) {
+          if (it.product_id === p.id) {
+            q += Number(it.quantity) || 0;
+          }
+        }
         productTotals[pIdx] += q;
+        orderTotalQty += q;
         return q;
       });
 
-      overallQtySum += orderTotalQty;
+      grandTotalQty += orderTotalQty;
 
       return [
         idx + 1,
@@ -2550,7 +2575,7 @@ export async function exportSalesReport(
         gstNo,
         billNo,
         billDate,
-        ...productQtyCells,
+        ...productQtys,
         orderTotalQty,
       ];
     });
@@ -2563,12 +2588,14 @@ export async function exportSalesReport(
       "",
       "",
       ...productTotals,
-      overallQtySum,
+      grandTotalQty,
     ];
+
+    const filename = `sale_details_${fileSuffix}_${dateStr}.${format === "excel" ? "xls" : format}`;
 
     const reportData: SaleDetailsProductWiseData = {
       companyName,
-      reportTitle: "Sale Details / Product-wise",
+      reportTitle: `Sale Details / Product-wise${reportTitleSuffix}`,
       periodStr,
       fixedHeaders: [
         "Sr. No.",

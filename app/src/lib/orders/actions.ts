@@ -206,7 +206,7 @@ export async function createOrderAction(
   const productIds = Array.from(new Set(values.items.map((it) => it.product_id)));
   const { data: prods, error: prodError } = await supabase
     .from("products")
-    .select("id, name, quality_grade, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785")
+    .select("id, name, quality_grade, quality_standard, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785")
     .in("id", productIds)
     .eq("business_id", context.user.business_id)
     .eq("active", true);
@@ -220,6 +220,7 @@ export async function createOrderAction(
       id: string;
       name: string;
       quality_grade?: string | null;
+      quality_standard?: string | null;
       qty_is_4985?: number | null;
       qty_is_12786?: number | null;
       qty_is_13487?: number | null;
@@ -283,6 +284,7 @@ export async function createOrderAction(
       product_id: it.productId,
       product_name: prod?.name || null,
       quality_grade: resolvedGrade,
+      quality_standard: (rawItem as any)?.quality_standard || prod?.quality_standard || null,
       variant_id: resolvedVariantId,
       quantity: it.quantity,
       qty_is_4985: (rawItem as any)?.qty_is_4985 != null ? Number((rawItem as any).qty_is_4985) : Number(prod?.qty_is_4985 || 0),
@@ -639,6 +641,7 @@ export async function updateOrderAction(
       id: string;
       name: string;
       quality_grade?: string | null;
+      quality_standard?: string | null;
       qty_is_4985?: number | null;
       qty_is_12786?: number | null;
       qty_is_13487?: number | null;
@@ -649,7 +652,7 @@ export async function updateOrderAction(
   for (const item of values.items) {
     const { data: prod } = await supabase
       .from("products")
-      .select("id, name, quality_grade, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785")
+      .select("id, name, quality_grade, quality_standard, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785")
       .eq("id", item.product_id)
       .eq("business_id", context.user.business_id)
       .eq("active", true)
@@ -712,6 +715,7 @@ export async function updateOrderAction(
       product_id: it.productId,
       product_name: prod?.name || null,
       quality_grade: resolvedGrade,
+      quality_standard: (rawItem as any)?.quality_standard || prod?.quality_standard || null,
       variant_id: resolvedVariantId,
       quantity: it.quantity,
       qty_is_4985: (rawItem as any)?.qty_is_4985 != null ? Number((rawItem as any).qty_is_4985) : Number(prod?.qty_is_4985 || 0),
