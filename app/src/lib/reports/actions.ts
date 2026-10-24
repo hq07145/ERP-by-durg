@@ -30,7 +30,7 @@ import type {
   DistrictSalesSummaryItem,
 } from "@/types/reports";
 import { REPORT_CONFIGS } from "@/types/reports";
-import { getProductQualityStandard } from "@/types/product";
+import { getProductQualityStandard, QUALITY_STANDARDS } from "@/types/product";
 import {
   resolveFinancialDateRange,
   getProfitByPeriodFinancials,
@@ -1678,7 +1678,7 @@ export async function getReportFilterLookups(): Promise<{
     const std = p.quality_standard || getProductQualityStandard(p);
     return {
       id: p.id,
-      name: std ? `${p.name} (${std})` : p.name,
+      name: std ? `${std} (${p.name})` : p.name,
     };
   });
 
@@ -2474,9 +2474,15 @@ export async function exportSalesReport(
         };
     }
   } else if (variant === "sale_details_product_wise") {
-    let productList: { id: string; name: string; sku: string | null }[] = [];
+    // Dynamic Quality Standard columns configuration
+    interface QualityStandardCol {
+      name: string; // ONLY the configured Quality Standard name (e.g. "IS:4985 PVC Pipe", "IS:12785 Filters")
+      productIds: string[];
+    }
+
+    let qualityStandardCols: QualityStandardCol[] = [];
     let reportTitleSuffix = "";
-    let fileSuffix = "all_products";
+    let fileSuffix = "all_standards";
 
     if (filters.productId) {
       const { data: dbProduct, error: prodErr } = await supabase
@@ -2490,33 +2496,70 @@ export async function exportSalesReport(
         throw new Error("Selected product was not found in your business.");
       }
 
+      // Show ONLY the selected product's configured Quality Standard name (never old product codes like 12-4-40-2)
       const selectedStandard = dbProduct.quality_standard || getProductQualityStandard(dbProduct);
-      const selectedProductName = dbProduct.name || "Product";
-      const displayName = selectedStandard ? `${selectedProductName} (${selectedStandard})` : selectedProductName;
-      productList = [
+      const standardName = selectedStandard || dbProduct.name || "Quality Standard";
+
+      qualityStandardCols = [
         {
-          id: dbProduct.id,
-          name: displayName,
-          sku: dbProduct.sku || null,
+          name: standardName,
+          productIds: [dbProduct.id],
         },
       ];
-      reportTitleSuffix = ` (${displayName})`;
-      fileSuffix = displayName.replace(/[^a-zA-Z0-9_-]/g, "_");
+      reportTitleSuffix = ` (${standardName})`;
+      fileSuffix = standardName.replace(/[^a-zA-Z0-9_-]/g, "_");
     } else {
-      // Load all products for the business
+      // Load all products for the business to dynamically discover configured Quality Standards
       const { data: dbProducts } = await supabase
         .from("products")
         .select("id, name, sku, quality_grade, quality_standard, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785")
         .eq("business_id", context.user.business_id)
         .order("name");
 
-      productList = (dbProducts || []).map((p) => {
+      // Group products dynamically by their configured Quality Standard
+      const standardMap = new Map<string, { name: string; productIds: string[] }>();
+
+      for (const p of dbProducts || []) {
         const std = p.quality_standard || getProductQualityStandard(p);
-        return {
-          id: p.id,
-          name: std ? `${p.name} (${std})` : p.name,
-          sku: p.sku || null,
-        };
+        // Column header must be ONLY the Quality Standard name (never old product codes like 12-4-40-2 or 16-4-40-2)
+        const standardName = std || p.name;
+        if (!standardName) continue;
+
+        if (!standardMap.has(standardName)) {
+          standardMap.set(standardName, {
+            name: standardName,
+            productIds: [p.id],
+          });
+        } else {
+          standardMap.get(standardName)!.productIds.push(p.id);
+        }
+      }
+
+      // Also ensure any snapshotted quality standards in relevant orders are included
+      for (const order of filteredOrders) {
+        for (const it of order.items || []) {
+          const itemStd =
+            it.quality_standard ||
+            it.product?.quality_standard ||
+            getProductQualityStandard(it.product || undefined);
+          if (itemStd && !standardMap.has(itemStd)) {
+            standardMap.set(itemStd, {
+              name: itemStd,
+              productIds: it.product_id ? [it.product_id] : [],
+            });
+          }
+        }
+      }
+
+      // Sort according to canonical QUALITY_STANDARDS order, then any custom standards alphabetically
+      const canonicalOrder: readonly string[] = QUALITY_STANDARDS;
+      qualityStandardCols = Array.from(standardMap.values()).sort((a, b) => {
+        const idxA = canonicalOrder.indexOf(a.name as any);
+        const idxB = canonicalOrder.indexOf(b.name as any);
+        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+        if (idxA !== -1) return -1;
+        if (idxB !== -1) return 1;
+        return a.name.localeCompare(b.name);
       });
     }
 
@@ -2527,7 +2570,7 @@ export async function exportSalesReport(
         })
       : filteredOrders;
 
-    const productTotals = new Array(productList.length).fill(0);
+    const columnTotals = new Array(qualityStandardCols.length).fill(0);
     let grandTotalQty = 0;
 
     const rows = relevantOrders.map((order, idx) => {
@@ -2552,16 +2595,24 @@ export async function exportSalesReport(
       const billNo = order.order_number;
       const billDate = formatLedgerDate(order.order_date);
 
-      // Quantities for each product in productList
+      // Quantities for each configured quality standard column
       let orderTotalQty = 0;
-      const productQtys = productList.map((p, pIdx) => {
+      const standardQtys = qualityStandardCols.map((col, colIdx) => {
         let q = 0;
         for (const it of order.items || []) {
-          if (it.product_id === p.id) {
+          const itemStd =
+            it.quality_standard ||
+            it.product?.quality_standard ||
+            getProductQualityStandard(it.product || undefined);
+
+          const matchesProductId = it.product_id && col.productIds.includes(it.product_id);
+          const matchesStandardName = itemStd && itemStd === col.name;
+
+          if (matchesProductId || matchesStandardName) {
             q += Number(it.quantity) || 0;
           }
         }
-        productTotals[pIdx] += q;
+        columnTotals[colIdx] += q;
         orderTotalQty += q;
         return q;
       });
@@ -2575,7 +2626,7 @@ export async function exportSalesReport(
         gstNo,
         billNo,
         billDate,
-        ...productQtys,
+        ...standardQtys,
         orderTotalQty,
       ];
     });
@@ -2587,7 +2638,7 @@ export async function exportSalesReport(
       "",
       "",
       "",
-      ...productTotals,
+      ...columnTotals,
       grandTotalQty,
     ];
 
@@ -2605,7 +2656,11 @@ export async function exportSalesReport(
         "Bill No.",
         "Bill Date",
       ],
-      products: productList,
+      products: qualityStandardCols.map((col) => ({
+        id: col.name,
+        name: col.name, // ONLY the configured Quality Standard name
+        sku: null,
+      })),
       rows,
       totals: totalsRow,
     };

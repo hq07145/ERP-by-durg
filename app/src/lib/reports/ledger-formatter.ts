@@ -1424,9 +1424,9 @@ export function generateSaleDetailsProductWisePDF(data: SaleDetailsProductWiseDa
 
   const productColWidth =
     numProducts === 1
-      ? 75
+      ? 85
       : numProducts > 0
-      ? Math.max(26, Math.min(65, Math.floor((remainingForDealerAndProducts - 110) / numProducts)))
+      ? Math.max(32, Math.min(80, Math.floor((remainingForDealerAndProducts - 140) / numProducts)))
       : 0;
 
   const colStyles: Record<number, any> = {
