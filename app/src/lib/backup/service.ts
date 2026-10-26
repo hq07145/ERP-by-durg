@@ -75,7 +75,7 @@ export async function fetchImportModuleRows(
     case "suppliers": {
       const { data, error } = await supabase
         .from("suppliers")
-        .select("id, name, phone, email, address, gst_number, payment_terms, status")
+        .select("id, name, phone, email, address, gst_number, status")
         .eq("business_id", businessId)
         .order("name");
 
@@ -87,7 +87,7 @@ export async function fetchImportModuleRows(
         email: s.email || "",
         address: s.address || "",
         gst_number: s.gst_number || "",
-        payment_terms: s.payment_terms || "",
+        payment_terms: "",
         status: s.status || "ACTIVE",
       }));
     }
@@ -98,7 +98,7 @@ export async function fetchImportModuleRows(
         .select(`
           id, sku, name, unit, selling_price, tax_rate, min_stock, daily_capacity, description,
           quality_standard, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785,
-          category:categories(name)
+          category:categories!products_category_business_fk(name)
         `)
         .eq("business_id", businessId)
         .order("name");
@@ -133,19 +133,26 @@ export async function fetchImportModuleRows(
     }
 
     case "opening_finished_goods": {
-      const { data, error } = await supabase
+      const { data: invRows, error: invErr } = await supabase
         .from("inventory")
-        .select(`
-          id, current_stock,
-          product:products!inner(id, sku, name, unit)
-        `)
+        .select("id, item_id, current_stock")
         .eq("business_id", businessId)
         .eq("item_type", "finished_good");
 
-      if (error) throw error;
+      if (invErr) throw invErr;
 
-      return (data || []).map((inv: any) => {
-        const prod = Array.isArray(inv.product) ? inv.product[0] : inv.product;
+      const productIds = (invRows || []).map((r: any) => r.item_id).filter(Boolean);
+      const prodMap = new Map<string, any>();
+      if (productIds.length > 0) {
+        const { data: prods } = await supabase
+          .from("products")
+          .select("id, sku, name, unit")
+          .in("id", productIds);
+        prods?.forEach((p: any) => prodMap.set(p.id, p));
+      }
+
+      return (invRows || []).map((inv: any) => {
+        const prod = prodMap.get(inv.item_id);
         return {
           sku: prod?.sku || "",
           product_name: prod?.name || "",
@@ -159,19 +166,26 @@ export async function fetchImportModuleRows(
     }
 
     case "opening_raw_materials": {
-      const { data, error } = await supabase
+      const { data: invRows, error: invErr } = await supabase
         .from("inventory")
-        .select(`
-          id, current_stock,
-          raw_material:raw_materials!inner(id, name, code, unit, unit_cost, min_stock)
-        `)
+        .select("id, item_id, current_stock")
         .eq("business_id", businessId)
         .eq("item_type", "raw_material");
 
-      if (error) throw error;
+      if (invErr) throw invErr;
 
-      return (data || []).map((inv: any) => {
-        const mat = Array.isArray(inv.raw_material) ? inv.raw_material[0] : inv.raw_material;
+      const matIds = (invRows || []).map((r: any) => r.item_id).filter(Boolean);
+      const matMap = new Map<string, any>();
+      if (matIds.length > 0) {
+        const { data: mats } = await supabase
+          .from("raw_materials")
+          .select("id, name, code, unit, unit_cost, min_stock")
+          .in("id", matIds);
+        mats?.forEach((m: any) => matMap.set(m.id, m));
+      }
+
+      return (invRows || []).map((inv: any) => {
+        const mat = matMap.get(inv.item_id);
         return {
           material_name: mat?.name || "",
           code: mat?.code || "",
@@ -392,6 +406,14 @@ export async function dumpRelationalTables(
       let query = supabase.from(table).select("*");
       if (table === "businesses") {
         query = query.eq("id", businessId);
+      } else if (table === "customer_addresses") {
+        const { data: cData } = await supabase.from("customers").select("id").eq("business_id", businessId);
+        const cIds = (cData || []).map((c: any) => c.id);
+        if (cIds.length > 0) {
+          query = query.in("customer_id", cIds);
+        } else {
+          query = query.eq("id", "00000000-0000-0000-0000-000000000000");
+        }
       } else {
         query = query.eq("business_id", businessId);
       }

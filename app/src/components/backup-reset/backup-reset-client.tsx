@@ -143,7 +143,14 @@ export function BackupResetClient({
       setBackupProgressMsg("Download started! Backup verified and recorded in security log.");
       handleRefreshSummary();
     } catch (err: any) {
-      setBackupError(err.message || "Failed to generate complete import format backup.");
+      let msg = err?.message || "Failed to generate complete import format backup.";
+      try {
+        if (typeof msg === "string" && msg.startsWith("{")) {
+          const parsed = JSON.parse(msg);
+          if (parsed.message) msg = `${parsed.message}${parsed.hint ? ` (${parsed.hint})` : ""}`;
+        }
+      } catch {}
+      setBackupError(msg);
     } finally {
       setIsGeneratingBackup(false);
     }
@@ -167,7 +174,14 @@ export function BackupResetClient({
       setBackupProgressMsg(`Download started! All ${reportPeriod}-month reports packaged into ZIP archive.`);
       handleRefreshSummary();
     } catch (err: any) {
-      setBackupError(err.message || `Failed to generate ${reportPeriod}-month reports archive.`);
+      let msg = err?.message || `Failed to generate ${reportPeriod}-month reports archive.`;
+      try {
+        if (typeof msg === "string" && msg.startsWith("{")) {
+          const parsed = JSON.parse(msg);
+          if (parsed.message) msg = `${parsed.message}${parsed.hint ? ` (${parsed.hint})` : ""}`;
+        }
+      } catch {}
+      setBackupError(msg);
     } finally {
       setIsGeneratingBackup(false);
     }
@@ -623,12 +637,22 @@ export function BackupResetClient({
               )}
 
               {backupError && (
-                <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-xs sm:text-sm text-rose-800 flex items-start gap-2.5">
-                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                  <div className="space-y-1">
-                    <p className="font-semibold">Backup Failed</p>
-                    <p>{backupError}</p>
+                <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-xs sm:text-sm text-rose-800 flex items-start justify-between gap-3">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <p className="font-semibold text-rose-900">Backup Failed</p>
+                      <p className="font-mono text-xs text-rose-700 break-all">{backupError}</p>
+                    </div>
                   </div>
+                  <button
+                    onClick={backupTab === "import" ? handleGenerateImportBackup : handleGenerateReportsBackup}
+                    disabled={isGeneratingBackup}
+                    className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs transition-colors shrink-0 flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Retry
+                  </button>
                 </div>
               )}
 
