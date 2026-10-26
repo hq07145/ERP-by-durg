@@ -31,6 +31,7 @@ import {
   ChevronRight,
   Shield,
   FileSpreadsheet,
+  Database,
   type LucideIcon,
 } from "lucide-react";
 import { NotificationBell } from "@/components/notifications/notification-bell";
@@ -74,6 +75,7 @@ interface WorkspaceNavClientProps {
     canViewSettings: boolean;
     canViewCalendar: boolean;
     canViewNotifications: boolean;
+    canBackupReset?: boolean;
   };
   children: React.ReactNode;
 }
@@ -150,6 +152,10 @@ export function WorkspaceNavClient({
   const isManager = Boolean(role?.name?.toLowerCase().includes("manager"));
   const isAdminOrSuper = Boolean(
     role?.name?.toLowerCase().includes("admin") ||
+    role?.name?.toLowerCase().includes("super")
+  );
+  const isSuperAdmin = Boolean(
+    permissions.canBackupReset ||
     role?.name?.toLowerCase().includes("super")
   );
 
@@ -308,6 +314,12 @@ export function WorkspaceNavClient({
             visible: isAdminOrSuper,
           },
           {
+            name: "Backup & Reset",
+            href: "/backup-reset",
+            icon: Database,
+            visible: isSuperAdmin,
+          },
+          {
             name: "Notifications",
             href: "/notifications",
             icon: Bell,
@@ -316,7 +328,7 @@ export function WorkspaceNavClient({
         ],
       },
     ],
-    [permissions, isManager, isAdminOrSuper],
+    [permissions, isManager, isAdminOrSuper, isSuperAdmin],
   );
 
   function isLinkActive(href: string): boolean {

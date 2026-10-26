@@ -81,6 +81,7 @@ export default async function WorkspaceShell({
       { permissions: context.permissions },
       "notifications.view",
     ),
+    canBackupReset: context.roleKey === "super_admin",
   };
 
   return (
