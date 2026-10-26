@@ -42,6 +42,31 @@ interface BackupResetClientProps {
   initialSummary: BackupResetSummary;
 }
 
+function formatTimeOnly(dateStr: string | null | undefined): string {
+  if (!dateStr) return "";
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function formatDateTime(dateStr: string | null | undefined): string {
+  if (!dateStr) return "";
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
 export function BackupResetClient({
   user,
   businessName,
@@ -335,9 +360,9 @@ export function BackupResetClient({
           <p className="mt-3 text-sm font-bold text-gray-900 truncate">
             {hasRecentVerifiedBackup ? "Verified & Ready" : "Backup Required"}
           </p>
-          <p className="mt-1 text-xs text-gray-500 truncate">
+          <p className="mt-1 text-xs text-gray-500 truncate" suppressHydrationWarning>
             {verifiedBackupTime
-              ? `Last: ${new Date(verifiedBackupTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+              ? `Last: ${formatTimeOnly(verifiedBackupTime)}`
               : "No backup downloaded yet"}
           </p>
         </div>
@@ -798,8 +823,8 @@ export function BackupResetClient({
                           <p className="font-bold">Verified Backup Detected</p>
                           <p className="font-mono text-[11px] text-emerald-800 mt-0.5">Token: {verifiedBackupToken}</p>
                           {verifiedBackupTime && (
-                            <p className="text-[11px] text-emerald-700 mt-0.5">
-                              Verified at: {new Date(verifiedBackupTime).toLocaleString()}
+                            <p className="text-[11px] text-emerald-700 mt-0.5" suppressHydrationWarning>
+                              Verified at: {formatDateTime(verifiedBackupTime)}
                             </p>
                           )}
                         </div>
@@ -980,7 +1005,7 @@ export function BackupResetClient({
                       Audit Log Event Generated
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-gray-600">
-                      <div>Timestamp: <span className="font-semibold text-gray-900">{new Date(resetResult.timestamp).toLocaleString()}</span></div>
+                      <div suppressHydrationWarning>Timestamp: <span className="font-semibold text-gray-900">{formatDateTime(resetResult.timestamp)}</span></div>
                       <div>Action: <span className="font-mono font-semibold text-rose-700">SYSTEM_DATA_RESET</span></div>
                       <div>Operator: <span className="font-semibold text-gray-900">{user.name}</span></div>
                       <div className="truncate">Backup Token: <span className="font-mono text-emerald-700">{verifiedBackupToken}</span></div>
