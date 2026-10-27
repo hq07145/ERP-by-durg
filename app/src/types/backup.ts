@@ -63,6 +63,7 @@ export interface BackupExecutionResponse {
 export interface ResetExecutionResponse {
   success: boolean;
   message: string;
-  clearedCounts: Record<string, number>;
+  error?: string;
+  clearedCounts?: Record<string, number>;
   timestamp: string;
 }

@@ -216,7 +216,7 @@ export function BackupResetClient({
   const handleExecuteReset = async () => {
     if (confirmationInput !== "RESET ALL DATA") return;
     if (!verifiedBackupToken) {
-      setResetError("A verified backup token is required before reset can be initiated.");
+      setResetError("A verified backup token is required before reset can be initiated. Please download a backup first.");
       return;
     }
 
@@ -229,17 +229,36 @@ export function BackupResetClient({
         backupToken: verifiedBackupToken,
       });
 
+      if (!res.success) {
+        setResetError(res.error || res.message || "Failed to execute database reset procedure.");
+        return;
+      }
+
       setResetResult(res);
       setResetStep(4);
       handleRefreshSummary();
     } catch (err: any) {
-      setResetError(err.message || "Failed to execute database reset procedure.");
+      let msg = err?.message || "Failed to execute database reset procedure.";
+      if (
+        msg.includes("441") ||
+        msg.includes("Minified React error") ||
+        msg.includes("Server Components")
+      ) {
+        msg =
+          "Safety Violation: Your backup token has expired or is invalid. Please download a fresh backup archive before resetting.";
+      }
+      setResetError(msg);
     } finally {
       setIsResetting(false);
     }
   };
 
-  const hasRecentVerifiedBackup = Boolean(verifiedBackupToken);
+  const isBackupWithin48Hours = Boolean(
+    verifiedBackupToken &&
+    verifiedBackupTime &&
+    Date.now() - new Date(verifiedBackupTime).getTime() < 48 * 60 * 60 * 1000
+  );
+  const hasRecentVerifiedBackup = Boolean(verifiedBackupToken) && isBackupWithin48Hours;
 
   return (
     <div className="max-w-7xl mx-auto space-y-8 p-4 sm:p-6 lg:p-8">
@@ -834,9 +853,11 @@ export function BackupResetClient({
                       <div className="p-3.5 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-start gap-2.5">
                         <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                         <div>
-                          <p className="font-bold">No Verified Backup Found in Current Session</p>
+                          <p className="font-bold">
+                            {verifiedBackupToken ? "Verified Backup Expired (> 48 hours old)" : "No Verified Backup Found"}
+                          </p>
                           <p className="mt-0.5 text-amber-800">
-                            Safety rule: You must download a complete backup before the system unlocks the data reset procedure.
+                            Safety rule: You must download a fresh complete backup archive before the system unlocks the data reset procedure.
                           </p>
                           <button
                             onClick={() => {
@@ -982,9 +1003,30 @@ export function BackupResetClient({
                   </label>
 
                   {resetError && (
-                    <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-                      <span>{resetError}</span>
+                    <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 space-y-2">
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                        <span className="leading-relaxed font-medium">{resetError}</span>
+                      </div>
+                      {(resetError.includes("backup") ||
+                        resetError.includes("Backup") ||
+                        resetError.includes("expired") ||
+                        resetError.includes("token")) && (
+                        <div className="pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setResetModalOpen(false);
+                              setBackupModalOpen(true);
+                              setBackupTab("import");
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            Download Fresh Backup Now
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

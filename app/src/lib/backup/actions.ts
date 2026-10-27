@@ -228,47 +228,92 @@ export async function executeDataResetAction(payload: {
   confirmationText: string;
   backupToken: string;
 }): Promise<ResetExecutionResponse> {
-  const context = await requireSuperAdmin();
-  const businessId = context.user.business_id;
+  try {
+    const context = await requireSuperAdmin();
+    const businessId = context.user.business_id;
 
-  if (payload.confirmationText !== "RESET ALL DATA") {
-    throw new Error(
-      'Confirmation text mismatch. You must type the exact phrase "RESET ALL DATA" in capital letters to proceed.'
-    );
+    if (payload.confirmationText !== "RESET ALL DATA") {
+      return {
+        success: false,
+        error:
+          'Confirmation text mismatch. You must type the exact phrase "RESET ALL DATA" in capital letters to proceed.',
+        message:
+          'Confirmation text mismatch. You must type the exact phrase "RESET ALL DATA" in capital letters to proceed.',
+        clearedCounts: {},
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    if (!payload.backupToken || payload.backupToken.trim() === "") {
+      return {
+        success: false,
+        error:
+          "Safety Error: A verified complete backup token is mandatory before data reset can be executed.",
+        message:
+          "Safety Error: A verified complete backup token is mandatory before data reset can be executed.",
+        clearedCounts: {},
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    const adminClient = createAdminSupabaseClient();
+    const serverClient = await createServerSupabaseClient();
+    const supabase = adminClient || serverClient;
+
+    if (!supabase) {
+      return {
+        success: false,
+        error: "Database service is temporarily unavailable. Please try again later.",
+        message: "Database service is temporarily unavailable. Please try again later.",
+        clearedCounts: {},
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    // Execute the atomic reset procedure
+    const { data, error } = await supabase.rpc("reset_all_business_data", {
+      p_business_id: businessId,
+      p_operator_id: context.user.id,
+      p_backup_token: payload.backupToken.trim(),
+    });
+
+    if (error) {
+      console.error("Reset procedure error:", error);
+      let errMsg = error.message || "Failed to execute database reset procedure.";
+      if (errMsg.includes("Safety Violation")) {
+        errMsg =
+          "Safety Violation: Your backup has expired (> 48 hours old) or the token is invalid. Please download a fresh backup archive before resetting.";
+      }
+      return {
+        success: false,
+        error: errMsg,
+        message: errMsg,
+        clearedCounts: {},
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    return {
+      success: true,
+      message:
+        data?.message ||
+        "All transactional data successfully reset. Schema, admin accounts, and master data were preserved.",
+      clearedCounts: data?.cleared_counts || {},
+      timestamp: data?.timestamp || new Date().toISOString(),
+    };
+  } catch (err: any) {
+    console.error("executeDataResetAction catch error:", err);
+    let errMsg = err?.message || "An unexpected error occurred during data reset.";
+    if (errMsg.includes("Safety Violation")) {
+      errMsg =
+        "Safety Violation: Your backup has expired (> 48 hours old) or the token is invalid. Please download a fresh backup archive before resetting.";
+    }
+    return {
+      success: false,
+      error: errMsg,
+      message: errMsg,
+      clearedCounts: {},
+      timestamp: new Date().toISOString(),
+    };
   }
-
-  if (!payload.backupToken || payload.backupToken.trim() === "") {
-    throw new Error(
-      "Safety Error: A verified complete backup token is mandatory before data reset can be executed."
-    );
-  }
-
-  const adminClient = createAdminSupabaseClient();
-  const serverClient = await createServerSupabaseClient();
-  const supabase = adminClient || serverClient;
-
-  if (!supabase) {
-    throw new Error("Supabase client is not available.");
-  }
-
-  // Execute the atomic reset procedure
-  const { data, error } = await supabase.rpc("reset_all_business_data", {
-    p_business_id: businessId,
-    p_operator_id: context.user.id,
-    p_backup_token: payload.backupToken.trim(),
-  });
-
-  if (error) {
-    console.error("Reset procedure error:", error);
-    throw new Error(error.message || "Failed to execute database reset procedure.");
-  }
-
-  return {
-    success: true,
-    message:
-      data.message ||
-      "All transactional data successfully reset. Schema, admin accounts, and master data were preserved.",
-    clearedCounts: data.cleared_counts || {},
-    timestamp: data.timestamp || new Date().toISOString(),
-  };
 }
