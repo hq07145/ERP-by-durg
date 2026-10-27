@@ -137,6 +137,7 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
+#variable_conflict use_column
 DECLARE
   order_rec RECORD;
   item_delivery RECORD;
@@ -147,9 +148,9 @@ DECLARE
   current_version INTEGER := 0;
 BEGIN
   -- Verify order exists and is confirmed
-  SELECT id, status INTO order_rec
-  FROM public.orders
-  WHERE id = p_order_id AND business_id = p_business_id
+  SELECT o.id, o.status INTO order_rec
+  FROM public.orders o
+  WHERE o.id = p_order_id AND o.business_id = p_business_id
   LIMIT 1;
 
   IF NOT FOUND THEN
@@ -163,8 +164,8 @@ BEGIN
 
   -- Check if production orders exist for this order
   SELECT EXISTS(
-    SELECT 1 FROM public.production_orders
-    WHERE order_id = p_order_id AND business_id = p_business_id
+    SELECT 1 FROM public.production_orders po
+    WHERE po.order_id = p_order_id AND po.business_id = p_business_id
   ) INTO has_production_orders;
 
   IF NOT has_production_orders THEN
@@ -198,8 +199,8 @@ BEGIN
   END LOOP;
 
   -- Get current calculation version
-  SELECT COALESCE(delivery_calculation_version, 0) INTO current_version
-  FROM public.orders WHERE id = p_order_id AND business_id = p_business_id;
+  SELECT COALESCE(o.delivery_calculation_version, 0) INTO current_version
+  FROM public.orders o WHERE o.id = p_order_id AND o.business_id = p_business_id;
 
   RETURN QUERY SELECT p_order_id, order_earliest, order_latest, order_expected, current_version + 1;
 END;
