@@ -60,8 +60,25 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     redirect("/?error=forbidden");
   }
 
-  // Fetch all dashboard data
-  const dashboardData = await getDashboardData(filters);
+  // Fetch all dashboard data with resilient fallback
+  let dashboardData;
+  try {
+    dashboardData = await getDashboardData(filters, context);
+  } catch (err) {
+    console.error("Dashboard page failed to fetch dashboardData:", err);
+    dashboardData = {
+      summary: null,
+      salesTrend: [],
+      paymentTrend: [],
+      expenseTrend: [],
+      orderStatusBreakdown: [],
+      productionStatusBreakdown: [],
+      topProducts: [],
+      topCustomers: [],
+      lowStockItems: [],
+      upcomingDeliveries: [],
+    };
+  }
 
   const isAdminOrSuper = context.roleKey === "admin" || context.roleKey === "super_admin";
   const dashboardTitle = isAdminOrSuper ? "Admin Dashboard" : "Operations Dashboard";

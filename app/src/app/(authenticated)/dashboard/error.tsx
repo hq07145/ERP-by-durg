@@ -23,13 +23,26 @@ export default function DashboardError({
         <p className="mt-2 text-sm text-red-700 max-w-md mx-auto">
           {error.message || "An unexpected error occurred while loading dashboard metrics and analytics."}
         </p>
-        <div className="mt-6 flex justify-center gap-4">
+        <div className="mt-6 flex flex-wrap justify-center gap-3">
           <button
             type="button"
-            onClick={() => reset()}
+            onClick={() => {
+              try {
+                reset();
+              } catch {
+                window.location.reload();
+              }
+            }}
             className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-700 transition"
           >
             Retry Dashboard
+          </button>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="rounded-lg border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-800 hover:bg-red-50 transition"
+          >
+            Reload Page
           </button>
           <a
             href="/orders"

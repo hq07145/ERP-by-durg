@@ -156,7 +156,18 @@ export async function getSalesFinancials(
   if (options?.customerId) query = query.eq("customer_id", options.customerId);
 
   const { data, error } = await query;
-  if (error) throw error;
+  if (error) {
+    console.error("getSalesFinancials query error:", error);
+    return {
+      gross_sales: 0,
+      discounts: 0,
+      tax: 0,
+      net_sales: 0,
+      payments_received: 0,
+      outstanding: 0,
+      order_count: 0,
+    };
+  }
 
   let gross_sales = 0;
   let discounts = 0;
@@ -320,7 +331,13 @@ export async function getExpensesFinancials(
   if (options?.category) query = query.eq("category", options.category);
 
   const { data, error } = await query;
-  if (error) throw error;
+  if (error) {
+    console.error("getExpensesFinancials query error:", error);
+    return {
+      total_expenses: 0,
+      expense_count: 0,
+    };
+  }
 
   let total_expenses = 0;
   const expense_count = data?.length ?? 0;
@@ -353,7 +370,10 @@ export async function getExpensesByCategoryFinancials(
   if (options?.endDate) query = query.lte("expense_date", options.endDate);
 
   const { data, error } = await query;
-  if (error) throw error;
+  if (error) {
+    console.error("getExpensesByCategoryFinancials error:", error);
+    return [];
+  }
 
   const categoryMap = new Map<string, { total: number; count: number }>();
   for (const row of data ?? []) {
@@ -459,8 +479,10 @@ export async function getProfitByPeriodFinancials(
   if (options?.endDate) expensesQuery = expensesQuery.lte("expense_date", options.endDate);
 
   const [ordersRes, expensesRes] = await Promise.all([ordersQuery, expensesQuery]);
-  if (ordersRes.error) throw ordersRes.error;
-  if (expensesRes.error) throw expensesRes.error;
+  if (ordersRes.error || expensesRes.error) {
+    console.error("getProfitByPeriodFinancials error:", ordersRes.error || expensesRes.error);
+    return [];
+  }
 
   const periodsMap = new Map<
     string,
@@ -583,7 +605,10 @@ export async function getSalesTrendFinancials(
     .gte("order_date", defStart)
     .lte("order_date", defEnd);
 
-  if (error) throw error;
+  if (error) {
+    console.error("getSalesTrendFinancials error:", error);
+    return [];
+  }
 
   const dateMap = new Map<string, { gross: number; net: number; paid: number; due: number }>();
   for (const d of dates) {
@@ -635,7 +660,10 @@ export async function getExpenseTrendFinancials(
     .gte("expense_date", defStart)
     .lte("expense_date", defEnd);
 
-  if (error) throw error;
+  if (error) {
+    console.error("getExpenseTrendFinancials error:", error);
+    return [];
+  }
 
   const dateMap = new Map<string, number>();
   for (const d of dates) {
@@ -690,8 +718,10 @@ export async function getPaymentTrendFinancials(
     .lte("order_date", defEnd);
 
   const [payRes, ordRes] = await Promise.all([paymentsQuery, ordersQuery]);
-  if (payRes.error) throw payRes.error;
-  if (ordRes.error) throw ordRes.error;
+  if (payRes.error || ordRes.error) {
+    console.error("getPaymentTrendFinancials error:", payRes.error || ordRes.error);
+    return [];
+  }
 
   const dateMap = new Map<string, { received: number; pending: number }>();
   for (const d of dates) {
