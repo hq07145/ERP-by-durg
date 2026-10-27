@@ -7,7 +7,8 @@ export type ImportModule =
   | "historical_orders"
   | "historical_payments"
   | "purchases"
-  | "expenses";
+  | "expenses"
+  | "customer_opening_balances";
 
 export type ImportJobStatus =
   | "PENDING"

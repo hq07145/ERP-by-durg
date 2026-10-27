@@ -325,6 +325,31 @@ export async function fetchImportModuleRows(
       }));
     }
 
+    case "customer_opening_balances": {
+      const { data, error } = await supabase
+        .from("customer_opening_balances")
+        .select(`
+          id, amount, balance_type, as_on_date, created_at,
+          customer:customers(id, name, company_name)
+        `)
+        .eq("business_id", businessId)
+        .order("as_on_date", { ascending: true });
+
+      if (error) throw error;
+
+      return (data || []).map((cob: any) => {
+        const cust = Array.isArray(cob.customer) ? cob.customer[0] : cob.customer;
+        const balType = cob.balance_type === "RECEIVABLE" ? "Receivable" : "Payable";
+        return {
+          customer_name: cust?.name || "",
+          customer_code: cust?.id || "",
+          amount: Number(cob.amount || 0),
+          balance_type: balType,
+          as_on_date: toDateStr(cob.as_on_date),
+        };
+      });
+    }
+
     default:
       return [];
   }
@@ -379,6 +404,7 @@ export async function dumpRelationalTables(
     "suppliers",
     "customers",
     "customer_addresses",
+    "customer_opening_balances",
     "customer_ledger",
     "customer_advance_allocations",
     "orders",
@@ -468,6 +494,7 @@ export async function generateImportFormatBackupArchive(
     "historical_payments",
     "purchases",
     "expenses",
+    "customer_opening_balances",
   ];
 
   const templatesXlsxFolder = zip.folder("import_templates_xlsx");
@@ -543,6 +570,7 @@ export async function generateImportFormatBackupArchive(
    - Step 7: \`import_templates_xlsx/historical_payments_template_filled.xlsx\`
    - Step 8: \`import_templates_xlsx/purchases_template_filled.xlsx\`
    - Step 9: \`import_templates_xlsx/expenses_template_filled.xlsx\`
+   - Step 10: \`import_templates_xlsx/customer_opening_balances_template_filled.xlsx\`
 
 ### Option 2: Full Relational Restore (DevOps / DBA)
 The folder \`database_relational_tables/\` contains uncompressed JSON records for all relational PostgreSQL tables with preserved UUID primary keys, foreign keys, and audit timestamps.

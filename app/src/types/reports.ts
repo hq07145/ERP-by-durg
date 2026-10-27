@@ -180,6 +180,12 @@ export interface CustomerDueReportRow {
   customer_company: string | null;
   customer_phone: string | null;
   customer_email: string | null;
+  opening_balance: string | number;
+  opening_balance_type?: string | null;
+  period_sales: string | number;
+  period_payments: string | number;
+  closing_receivable: string | number;
+  closing_advance: string | number;
   total_purchases: string | number;
   total_paid: string | number;
   total_due: string | number;

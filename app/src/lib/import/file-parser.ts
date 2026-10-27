@@ -203,6 +203,14 @@ export function validateMappedRows(
 
       // Required check
       if (field.required && !valStr) {
+        if (schema.id === "customer_opening_balances" && field.key === "customer_name") {
+          const codeHeader = mapping["customer_code"];
+          const codeVal = codeHeader ? row[codeHeader] : undefined;
+          if (codeVal && String(codeVal).trim()) {
+            mappedRecord[field.key] = "";
+            continue;
+          }
+        }
         rowErrors.push(`${field.label} is required.`);
         continue;
       }
@@ -218,6 +226,8 @@ export function validateMappedRows(
         const num = parseFloat(cleaned);
         if (isNaN(num)) {
           rowErrors.push(`${field.label} must be a valid number (got "${valStr}").`);
+        } else if (schema.id === "customer_opening_balances" && field.key === "amount" && num <= 0) {
+          rowErrors.push(`${field.label} must be a positive number greater than 0.`);
         } else {
           mappedRecord[field.key] = num;
         }
@@ -262,13 +272,26 @@ export function validateMappedRows(
 
     // Check duplicate primary identifier within the file (if applicable)
     const idVal = mappedRecord[schema.identifierField];
-    if (idVal && schema.id !== "historical_orders" && schema.id !== "purchases") {
-      // (Orders and Purchases can repeat the ID for multiple line items)
-      const idKey = String(idVal).toLowerCase();
-      if (seenIdentifiers.has(idKey)) {
-        rowErrors.push(`Duplicate ${schema.identifierField} in file: "${idVal}".`);
-      } else {
-        seenIdentifiers.add(idKey);
+    if (schema.id === "customer_opening_balances") {
+      const custIdentifier = (mappedRecord.customer_code || mappedRecord.customer_name || "").toString().toLowerCase().trim();
+      const asOnDate = (mappedRecord.as_on_date || "").toString().trim();
+      if (custIdentifier && asOnDate) {
+        const comboKey = `${custIdentifier}:::${asOnDate}`;
+        if (seenIdentifiers.has(comboKey)) {
+          rowErrors.push(`Duplicate customer and as-on date entry in file: "${custIdentifier}" on "${asOnDate}".`);
+        } else {
+          seenIdentifiers.add(comboKey);
+        }
+      }
+    } else {
+      if (idVal && schema.id !== "historical_orders" && schema.id !== "purchases") {
+        // (Orders and Purchases can repeat the ID for multiple line items)
+        const idKey = String(idVal).toLowerCase();
+        if (seenIdentifiers.has(idKey)) {
+          rowErrors.push(`Duplicate ${schema.identifierField} in file: "${idVal}".`);
+        } else {
+          seenIdentifiers.add(idKey);
+        }
       }
     }
 

@@ -102,7 +102,10 @@ export function ReportTable({
         key.includes("sales") ||
         key.includes("expenses") ||
         key.includes("purchases") ||
-        key.includes("credit_limit")
+        key.includes("credit_limit") ||
+        key.includes("balance") ||
+        key.includes("receivable") ||
+        key.includes("advance")
       ) {
         return formatCurrency(value);
       }
@@ -169,9 +172,11 @@ export function ReportTable({
         return [
           { key: "customer_name", header: "Customer" },
           { key: "customer_company", header: "Company" },
-          { key: "total_purchases", header: "Purchases", align: "right" },
-          { key: "total_paid", header: "Paid", align: "right" },
-          { key: "total_due", header: "Amount Due", align: "right" },
+          { key: "opening_balance", header: "Opening Balance", align: "right" },
+          { key: "period_sales", header: "Period Sales", align: "right" },
+          { key: "period_payments", header: "Payments", align: "right" },
+          { key: "closing_receivable", header: "Closing Receivable", align: "right" },
+          { key: "closing_advance", header: "Advance Balance", align: "right" },
           { key: "last_payment_date", header: "Last Payment" },
           { key: "credit_limit", header: "Credit Limit", align: "right" },
         ];

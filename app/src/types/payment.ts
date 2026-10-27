@@ -1,7 +1,7 @@
 export type PaymentStatus = "PENDING" | "SUCCESS" | "FAILED" | "REFUNDED";
 export type PaymentMethod = "CASH" | "BANK_TRANSFER" | "CHEQUE" | "UPI" | "CARD" | "OTHER";
 
-export type LedgerEntryType = "INVOICE" | "PAYMENT" | "CREDIT_NOTE" | "DEBIT_NOTE" | "ADJUSTMENT" | "ADVANCE";
+export type LedgerEntryType = "INVOICE" | "PAYMENT" | "CREDIT_NOTE" | "DEBIT_NOTE" | "ADJUSTMENT" | "ADVANCE" | "OPENING_BALANCE";
 
 export interface Payment {
   id: string;
@@ -74,6 +74,9 @@ export interface CustomerSummary {
   available_advance?: string | number; // cleared unallocated customer advance
   total_advance_received?: string | number;
   total_advance_allocated?: string | number;
+  opening_balance_amount?: number;
+  opening_balance_type?: string | null;
+  opening_balance_date?: string | null;
   reconciliation_warning?: string | null;
   last_payment_date: string | null;
   last_payment_amount: string | number | null;
@@ -150,6 +153,7 @@ export const LEDGER_ENTRY_TYPE_COLORS: Record<LedgerEntryType, string> = {
   DEBIT_NOTE: "bg-orange-100 text-orange-800",
   ADJUSTMENT: "bg-indigo-100 text-indigo-800",
   ADVANCE: "bg-teal-100 text-teal-800",
+  OPENING_BALANCE: "bg-amber-100 text-amber-800",
 };
 
 export const LEDGER_ENTRY_TYPE_LABELS: Record<LedgerEntryType, string> = {
@@ -159,4 +163,5 @@ export const LEDGER_ENTRY_TYPE_LABELS: Record<LedgerEntryType, string> = {
   DEBIT_NOTE: "Debit Note",
   ADJUSTMENT: "Adjustment",
   ADVANCE: "Advance",
+  OPENING_BALANCE: "Opening Balance",
 };

@@ -543,7 +543,7 @@ export function BackupResetClient({
                   <div className="p-4 rounded-xl bg-teal-50/70 border border-teal-200 text-teal-900 text-xs sm:text-sm">
                     <p className="font-semibold text-teal-950">Restoration-Ready Archive Format</p>
                     <p className="mt-1 text-teal-800 leading-relaxed">
-                      Downloads all 9 supported ERP modules using exact import template headers, filled with real database records. Also includes raw relational database tables in JSON format so data can be restored completely via the existing Import module.
+                      Downloads all 10 supported ERP modules using exact import template headers, filled with real database records. Also includes raw relational database tables in JSON format so data can be restored completely via the existing Import module.
                     </p>
                   </div>
 
@@ -562,6 +562,7 @@ export function BackupResetClient({
                         { title: "Historical Payments & Balances", count: summary.transactional.payments, file: "historical_payments_template_filled.xlsx" },
                         { title: "Purchases & POs", count: summary.transactional.purchaseOrders, file: "purchases_template_filled.xlsx" },
                         { title: "Expenses", count: summary.transactional.expenses, file: "expenses_template_filled.xlsx" },
+                        { title: "Customer Opening Balances", count: summary.masterData.customers, file: "customer_opening_balances_template_filled.xlsx" },
                       ].map((item, idx) => (
                         <div
                           key={idx}

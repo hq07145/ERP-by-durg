@@ -361,21 +361,155 @@ export async function getCustomerLedger(
   if (!supabase) return [];
 
   try {
-    const { data, error } = await supabase.rpc("get_customer_ledger", {
-      p_business_id: context.user.business_id,
-      p_customer_id: customerId,
-      p_limit: limit,
-      p_offset: offset,
-    });
+    const [ledgerRes, cobRes, custRes] = await Promise.all([
+      supabase.rpc("get_customer_ledger", {
+        p_business_id: context.user.business_id,
+        p_customer_id: customerId,
+        p_limit: limit,
+        p_offset: offset,
+      }),
+      supabase
+        .from("customer_opening_balances")
+        .select("id, amount, balance_type, as_on_date, created_at, created_by")
+        .eq("business_id", context.user.business_id)
+        .eq("customer_id", customerId)
+        .order("as_on_date", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from("customers")
+        .select("name")
+        .eq("id", customerId)
+        .eq("business_id", context.user.business_id)
+        .maybeSingle(),
+    ]);
 
-    if (error) {
-      console.warn("get_customer_ledger RPC error:", error.message || error);
+    if (ledgerRes.error) {
+      console.warn("get_customer_ledger RPC error:", ledgerRes.error.message || ledgerRes.error);
       return [];
     }
-    return (data ?? []) as CustomerLedgerEntryWithDetails[];
+
+    const rawEntries = (ledgerRes.data ?? []) as CustomerLedgerEntryWithDetails[];
+    const cob = cobRes.data;
+    const customerName = custRes.data?.name || rawEntries[0]?.customer_name || "";
+
+    if (!cob) {
+      return rawEntries;
+    }
+
+    // Customer has a configured opening balance
+    const isRec = cob.balance_type === "RECEIVABLE";
+    const obAmount = Number(cob.amount) || 0;
+    const signedOb = isRec ? obAmount : -obAmount;
+
+    const obEntry: CustomerLedgerEntryWithDetails = {
+      id: `cob-${cob.id}`,
+      business_id: context.user.business_id,
+      customer_id: customerId,
+      customer_name: customerName,
+      order_id: null,
+      order_number: null,
+      payment_id: null,
+      payment_number: null,
+      entry_type: "OPENING_BALANCE",
+      description: `Opening Balance (${cob.balance_type}) as of ${cob.as_on_date}`,
+      debit: isRec ? obAmount : 0,
+      credit: !isRec ? obAmount : 0,
+      balance: signedOb,
+      entry_date: cob.as_on_date,
+      created_at: cob.created_at || `${cob.as_on_date}T00:00:00Z`,
+      created_by: cob.created_by || "",
+    };
+
+    // Calculate dynamic running balances strictly starting from opening balance
+    // Sort chronological (oldest first) to compute running balance forward
+    const chronological = [...rawEntries].sort((a, b) => {
+      const cmp = new Date(a.entry_date).getTime() - new Date(b.entry_date).getTime();
+      if (cmp !== 0) return cmp;
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    });
+
+    let running = signedOb;
+    const updatedEntries = chronological.map((entry) => {
+      if (entry.entry_date > cob.as_on_date) {
+        running = running + Number(entry.debit || 0) - Number(entry.credit || 0);
+        return {
+          ...entry,
+          balance: Math.round(running * 100) / 100,
+        };
+      }
+      return entry;
+    });
+
+    // Combine with opening balance entry and return in descending order (most recent first)
+    const combined = [obEntry, ...updatedEntries].sort((a, b) => {
+      const cmp = new Date(b.entry_date).getTime() - new Date(a.entry_date).getTime();
+      if (cmp !== 0) return cmp;
+      if (a.entry_type === "OPENING_BALANCE") return 1;
+      if (b.entry_type === "OPENING_BALANCE") return -1;
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+
+    return combined;
   } catch (err) {
     console.warn("getCustomerLedger exception:", err);
     return [];
+  }
+}
+
+/**
+ * Fetches the structured period balance statement for a customer.
+ */
+export async function getCustomerPeriodBalanceStatement(
+  customerId: string,
+  startDate?: string,
+  endDate?: string
+) {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+  if (!hasPermission({ permissions: context.permissions }, "payments.view")) {
+    return null;
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return null;
+
+  try {
+    const sDate = startDate || "2020-01-01";
+    const eDate = endDate || new Date().toISOString().split("T")[0];
+
+    const { data, error } = await supabase.rpc("get_customer_period_balance", {
+      p_business_id: context.user.business_id,
+      p_customer_id: customerId,
+      p_start_date: sDate,
+      p_end_date: eDate,
+    });
+
+    if (error || !data || data.length === 0) {
+      return null;
+    }
+
+    const row = data[0];
+    return {
+      customerId: row.customer_id,
+      startDate: row.period_start_date,
+      endDate: row.period_end_date,
+      dayBeforeStart: row.day_before_start,
+      openingBalance: Number(row.opening_balance) || 0,
+      openingBalanceType: row.opening_balance_type as "RECEIVABLE" | "PAYABLE",
+      periodSales: Number(row.period_sales) || 0,
+      periodPayments: Number(row.period_payments) || 0,
+      periodCreditsAdjustments: Number(row.period_credits_adjustments) || 0,
+      periodDebitsAdjustments: Number(row.period_debits_adjustments) || 0,
+      periodNetChange: Number(row.period_net_change) || 0,
+      closingBalance: Number(row.closing_balance) || 0,
+      closingBalanceType: row.closing_balance_type as "RECEIVABLE" | "PAYABLE",
+      closingDue: Number(row.closing_due) || 0,
+      closingAdvance: Number(row.closing_advance) || 0,
+    };
+  } catch (err) {
+    console.error("getCustomerPeriodBalanceStatement error:", err);
+    return null;
   }
 }
 
@@ -407,6 +541,9 @@ export async function getCustomerSummary(customerId: string): Promise<CustomerSu
         available_advance: Math.max(0, Number(s.available_advance) || 0),
         total_advance_received: Number(s.total_advance_received) || 0,
         total_advance_allocated: Number(s.total_advance_allocated) || 0,
+        opening_balance_amount: s.opening_balance_amount != null ? Number(s.opening_balance_amount) : 0,
+        opening_balance_type: s.opening_balance_type || null,
+        opening_balance_date: s.opening_balance_date || null,
         reconciliation_warning: s.reconciliation_warning || null,
         last_payment_date: s.last_payment_date,
         last_payment_amount: s.last_payment_amount ? Number(s.last_payment_amount) : null,

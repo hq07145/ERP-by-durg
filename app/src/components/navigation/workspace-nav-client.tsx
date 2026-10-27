@@ -32,6 +32,7 @@ import {
   Shield,
   FileSpreadsheet,
   Database,
+  Wallet,
   type LucideIcon,
 } from "lucide-react";
 import { NotificationBell } from "@/components/notifications/notification-bell";
@@ -187,6 +188,16 @@ export function WorkspaceNavClient({
             icon: Users,
             visible: permissions.canViewCustomers,
           },
+          ...(isAdminOrSuper
+            ? [
+                {
+                  name: "Opening Balances",
+                  href: "/customer-opening-balances",
+                  icon: Wallet,
+                  visible: true,
+                },
+              ]
+            : []),
           {
             name: "Orders",
             href: "/orders",

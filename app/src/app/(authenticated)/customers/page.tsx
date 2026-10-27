@@ -196,8 +196,17 @@ export default async function CustomersPage({
           </p>
         </div>
 
-        {canCreate && (
-          <div className="shrink-0">
+        <div className="flex items-center gap-2.5 shrink-0">
+          {canEdit && (
+            <Link
+              href="/customer-opening-balances"
+              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#E2E8F0] bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-700 shadow-2xs hover:bg-slate-50 transition-colors"
+            >
+              <Wallet className="w-4 h-4 text-teal-700" />
+              <span>Opening Balances</span>
+            </Link>
+          )}
+          {canCreate && (
             <Link
               href="/customers/new"
               className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#0F766E] px-4 py-2.5 text-sm font-semibold text-white shadow-xs transition-colors hover:bg-[#0D655E] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0F766E] focus-visible:ring-offset-2"
@@ -205,8 +214,8 @@ export default async function CustomersPage({
               <UserPlus className="w-4 h-4" />
               <span>New Customer</span>
             </Link>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* ============================================================== */}

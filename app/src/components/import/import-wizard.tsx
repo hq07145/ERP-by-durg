@@ -43,6 +43,7 @@ import {
   CreditCard,
   ShoppingBag,
   Receipt,
+  Wallet,
 } from "lucide-react";
 
 interface ImportWizardProps {
@@ -59,6 +60,7 @@ const MODULE_ICONS: Record<ImportModule, any> = {
   historical_payments: CreditCard,
   purchases: ShoppingBag,
   expenses: Receipt,
+  customer_opening_balances: Wallet,
 };
 
 export function ImportWizard({ onImportComplete }: ImportWizardProps) {

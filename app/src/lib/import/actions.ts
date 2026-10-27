@@ -1239,6 +1239,196 @@ export async function executeImportAction(payload: {
         break;
       }
 
+      // -------------------------------------------------------------
+      // 10. CUSTOMER OPENING BALANCES
+      // -------------------------------------------------------------
+      case "customer_opening_balances": {
+        // 1. Fetch all existing customers for this business to perform robust lookup
+        const { data: allCustomers, error: custFetchErr } = await supabase
+          .from("customers")
+          .select("id, name, company_name, phone")
+          .eq("business_id", businessId);
+
+        if (custFetchErr) {
+          throw new Error("Failed to load customer list for validation: " + custFetchErr.message);
+        }
+
+        const customerById = new Map<string, any>();
+        const customerByName = new Map<string, any>();
+        const customerByPhone = new Map<string, any>();
+
+        (allCustomers || []).forEach((c: any) => {
+          if (c.id) customerById.set(c.id.toLowerCase(), c);
+          if (c.name) customerByName.set(c.name.trim().toLowerCase(), c);
+          if (c.company_name) customerByName.set(c.company_name.trim().toLowerCase(), c);
+          if (c.phone) {
+            const cleanPhone = c.phone.trim().replace(/[^0-9]/g, "");
+            if (cleanPhone) customerByPhone.set(cleanPhone, c);
+          }
+        });
+
+        // 2. Fetch all existing opening balances for this business to detect duplicates against DB
+        const { data: existingBalances, error: balFetchErr } = await supabase
+          .from("customer_opening_balances")
+          .select("customer_id, as_on_date")
+          .eq("business_id", businessId);
+
+        if (balFetchErr) {
+          throw new Error("Failed to load existing opening balances for validation: " + balFetchErr.message);
+        }
+
+        const existingDbKeys = new Set<string>();
+        (existingBalances || []).forEach((b: any) => {
+          existingDbKeys.add(`${b.customer_id}:::${b.as_on_date}`);
+        });
+
+        // Set to track duplicate customer + date within the file
+        const seenInFile = new Set<string>();
+
+        for (const row of records) {
+          const rowNum = row._rowNumber || importedCount + failedErrors.length + 1;
+          const rawCustomerName = String(row.customer_name || "").trim();
+          const rawCustomerCode = String(row.customer_code || "").trim();
+          const identifier = rawCustomerCode || rawCustomerName || `Row #${rowNum}`;
+
+          try {
+            // Customer Identification
+            let matchedCustomer: any = null;
+
+            // Try by ID / UUID
+            if (rawCustomerCode) {
+              const codeClean = rawCustomerCode.toLowerCase();
+              if (customerById.has(codeClean)) {
+                matchedCustomer = customerById.get(codeClean);
+              }
+            }
+
+            // Try by Name or Company Name
+            if (!matchedCustomer && rawCustomerName) {
+              const nameClean = rawCustomerName.toLowerCase();
+              if (customerByName.has(nameClean)) {
+                matchedCustomer = customerByName.get(nameClean);
+              }
+            }
+
+            // Try by Code matching phone
+            if (!matchedCustomer && rawCustomerCode) {
+              const digits = rawCustomerCode.replace(/[^0-9]/g, "");
+              if (digits.length >= 7 && customerByPhone.has(digits)) {
+                matchedCustomer = customerByPhone.get(digits);
+              }
+            }
+
+            if (!matchedCustomer) {
+              addError(
+                rowNum,
+                identifier,
+                `Customer not found: "${rawCustomerCode || rawCustomerName}". Please specify a valid customer name or code.`,
+                row
+              );
+              continue;
+            }
+
+            // Amount Validation
+            const amount = parseFloat(String(row.amount ?? ""));
+            if (isNaN(amount) || amount <= 0) {
+              addError(
+                rowNum,
+                identifier,
+                `Opening Balance Amount must be a positive number greater than 0 (got "${row.amount}").`,
+                row
+              );
+              continue;
+            }
+
+            // Balance Type Validation
+            const rawType = String(row.balance_type || "").trim().toUpperCase();
+            let balanceType: "RECEIVABLE" | "PAYABLE" | null = null;
+            if (rawType === "RECEIVABLE" || rawType === "DR" || rawType === "DEBIT") {
+              balanceType = "RECEIVABLE";
+            } else if (rawType === "PAYABLE" || rawType === "CR" || rawType === "CREDIT" || rawType === "ADVANCE") {
+              balanceType = "PAYABLE";
+            } else {
+              addError(
+                rowNum,
+                identifier,
+                `Balance Type must be either 'Receivable' or 'Payable' (got "${row.balance_type}").`,
+                row
+              );
+              continue;
+            }
+
+            // Date Validation
+            const asOnDateStr = String(row.as_on_date || "").trim();
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(asOnDateStr) || isNaN(new Date(asOnDateStr).getTime())) {
+              addError(
+                rowNum,
+                identifier,
+                `As-on Date must be a valid date in YYYY-MM-DD format (got "${row.as_on_date}").`,
+                row
+              );
+              continue;
+            }
+
+            // Duplicate Check in File
+            const comboKey = `${matchedCustomer.id}:::${asOnDateStr}`;
+            if (seenInFile.has(comboKey)) {
+              addError(
+                rowNum,
+                identifier,
+                `Duplicate entry: File contains multiple records for customer "${matchedCustomer.name}" on date ${asOnDateStr}.`,
+                row
+              );
+              continue;
+            }
+            seenInFile.add(comboKey);
+
+            // Duplicate Check in Database
+            if (existingDbKeys.has(comboKey)) {
+              addError(
+                rowNum,
+                identifier,
+                `Duplicate entry: Opening balance already exists in database for customer "${matchedCustomer.name}" on date ${asOnDateStr}.`,
+                row
+              );
+              continue;
+            }
+
+            // Insert into customer_opening_balances (strictly isolated to business_id, never touches orders or payments)
+            const { error: insErr } = await supabase
+              .from("customer_opening_balances")
+              .insert({
+                business_id: businessId,
+                customer_id: matchedCustomer.id,
+                amount: Math.round(amount * 100) / 100,
+                balance_type: balanceType,
+                as_on_date: asOnDateStr,
+                notes: `Bulk imported from ${filename || "file"}`,
+                created_by: userId,
+              });
+
+            if (insErr) {
+              if (insErr.code === "23505") {
+                addError(
+                  rowNum,
+                  identifier,
+                  `Duplicate entry: Opening balance already recorded for customer "${matchedCustomer.name}" on date ${asOnDateStr}.`,
+                  row
+                );
+                continue;
+              }
+              throw insErr;
+            }
+
+            existingDbKeys.add(comboKey);
+            importedCount++;
+          } catch (err: any) {
+            addError(rowNum, identifier, err.message || "Failed to import opening balance", row);
+          }
+        }
+        break;
+      }
+
       default:
         throw new Error(`Unsupported module: ${module}`);
     }
