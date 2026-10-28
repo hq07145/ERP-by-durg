@@ -18,17 +18,7 @@ import type {
 } from "@/types/import";
 import { classifyImportRowsInternal } from "./classification";
 import { parseDateRobust, parseNumberRobust } from "./file-parser";
-
-function normalizeProductUnit(u?: string): "Piece" | "Bundle" | "Box" | "Kg" | "Meter" | "Set" {
-  if (!u) return "Piece";
-  const lower = u.trim().toLowerCase();
-  if (lower.startsWith("kg") || lower.startsWith("kilo")) return "Kg";
-  if (lower.startsWith("meter") || lower.startsWith("mtr") || lower === "m") return "Meter";
-  if (lower.startsWith("box")) return "Box";
-  if (lower.startsWith("bundle")) return "Bundle";
-  if (lower.startsWith("set")) return "Set";
-  return "Piece";
-}
+import { PRODUCT_UNITS, type ProductUnit, normalizeProductUnit } from "@/types/product";
 
 function normalizeRawMaterialUnit(u?: string): "kg" | "gram" | "litre" | "millilitre" | "meter" | "piece" | "bundle" | "box" | "set" {
   if (!u) return "kg";

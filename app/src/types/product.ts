@@ -1,6 +1,48 @@
-export const PRODUCT_UNITS = ["Piece", "Bundle", "Box", "Kg", "Meter", "Set"] as const;
+export const PRODUCT_UNITS = [
+  "BDL",
+  "PCS",
+  "KG",
+  "MTR",
+  "BOX",
+  "SET",
+  "PAIR",
+  "LTR",
+  "Piece",
+  "Bundle",
+  "Box",
+  "Kg",
+  "Meter",
+  "Set",
+] as const;
 
 export type ProductUnit = (typeof PRODUCT_UNITS)[number];
+
+export function normalizeProductUnit(u?: string): ProductUnit {
+  if (!u) return "PCS";
+  const clean = u.trim();
+  const upper = clean.toUpperCase();
+
+  if (upper === "BDL" || upper === "BUNDLE") return "BDL";
+  if (upper === "PCS" || upper === "PIECE" || upper === "PC" || upper === "NOS") return "PCS";
+  if (upper === "KG" || upper === "KILO" || upper === "KGS") return "KG";
+  if (upper === "MTR" || upper === "METER" || upper === "METRE" || upper === "M") return "MTR";
+  if (upper === "BOX" || upper === "BOXES") return "BOX";
+  if (upper === "SET" || upper === "SETS") return "SET";
+  if (upper === "PAIR" || upper === "PAIRS") return "PAIR";
+  if (upper === "LTR" || upper === "LITER" || upper === "LITRE" || upper === "L") return "LTR";
+
+  const matched = PRODUCT_UNITS.find((unit) => unit.toUpperCase() === upper);
+  if (matched) return matched;
+
+  return "PCS";
+}
+
+export function isValidProductUnit(u?: string): boolean {
+  if (!u) return false;
+  const upper = u.trim().toUpperCase();
+  return PRODUCT_UNITS.some((unit) => unit.toUpperCase() === upper);
+}
+
 export type CategoryStatus = "ACTIVE" | "INACTIVE";
 
 export interface ProductCategory {

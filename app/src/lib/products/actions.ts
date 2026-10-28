@@ -116,6 +116,13 @@ function validateProductValues(values: ProductFormValues): string | null {
   if (!values.name || values.name.length > 160) return "invalid_name";
   if (!values.sku || values.sku.length > 64) return "invalid_sku";
   if (values.description.length > 2000) return "invalid_description";
+  values.unit = (values.unit || "").trim() as any;
+  values.production_unit = (values.production_unit || "").trim() as any;
+  const matchedUnit = PRODUCT_UNITS.find((u) => u.toUpperCase() === values.unit.toUpperCase());
+  if (matchedUnit) values.unit = matchedUnit as any;
+  const matchedProdUnit = PRODUCT_UNITS.find((u) => u.toUpperCase() === values.production_unit.toUpperCase());
+  if (matchedProdUnit) values.production_unit = matchedProdUnit as any;
+
   if (!PRODUCT_UNITS.includes(values.unit as (typeof PRODUCT_UNITS)[number])) return "invalid_unit";
   if (!PRODUCT_UNITS.includes(values.production_unit as (typeof PRODUCT_UNITS)[number])) {
     return "invalid_production_unit";

@@ -313,8 +313,9 @@ export function validateMappedRows(
         }
         mappedRecord[field.key] = gstClean;
       } else if (field.type === "select" && field.options) {
-        const upperVal = valStr.toUpperCase();
-        const matched = field.options.find((opt) => opt.toUpperCase() === upperVal);
+        const cleanVal = valStr.trim();
+        const upperVal = cleanVal.toUpperCase();
+        const matched = field.options.find((opt) => opt.trim().toUpperCase() === upperVal);
         if (!matched) {
           rowErrors.push(
             `${field.label} must be one of: ${field.options.join(", ")} (got "${valStr}").`
