@@ -51,77 +51,7 @@ export default async function OrdersPage({
   const from = (page - 1) * PAGE_SIZE;
   const to = from + PAGE_SIZE - 1;
 
-  // 1. Fetch KPI Summary Counts and Create Order Form Dependencies
-  const [
-    statusRowsRes,
-    customersRes,
-    productsRes,
-    inventoryRowsRes,
-    settingsRes,
-    calRowsRes
-  ] = await Promise.all([
-    supabase
-      .from("orders")
-      .select("status")
-      .eq("business_id", context.user.business_id),
-    supabase
-      .from("customers")
-      .select("id, name, company_name, gst_number, customer_addresses(district, state, address_type)")
-      .eq("business_id", context.user.business_id)
-      .eq("status", "ACTIVE")
-      .order("name"),
-    supabase
-      .from("products")
-      .select("id, name, sku, quality_grade, unit, selling_price, tax_rate, daily_capacity, production_min_days, setup_minutes, delivery_min_days, delivery_max_days, variants:product_variants(id, name, sku, price, quality_grade, active)")
-      .eq("business_id", context.user.business_id)
-      .eq("active", true)
-      .order("name"),
-    supabase
-      .from("inventory")
-      .select("item_id, available_stock")
-      .eq("business_id", context.user.business_id)
-      .eq("item_type", "finished_good"),
-    supabase
-      .from("business_settings")
-      .select("key, value")
-      .eq("business_id", context.user.business_id)
-      .in("key", ["working_days", "business_details"]),
-    supabase
-      .from("business_calendar")
-      .select("calendar_date, is_working_day")
-      .eq("business_id", context.user.business_id),
-  ]);
-
-  let totalOrdersCount = 0;
-  let confirmedOrdersCount = 0;
-  let draftOrdersCount = 0;
-  (statusRowsRes.data ?? []).forEach((row: any) => {
-    totalOrdersCount++;
-    if (row.status === "CONFIRMED") confirmedOrdersCount++;
-    else if (row.status === "DRAFT") draftOrdersCount++;
-  });
-
-  const stockMap = new Map<string, number>();
-  (inventoryRowsRes.data ?? []).forEach((row: any) => {
-    stockMap.set(row.item_id, Number(row.available_stock) || 0);
-  });
-
-  const calMap: Record<string, boolean> = {};
-  (calRowsRes.data ?? []).forEach((r: any) => {
-    calMap[r.calendar_date] = Boolean(r.is_working_day);
-  });
-
-  const settingsMap: Record<string, any> = {};
-  (settingsRes.data ?? []).forEach((s: any) => {
-    settingsMap[s.key] = s.value;
-  });
-
-  const productsWithStock = (productsRes.data ?? []).map((p: any) => ({
-    ...p,
-    available_stock: stockMap.get(p.id) || 0,
-  }));
-
-  // 2. Build filtered and paginated query
+  // Build filtered and paginated orders query first so all queries run concurrently
   let query = supabase
     .from("orders")
     .select(
@@ -173,9 +103,79 @@ export default async function OrdersPage({
     query = query.order("order_date", { ascending: false }).order("created_at", { ascending: false });
   }
 
-  query = query.range(from, to);
+  // Fetch KPI Counts, dependencies, and paginated orders in ONE parallel batch
+  const [
+    statusRowsRes,
+    customersRes,
+    productsRes,
+    inventoryRowsRes,
+    settingsRes,
+    calRowsRes,
+    ordersRes
+  ] = await Promise.all([
+    supabase
+      .from("orders")
+      .select("status")
+      .eq("business_id", context.user.business_id),
+    supabase
+      .from("customers")
+      .select("id, name, company_name, gst_number, customer_addresses(district, state, address_type)")
+      .eq("business_id", context.user.business_id)
+      .eq("status", "ACTIVE")
+      .order("name"),
+    supabase
+      .from("products")
+      .select("id, name, sku, quality_grade, unit, selling_price, tax_rate, daily_capacity, production_min_days, setup_minutes, delivery_min_days, delivery_max_days, variants:product_variants(id, name, sku, price, quality_grade, active)")
+      .eq("business_id", context.user.business_id)
+      .eq("active", true)
+      .order("name"),
+    supabase
+      .from("inventory")
+      .select("item_id, available_stock")
+      .eq("business_id", context.user.business_id)
+      .eq("item_type", "finished_good"),
+    supabase
+      .from("business_settings")
+      .select("key, value")
+      .eq("business_id", context.user.business_id)
+      .in("key", ["working_days", "business_details"]),
+    supabase
+      .from("business_calendar")
+      .select("calendar_date, is_working_day")
+      .eq("business_id", context.user.business_id),
+    query.range(from, to),
+  ]);
 
-  const { data: orders, count, error } = await query;
+  let totalOrdersCount = 0;
+  let confirmedOrdersCount = 0;
+  let draftOrdersCount = 0;
+  (statusRowsRes.data ?? []).forEach((row: any) => {
+    totalOrdersCount++;
+    if (row.status === "CONFIRMED") confirmedOrdersCount++;
+    else if (row.status === "DRAFT") draftOrdersCount++;
+  });
+
+  const stockMap = new Map<string, number>();
+  (inventoryRowsRes.data ?? []).forEach((row: any) => {
+    stockMap.set(row.item_id, Number(row.available_stock) || 0);
+  });
+
+  const calMap: Record<string, boolean> = {};
+  (calRowsRes.data ?? []).forEach((r: any) => {
+    calMap[r.calendar_date] = Boolean(r.is_working_day);
+  });
+
+  const settingsMap: Record<string, any> = {};
+  (settingsRes.data ?? []).forEach((s: any) => {
+    settingsMap[s.key] = s.value;
+  });
+
+  const productsWithStock = (productsRes.data ?? []).map((p: any) => ({
+    ...p,
+    available_stock: stockMap.get(p.id) || 0,
+  }));
+
+  const { data: orders, count, error } = ordersRes;
 
   if (error) {
     console.error("Orders list query error:", error);

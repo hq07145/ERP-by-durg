@@ -111,29 +111,7 @@ export default async function CustomersPage({
   const canEdit = hasPermission({ permissions: context.permissions }, "customers.edit");
   const canDeactivate = hasPermission({ permissions: context.permissions }, "customers.delete");
 
-  // Fetch KPI Summary Counts in parallel (real counts)
-  const [totalRes, activeRes, inactiveRes] = await Promise.all([
-    supabase
-      .from("customers")
-      .select("*", { count: "exact", head: true })
-      .eq("business_id", context.user.business_id),
-    supabase
-      .from("customers")
-      .select("*", { count: "exact", head: true })
-      .eq("business_id", context.user.business_id)
-      .eq("status", "ACTIVE"),
-    supabase
-      .from("customers")
-      .select("*", { count: "exact", head: true })
-      .eq("business_id", context.user.business_id)
-      .eq("status", "INACTIVE"),
-  ]);
-
-  const totalCustomers = totalRes.count ?? 0;
-  const activeCustomers = activeRes.count ?? 0;
-  const inactiveCustomers = inactiveRes.count ?? 0;
-
-  // Filtered Paginated Query
+  // Build Filtered Paginated Query
   let query = supabase
     .from("customers")
     .select("*", { count: "exact" })
@@ -150,7 +128,21 @@ export default async function CustomersPage({
     query = query.eq("status", status);
   }
 
-  const { data, error, count } = await query;
+  // Fetch KPI status summary and paginated data in parallel (1 roundtrip instead of 4)
+  const [statusRes, dataRes] = await Promise.all([
+    supabase
+      .from("customers")
+      .select("status")
+      .eq("business_id", context.user.business_id),
+    query,
+  ]);
+
+  const statusRows = (statusRes.data ?? []) as { status: string }[];
+  const totalCustomers = statusRows.length;
+  const activeCustomers = statusRows.filter((r) => r.status === "ACTIVE").length;
+  const inactiveCustomers = totalCustomers - activeCustomers;
+
+  const { data, error, count } = dataRes;
   if (error) {
     return (
       <div className="rounded-xl border border-rose-200 bg-rose-50 p-6 text-rose-700">

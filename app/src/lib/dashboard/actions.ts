@@ -790,6 +790,25 @@ export async function getUpcomingDeliveries(
 // COMBINED FETCH - Get all dashboard data in one call
 // ============================================
 
+interface DashboardCacheEntry {
+  data: any;
+  expiresAt: number;
+}
+const dashboardCache = new Map<string, DashboardCacheEntry>();
+const DASHBOARD_CACHE_TTL_MS = 30 * 1000; // 30 seconds
+
+export function invalidateDashboardCache(businessId?: string) {
+  if (businessId) {
+    for (const key of dashboardCache.keys()) {
+      if (key.startsWith(`${businessId}:`)) {
+        dashboardCache.delete(key);
+      }
+    }
+  } else {
+    dashboardCache.clear();
+  }
+}
+
 export async function getDashboardData(
   filters: DashboardFilters,
   existingContext?: AuthContext | null
@@ -807,6 +826,14 @@ export async function getDashboardData(
 }> {
   try {
     const context = existingContext ?? (await getAuthContext());
+    const businessId = context?.user?.business_id ?? "default";
+    const cacheKey = `${businessId}:${filters.dateRange || "30d"}:${filters.customStartDate || ""}:${filters.customEndDate || ""}`;
+    const now = Date.now();
+    const cached = dashboardCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return cached.data;
+    }
+
     const supabase = await createServerSupabaseClient();
 
     const [
@@ -833,7 +860,7 @@ export async function getDashboardData(
       getUpcomingDeliveries(filters, 10, context, supabase),
     ]);
 
-    return {
+    const result = {
       summary:
         summaryResult.status === "fulfilled" && summaryResult.value
           ? summaryResult.value
@@ -850,6 +877,9 @@ export async function getDashboardData(
       upcomingDeliveries:
         upcomingDeliveriesResult.status === "fulfilled" ? upcomingDeliveriesResult.value : [],
     };
+
+    dashboardCache.set(cacheKey, { data: result, expiresAt: now + DASHBOARD_CACHE_TTL_MS });
+    return result;
   } catch (err) {
     console.error("getDashboardData top-level error:", err);
     return {

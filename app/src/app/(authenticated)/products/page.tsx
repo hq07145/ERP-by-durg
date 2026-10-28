@@ -66,7 +66,25 @@ export default async function ProductsPage({
   const page = Number.isSafeInteger(pageNumber) && pageNumber > 0 ? pageNumber : 1;
   const requestedCategory = params.category ?? "";
   const status = params.status === "active" || params.status === "inactive" ? params.status : "all";
-  const [{ data: categoryData, error: categoryError }, { data: businessData }] = await Promise.all([
+  const offset = (page - 1) * PAGE_SIZE;
+  let productQuery = supabase
+    .from("products")
+    .select("*", { count: "exact" })
+    .eq("business_id", context.user.business_id)
+    .order("name")
+    .range(offset, offset + PAGE_SIZE - 1);
+
+  if (search) productQuery = productQuery.or(`name.ilike.%${search}%,sku.ilike.%${search}%`);
+  if (requestedCategory) {
+    productQuery = productQuery.or(`category_id.eq.${requestedCategory},subcategory_id.eq.${requestedCategory}`);
+  }
+  if (status !== "all") productQuery = productQuery.eq("active", status === "active");
+
+  const [
+    { data: categoryData, error: categoryError },
+    { data: businessData },
+    { data: productData, error: productError, count },
+  ] = await Promise.all([
     supabase
       .from("categories")
       .select("id, business_id, parent_id, name, status, created_at, updated_at")
@@ -78,39 +96,15 @@ export default async function ProductsPage({
       .select("currency")
       .eq("id", context.user.business_id)
       .maybeSingle(),
+    productQuery,
   ]);
+
   if (categoryError) return <p className="text-sm text-[var(--signal)]">Categories could not be loaded.</p>;
+  if (productError) return <p className="text-sm text-[var(--signal)]">Products could not be loaded.</p>;
 
   const categories = (categoryData ?? []) as ProductCategory[];
-  const selectedCategory = categories.find((category) => category.id === requestedCategory);
-  const offset = (page - 1) * PAGE_SIZE;
-  let productQuery = supabase
-    .from("products")
-    .select("*", { count: "exact" })
-    .eq("business_id", context.user.business_id)
-    .order("name")
-    .range(offset, offset + PAGE_SIZE - 1);
-
-  if (search) productQuery = productQuery.or(`name.ilike.%${search}%,sku.ilike.%${search}%`);
-  if (selectedCategory) {
-    productQuery = selectedCategory.parent_id
-      ? productQuery.eq("subcategory_id", selectedCategory.id)
-      : productQuery.eq("category_id", selectedCategory.id);
-  }
-  if (status !== "all") productQuery = productQuery.eq("active", status === "active");
-
-  const [{ data: productData, error: productError, count }, { data: allCategoryData }] = await Promise.all([
-    productQuery,
-    supabase
-      .from("categories")
-      .select("id, business_id, parent_id, name, status, created_at, updated_at")
-      .eq("business_id", context.user.business_id)
-      .limit(500),
-  ]);
-
-  if (productError) return <p className="text-sm text-[var(--signal)]">Products could not be loaded.</p>;
+  const categoryMap = new Map(categories.map((category) => [category.id, category]));
   const products = (productData ?? []) as Product[];
-  const categoryMap = new Map(((allCategoryData ?? []) as ProductCategory[]).map((category) => [category.id, category]));
   const currency = (businessData as { currency?: string } | null)?.currency ?? "INR";
   const totalPages = Math.max(1, Math.ceil((count ?? 0) / PAGE_SIZE));
   const notice = params.notice ? messages[params.notice] : params.error ? messages[params.error] : null;

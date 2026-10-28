@@ -1,7 +1,16 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { getAuthContext, normalizeRoleKey } from "@/lib/auth/context";
+import { cookies } from "next/headers";
+import {
+  getAuthContext,
+  normalizeRoleKey,
+  fetchAuthContextForUser,
+  setCachedAuthContext,
+  invalidateAuthCache,
+  getRawAuthCookie,
+  extractUserIdFromCookie,
+} from "@/lib/auth/context";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 
@@ -78,26 +87,16 @@ export async function signInAction(formData: FormData): Promise<never> {
 
   if (error || !authData?.user) redirect("/login?error=invalid_credentials");
 
-  // Fast targeted profile check using authData.user.id (avoids redundant getUser() roundtrip)
-  const dbClient = admin || supabase;
-  const { data: userRecord } = await dbClient
-    .from("users")
-    .select("status, business:businesses(status), user_roles(role:roles(name))")
-    .eq("auth_user_id", authData.user.id)
-    .maybeSingle();
-
-  const business = Array.isArray(userRecord?.business) ? userRecord.business[0] : userRecord?.business;
-  if (!userRecord || userRecord.status !== "ACTIVE" || business?.status !== "ACTIVE") {
+  // Resolve unified context and pre-populate in-memory authCache so redirected page renders in 0ms
+  const context = await fetchAuthContextForUser(authData.user.id, supabase);
+  if (!context) {
     await supabase.auth.signOut();
     redirect("/login?error=account_unavailable");
   }
 
-  const userRoleRecord = (Array.isArray(userRecord.user_roles) ? userRecord.user_roles[0] : userRecord.user_roles) as any;
-  const rawRole = userRoleRecord?.role;
-  const roleName = (Array.isArray(rawRole) ? rawRole[0]?.name : rawRole?.name) ?? "";
-  const roleKey = normalizeRoleKey(roleName);
+  setCachedAuthContext(authData.user.id, context);
 
-  if (roleKey === "manager") {
+  if (context.roleKey === "manager") {
     redirect("/manager/dashboard");
   }
 
@@ -134,10 +133,45 @@ export async function updatePasswordAction(formData: FormData): Promise<never> {
 }
 
 export async function signOutAction(): Promise<never> {
-  const context = await getAuthContext();
-  const isManager = context?.roleKey === "manager";
-  const supabase = await createServerSupabaseClient();
-  await supabase?.auth.signOut();
+  let isManager = false;
+  try {
+    const cookieStore = await cookies();
+    const allCookies = cookieStore.getAll();
+    const rawCookie = getRawAuthCookie(allCookies);
+    const cookieUser = rawCookie ? extractUserIdFromCookie(rawCookie) : null;
+    if (cookieUser) {
+      invalidateAuthCache(cookieUser.userId);
+    } else {
+      invalidateAuthCache();
+    }
+
+    try {
+      const current = await getAuthContext();
+      isManager = current?.roleKey === "manager";
+    } catch {
+      // Ignore
+    }
+
+    // Immediately remove auth cookies so session is destroyed locally in 0ms
+    for (const c of allCookies) {
+      if (c.name.startsWith("sb-") && c.name.includes("auth-token")) {
+        cookieStore.delete(c.name);
+      }
+    }
+  } catch (err) {
+    console.error("SignOut error:", err);
+  }
+
+  // Non-blocking background session revoke
+  try {
+    const supabase = await createServerSupabaseClient();
+    if (supabase) {
+      void supabase.auth.signOut().catch(() => {});
+    }
+  } catch {
+    // Non-blocking
+  }
+
   if (isManager) {
     redirect("/manager/login?notice=signed_out");
   }
@@ -270,34 +304,14 @@ export async function managerSignInAction(formData: FormData): Promise<never> {
     redirect("/manager/login?error=invalid_credentials");
   }
 
-  // Post-auth profile lookup using admin client to prevent RLS filtering
-  const profileAdmin = admin || supabase;
-  const { data: userProfile } = await profileAdmin
-    .from("users")
-    .select("id, status, business_id")
-    .eq("auth_user_id", authData.user.id)
-    .maybeSingle();
-
-  if (!userProfile) {
-    await supabase.auth.signOut();
-    redirect("/manager/login?error=account_unavailable");
-  }
-
-  if (userProfile.status === "SUSPENDED") {
-    await supabase.auth.signOut();
-    redirect("/manager/login?error=suspended_account");
-  }
-
-  if (userProfile.status !== "ACTIVE") {
-    await supabase.auth.signOut();
-    redirect("/manager/login?error=account_unavailable");
-  }
-
-  const context = await getAuthContext();
+  // Fast single-roundtrip context resolution and auth cache pre-seeding
+  const context = await fetchAuthContextForUser(authData.user.id, supabase);
   if (!context) {
     await supabase.auth.signOut();
     redirect("/manager/login?error=account_unavailable");
   }
+
+  setCachedAuthContext(authData.user.id, context);
 
   // Enforce role separation: Deny access if user is not a Manager
   const roleNameLower = context.role?.name?.toLowerCase() ?? "";
@@ -312,7 +326,34 @@ export async function managerSignInAction(formData: FormData): Promise<never> {
 }
 
 export async function managerSignOutAction(): Promise<never> {
-  const supabase = await createServerSupabaseClient();
-  await supabase?.auth.signOut();
+  try {
+    const cookieStore = await cookies();
+    const allCookies = cookieStore.getAll();
+    const rawCookie = getRawAuthCookie(allCookies);
+    const cookieUser = rawCookie ? extractUserIdFromCookie(rawCookie) : null;
+    if (cookieUser) {
+      invalidateAuthCache(cookieUser.userId);
+    } else {
+      invalidateAuthCache();
+    }
+
+    for (const c of allCookies) {
+      if (c.name.startsWith("sb-") && c.name.includes("auth-token")) {
+        cookieStore.delete(c.name);
+      }
+    }
+  } catch (err) {
+    console.error("Manager signOut error:", err);
+  }
+
+  try {
+    const supabase = await createServerSupabaseClient();
+    if (supabase) {
+      void supabase.auth.signOut().catch(() => {});
+    }
+  } catch {
+    // Non-blocking
+  }
+
   redirect("/manager/login?notice=signed_out");
 }

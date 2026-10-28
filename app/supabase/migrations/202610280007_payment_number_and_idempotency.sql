@@ -186,8 +186,8 @@ DECLARE
   v_clean_txn TEXT;
   v_clean_idemp TEXT;
   v_clean_method TEXT;
-  v_matched_pay RECORD;
   v_existing_idemp RECORD;
+  v_matched_prior_number TEXT := NULL;
   v_year INT;
 BEGIN
   -- Permission check
@@ -276,30 +276,34 @@ BEGIN
 
   -- Duplicate Detection 1: External Transaction ID check
   IF v_clean_txn IS NOT NULL THEN
-    SELECT * INTO v_matched_pay
+    SELECT payment_number INTO v_matched_prior_number
     FROM public.payments
     WHERE business_id = p_business_id 
       AND transaction_id = v_clean_txn
-      AND status IN ('SUCCESS', 'PENDING');
+      AND status IN ('SUCCESS', 'PENDING')
+    LIMIT 1;
 
-    IF FOUND THEN
+    IF v_matched_prior_number IS NOT NULL THEN
       RAISE EXCEPTION 'DUPLICATE_TRANSACTION: External Transaction ID "%" has already been recorded for payment %',
-        v_clean_txn, v_matched_pay.payment_number USING ERRCODE = '23505';
+        v_clean_txn, v_matched_prior_number USING ERRCODE = '23505';
     END IF;
   END IF;
 
   -- Duplicate Detection 2: Electronic Bank UTR / Reference check
   -- CASH payments or empty references are never blocked as duplicate UTRs
-  IF v_clean_method <> 'CASH' AND v_clean_ref IS NOT NULL AND NOT p_allow_duplicate_reference THEN
-    SELECT * INTO v_matched_pay
+  IF v_clean_method <> 'CASH' AND v_clean_ref IS NOT NULL THEN
+    SELECT payment_number INTO v_matched_prior_number
     FROM public.payments
     WHERE business_id = p_business_id 
       AND (utr_number = v_clean_ref OR reference = v_clean_ref)
-      AND status IN ('SUCCESS', 'PENDING');
+      AND status IN ('SUCCESS', 'PENDING')
+    LIMIT 1;
 
-    IF FOUND THEN
-      RAISE EXCEPTION 'DUPLICATE_REFERENCE: Bank UTR/Reference "%" has already been recorded for payment % on %',
-        v_clean_ref, v_matched_pay.payment_number, v_matched_pay.payment_date USING ERRCODE = '23505';
+    IF v_matched_prior_number IS NOT NULL THEN
+      IF NOT p_allow_duplicate_reference THEN
+        RAISE EXCEPTION 'DUPLICATE_REFERENCE: Bank UTR/Reference "%" has already been recorded for payment %',
+          v_clean_ref, v_matched_prior_number USING ERRCODE = '23505';
+      END IF;
     END IF;
   END IF;
 
@@ -373,7 +377,7 @@ BEGIN
     )
   );
 
-  IF p_allow_duplicate_reference AND v_matched_pay.payment_number IS NOT NULL THEN
+  IF p_allow_duplicate_reference AND v_matched_prior_number IS NOT NULL THEN
     INSERT INTO public.audit_logs (
       business_id, user_id, action, entity_type, entity_id, new_data
     ) VALUES (
@@ -381,7 +385,7 @@ BEGIN
       jsonb_build_object(
         'payment_number', v_payment_number,
         'reference', v_clean_ref,
-        'matched_prior_payment', v_matched_pay.payment_number
+        'matched_prior_payment', v_matched_prior_number
       )
     );
   END IF;

@@ -169,54 +169,46 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
 
   // Compute filtered ledger entries & dynamic running balance
   const displayData = useMemo(() => {
+    // 1. Determine opening balance base
+    let opBal = 0;
+    let opType: "RECEIVABLE" | "PAYABLE" | "NONE" = "NONE";
+    let signedOp = 0;
+    let openingDate: string | null = null;
+
     if (!startDate && !endDate) {
-      // All time view
-      const totalDebit = ledgerEntries.reduce((sum, e) => sum + Number(e.debit || 0), 0);
-      const totalCredit = ledgerEntries.reduce((sum, e) => sum + Number(e.credit || 0), 0);
-      const finalBal = ledgerEntries.length > 0 ? Number(ledgerEntries[0].balance || 0) : 0;
-
-      return {
-        entries: ledgerEntries,
-        openingBalance: baseCobEntry ? Number(baseCobEntry.balance || 0) : 0,
-        openingBalanceType: baseCobEntry
-          ? Number(baseCobEntry.balance || 0) >= 0
-            ? "RECEIVABLE"
-            : "PAYABLE"
-          : "NONE",
-        openingDate: baseCobEntry?.entry_date || null,
-        periodSales: Number(customer.total_purchases || 0),
-        periodPayments: Number(customer.total_paid || 0),
-        totalDebit,
-        totalCredit,
-        closingBalance: finalBal,
-        closingDue: Math.max(0, finalBal),
-        closingAdvance: Math.max(0, -finalBal),
-      };
-    }
-
-    // Filtered period view
-    const isFiltered = Boolean(startDate);
-    let opBal = periodStatement ? periodStatement.openingBalance : 0;
-    const opType = periodStatement ? periodStatement.openingBalanceType : "RECEIVABLE";
-    let signedOp = opType === "RECEIVABLE" ? Math.abs(opBal) : -Math.abs(opBal);
-
-    // If server RPC period statement wasn't loaded yet, calculate client-side pre-cutoff
-    if (!periodStatement && startDate) {
-      let preDebit = 0;
-      let preCredit = 0;
-      for (const e of ledgerEntries) {
-        if (e.entry_type === "OPENING_BALANCE") continue;
-        if (e.entry_date < startDate) {
-          preDebit += Number(e.debit || 0);
-          preCredit += Number(e.credit || 0);
-        }
+      // All time view: base opening balance if configured
+      if (baseCobEntry) {
+        signedOp = Number(baseCobEntry.balance || 0);
+        opBal = Math.abs(signedOp);
+        opType = signedOp >= 0 ? "RECEIVABLE" : "PAYABLE";
+        openingDate = baseCobEntry.entry_date;
       }
-      const baseOb = baseCobEntry ? Number(baseCobEntry.balance || 0) : 0;
-      signedOp = baseOb + preDebit - preCredit;
-      opBal = Math.abs(signedOp);
+    } else {
+      // Filtered period view
+      if (periodStatement) {
+        opBal = periodStatement.openingBalance;
+        opType = periodStatement.openingBalanceType;
+        signedOp = opType === "RECEIVABLE" ? Math.abs(opBal) : -Math.abs(opBal);
+        openingDate = startDate || null;
+      } else if (startDate) {
+        let preDebit = 0;
+        let preCredit = 0;
+        for (const e of ledgerEntries) {
+          if (e.entry_type === "OPENING_BALANCE") continue;
+          if (e.entry_date < startDate) {
+            preDebit += Number(e.debit || 0);
+            preCredit += Number(e.credit || 0);
+          }
+        }
+        const baseOb = baseCobEntry ? Number(baseCobEntry.balance || 0) : 0;
+        signedOp = baseOb + preDebit - preCredit;
+        opBal = Math.abs(signedOp);
+        opType = signedOp >= 0 ? "RECEIVABLE" : "PAYABLE";
+        openingDate = startDate;
+      }
     }
 
-    // Filter transactions within [startDate, endDate]
+    // 2. Filter transactions (excluding opening balance entry itself)
     const filteredTx = ledgerEntries.filter((e) => {
       if (e.entry_type === "OPENING_BALANCE") return false;
       if (startDate && e.entry_date < startDate) return false;
@@ -224,13 +216,16 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
       return true;
     });
 
-    // Chronological order (oldest first) to compute running balance forward
+    // 3. Chronological order (oldest first) with stable secondary & tertiary sort keys
     const chronological = [...filteredTx].sort((a, b) => {
-      const cmp = new Date(a.entry_date).getTime() - new Date(b.entry_date).getTime();
-      if (cmp !== 0) return cmp;
-      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      const cmpDate = new Date(a.entry_date).getTime() - new Date(b.entry_date).getTime();
+      if (cmpDate !== 0) return cmpDate;
+      const cmpCreated = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      if (cmpCreated !== 0) return cmpCreated;
+      return (a.id || "").localeCompare(b.id || "");
     });
 
+    // 4. Calculate chronological running balance forward
     let running = signedOp;
     let periodSales = 0;
     let periodPayments = 0;
@@ -245,30 +240,38 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
       if (e.entry_type === "INVOICE") periodSales += d;
       if (e.entry_type === "PAYMENT") periodPayments += c;
 
-      running = running + d - c;
+      running = Math.round((running + d - c) * 100) / 100;
       return {
         ...e,
-        balance: Math.round(running * 100) / 100,
+        balance: running,
       };
     });
 
-    // Sort descending for display (most recent first)
+    // 5. Stable newest-first display (preserves chronologically calculated row balances)
     const displayEntries = [...entriesWithRunning].reverse();
 
     const closingBalance = Math.round(running * 100) / 100;
     const closingDue = closingBalance > 0 ? closingBalance : 0;
     const closingAdvance = closingBalance < 0 ? Math.abs(closingBalance) : 0;
 
+    const finalSales = (!startDate && !endDate)
+      ? Math.max(periodSales, Number(customer.total_purchases || 0))
+      : (periodStatement ? periodStatement.periodSales : periodSales);
+
+    const finalPayments = (!startDate && !endDate)
+      ? Math.max(periodPayments, Number(customer.total_paid || 0))
+      : (periodStatement ? periodStatement.periodPayments : periodPayments);
+
     return {
       entries: displayEntries,
       openingBalance: opBal,
-      openingBalanceType: signedOp >= 0 ? "RECEIVABLE" : "PAYABLE",
-      openingDate: startDate,
-      periodSales: periodStatement ? periodStatement.periodSales : periodSales,
-      periodPayments: periodStatement ? periodStatement.periodPayments : periodPayments,
+      openingBalanceType: opType,
+      openingDate,
+      periodSales: finalSales,
+      periodPayments: finalPayments,
       totalDebit,
       totalCredit,
-      closingBalance,
+      closingBalance: periodStatement ? periodStatement.closingBalance : closingBalance,
       closingDue: periodStatement ? periodStatement.closingDue : closingDue,
       closingAdvance: periodStatement ? periodStatement.closingAdvance : closingAdvance,
     };
@@ -683,6 +686,20 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
                           >
                             {entry.payment_number}
                           </a>
+                        ) : entry.entry_type === "PAYMENT" ? (
+                          <span
+                            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-amber-50 text-amber-800 border border-amber-200"
+                            title="Legitimate legacy payment record preserved in ledger"
+                          >
+                            LEGACY-PAY
+                          </span>
+                        ) : entry.entry_type === "INVOICE" ? (
+                          <span
+                            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-amber-50 text-amber-800 border border-amber-200"
+                            title="Legitimate legacy invoice record preserved in ledger"
+                          >
+                            LEGACY-INV
+                          </span>
                         ) : (
                           <span className="text-gray-400">—</span>
                         )}

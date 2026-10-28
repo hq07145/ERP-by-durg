@@ -432,11 +432,13 @@ export async function getCustomerLedger(
     };
 
     // Calculate dynamic running balances strictly starting from opening balance
-    // Sort chronological (oldest first) to compute running balance forward
+    // Sort chronological (oldest first) to compute running balance forward with deterministic secondary & tertiary keys
     const chronological = [...rawEntries].sort((a, b) => {
       const cmp = new Date(a.entry_date).getTime() - new Date(b.entry_date).getTime();
       if (cmp !== 0) return cmp;
-      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      const cmpCreated = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      if (cmpCreated !== 0) return cmpCreated;
+      return (a.id || "").localeCompare(b.id || "");
     });
 
     let running = signedOb;
@@ -457,7 +459,9 @@ export async function getCustomerLedger(
       if (cmp !== 0) return cmp;
       if (a.entry_type === "OPENING_BALANCE") return 1;
       if (b.entry_type === "OPENING_BALANCE") return -1;
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      const cmpCreated = new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      if (cmpCreated !== 0) return cmpCreated;
+      return (b.id || "").localeCompare(a.id || "");
     });
 
     return combined;
@@ -582,7 +586,7 @@ export async function getCustomerSummary(customerId: string): Promise<CustomerSu
     ] = await Promise.all([
       supabase
         .from("customer_ledger")
-        .select("entry_type, debit, credit, entry_date")
+        .select("entry_type, debit, credit, entry_date, payment_id")
         .eq("customer_id", customerId)
         .eq("business_id", context.user.business_id),
       getCustomerAdvanceBalance(customerId),
@@ -612,10 +616,14 @@ export async function getCustomerSummary(customerId: string): Promise<CustomerSu
     const total_purchases = Math.max(ledgerPurchases, ordersTotal);
 
     const clearedPayments = payments ?? [];
-    const total_paid = clearedPayments.reduce(
+    const paymentsSum = clearedPayments.reduce(
       (sum, p) => sum + (Number(p.amount) || 0),
       0
     );
+    const unlinkedLedgerPayments = entries
+      .filter((e) => e.entry_type === "PAYMENT" && !e.payment_id)
+      .reduce((sum, e) => sum + (Number(e.credit) || 0), 0);
+    const total_paid = paymentsSum + unlinkedLedgerPayments;
 
     const total_due = (activeOrders ?? []).reduce(
       (sum, o) => sum + Math.max(0, Number(o.due_amount) || 0),
