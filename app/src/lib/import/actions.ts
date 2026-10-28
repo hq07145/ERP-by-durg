@@ -1,8 +1,10 @@
 "use server";
 
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/auth/context";
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import type {
   ImportModule,
   ImportJobRecord,
@@ -15,6 +17,7 @@ import type {
   RetryImportResponse,
 } from "@/types/import";
 import { classifyImportRowsInternal } from "./classification";
+import { parseDateRobust, parseNumberRobust } from "./file-parser";
 
 function normalizeProductUnit(u?: string): "Piece" | "Bundle" | "Box" | "Kg" | "Meter" | "Set" {
   if (!u) return "Piece";
@@ -25,6 +28,21 @@ function normalizeProductUnit(u?: string): "Piece" | "Bundle" | "Box" | "Kg" | "
   if (lower.startsWith("bundle")) return "Bundle";
   if (lower.startsWith("set")) return "Set";
   return "Piece";
+}
+
+function normalizeRawMaterialUnit(u?: string): "kg" | "gram" | "litre" | "millilitre" | "meter" | "piece" | "bundle" | "box" | "set" {
+  if (!u) return "kg";
+  const lower = u.trim().toLowerCase();
+  if (lower.startsWith("kg") || lower.startsWith("kilo")) return "kg";
+  if (lower.startsWith("gram") || lower === "gm" || lower === "g") return "gram";
+  if (lower.startsWith("litre") || lower.startsWith("liter") || lower === "l" || lower === "ltr") return "litre";
+  if (lower.startsWith("milli") || lower === "ml") return "millilitre";
+  if (lower.startsWith("meter") || lower.startsWith("mtr") || lower === "m") return "meter";
+  if (lower.startsWith("piece") || lower.startsWith("pc") || lower === "nos") return "piece";
+  if (lower.startsWith("bundle")) return "bundle";
+  if (lower.startsWith("box")) return "box";
+  if (lower.startsWith("set")) return "set";
+  return "kg";
 }
 
 function normalizePaymentMethod(method?: string): "CASH" | "BANK_TRANSFER" | "CHEQUE" | "UPI" | "CARD" | "OTHER" {
@@ -54,7 +72,10 @@ async function requireAdminAuth() {
   const supabase = await createServerSupabaseClient();
   if (!supabase) throw new Error("Supabase client is not available.");
 
-  return { context, supabase };
+  const adminClient = createAdminSupabaseClient();
+  const db = adminClient || supabase;
+
+  return { context, supabase, db };
 }
 
 /**
@@ -196,9 +217,9 @@ export async function classifyImportAction(payload: {
   module: ImportModule;
   records: any[];
 }): Promise<ImportClassificationResult> {
-  const { context, supabase } = await requireAdminAuth();
+  const { context, db } = await requireAdminAuth();
   const businessId = context.user.business_id;
-  return await classifyImportRowsInternal(supabase, businessId, payload.module, payload.records);
+  return await classifyImportRowsInternal(db, businessId, payload.module, payload.records);
 }
 
 /**
@@ -220,6 +241,25 @@ async function processModuleImportRows(
     // 1. CUSTOMERS
     // -------------------------------------------------------------
     case "customers": {
+      const { data: dbCustomers } = await supabase
+        .from("customers")
+        .select("id, name, phone, customer_addresses(id)")
+        .eq("business_id", businessId);
+
+      const phoneMap = new Map<string, { id: string; addressId: string | null }>();
+      const nameMap = new Map<string, { id: string; addressId: string | null }>();
+
+      (dbCustomers || []).forEach((c: any) => {
+        const addrId = (c as any).customer_addresses?.[0]?.id || null;
+        if (c.phone) {
+          const digits = c.phone.replace(/[^0-9]/g, "");
+          if (digits.length >= 7) phoneMap.set(digits.slice(-10), { id: c.id, addressId: addrId });
+        }
+        if (c.name) {
+          nameMap.set(c.name.trim().toLowerCase(), { id: c.id, addressId: addrId });
+        }
+      });
+
       for (const row of records) {
         const rowNum = row._rowNumber || importedCount + 1;
         try {
@@ -234,71 +274,115 @@ async function processModuleImportRows(
           let existingAddressId: string | null = null;
 
           if (row.phone) {
-            const { data: byPhone } = await supabase
-              .from("customers")
-              .select("id, customer_addresses(id)")
-              .eq("business_id", businessId)
-              .eq("phone", String(row.phone).trim())
-              .limit(1)
-              .maybeSingle();
-            if (byPhone) {
-              existingCustomerId = byPhone.id;
-              existingAddressId = (byPhone as any).customer_addresses?.[0]?.id || null;
+            const rawPhoneDigits = String(row.phone).replace(/[^0-9]/g, "");
+            if (rawPhoneDigits.length >= 7) {
+              const match = phoneMap.get(rawPhoneDigits.slice(-10));
+              if (match) {
+                existingCustomerId = match.id;
+                existingAddressId = match.addressId;
+              }
             }
           }
 
           if (!existingCustomerId) {
-            const { data: byName } = await supabase
-              .from("customers")
-              .select("id, customer_addresses(id)")
-              .eq("business_id", businessId)
-              .ilike("name", name)
-              .limit(1)
-              .maybeSingle();
-            if (byName) {
-              existingCustomerId = byName.id;
-              existingAddressId = (byName as any).customer_addresses?.[0]?.id || null;
+            const match = nameMap.get(name.toLowerCase());
+            if (match) {
+              existingCustomerId = match.id;
+              existingAddressId = match.addressId;
             }
           }
 
+          const creditLimitVal = parseNumberRobust(row.credit_limit) ?? 0;
+
           if (existingCustomerId) {
-            const { error: updErr } = await supabase.rpc("update_customer_with_address", {
-              target_business_id: businessId,
-              target_customer_id: existingCustomerId,
-              target_address_id: existingAddressId,
-              target_name: name,
-              target_company_name: row.company_name || null,
-              target_phone: row.phone || null,
-              target_email: row.email || null,
-              target_gst_number: row.gst_number || null,
-              target_payment_terms: row.payment_terms || null,
-              target_credit_limit: String(row.credit_limit || "0"),
-              target_address: row.address || null,
-              target_city: row.city || null,
-              target_state: row.state || null,
-              target_postal_code: row.postal_code || null,
-              target_district: row.district || null,
-            });
+            const { error: updErr } = await supabase
+              .from("customers")
+              .update({
+                name,
+                company_name: row.company_name || null,
+                phone: row.phone || null,
+                email: row.email ? String(row.email).toLowerCase().trim() : null,
+                gst_number: row.gst_number ? String(row.gst_number).toUpperCase().trim() : null,
+                payment_terms: row.payment_terms || null,
+                credit_limit: creditLimitVal,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", existingCustomerId);
             if (updErr) throw updErr;
+
+            if (existingAddressId) {
+              await supabase
+                .from("customer_addresses")
+                .update({
+                  address: row.address || null,
+                  city: row.city || null,
+                  state: row.state || null,
+                  postal_code: row.postal_code || null,
+                  district: row.district || null,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("id", existingAddressId);
+            } else if (row.address || row.city || row.state || row.postal_code || row.district) {
+              const { data: newAddr } = await supabase
+                .from("customer_addresses")
+                .insert({
+                  customer_id: existingCustomerId,
+                  address_type: "PRIMARY",
+                  address: row.address || null,
+                  city: row.city || null,
+                  state: row.state || null,
+                  postal_code: row.postal_code || null,
+                  district: row.district || null,
+                })
+                .select("id")
+                .single();
+              if (newAddr) existingAddressId = newAddr.id;
+            }
             await markRowSuccess(supabase, jobId, rowNum, existingCustomerId);
           } else {
-            const { data: newCustId, error: insErr } = await supabase.rpc("create_customer_with_address", {
-              target_business_id: businessId,
-              target_name: name,
-              target_company_name: row.company_name || null,
-              target_phone: row.phone || null,
-              target_email: row.email || null,
-              target_gst_number: row.gst_number || null,
-              target_payment_terms: row.payment_terms || null,
-              target_credit_limit: String(row.credit_limit || "0"),
-              target_address: row.address || null,
-              target_city: row.city || null,
-              target_state: row.state || null,
-              target_postal_code: row.postal_code || null,
-              target_district: row.district || null,
-            });
+            const { data: newCust, error: insErr } = await supabase
+              .from("customers")
+              .insert({
+                business_id: businessId,
+                name,
+                company_name: row.company_name || null,
+                phone: row.phone || null,
+                email: row.email ? String(row.email).toLowerCase().trim() : null,
+                gst_number: row.gst_number ? String(row.gst_number).toUpperCase().trim() : null,
+                payment_terms: row.payment_terms || "NET_30",
+                credit_limit: creditLimitVal,
+                status: "ACTIVE",
+              })
+              .select("id")
+              .single();
             if (insErr) throw insErr;
-            await markRowSuccess(supabase, jobId, rowNum, newCustId);
+            existingCustomerId = newCust.id;
+
+            if (row.address || row.city || row.state || row.postal_code || row.district) {
+              const { data: newAddr } = await supabase
+                .from("customer_addresses")
+                .insert({
+                  customer_id: newCust.id,
+                  address_type: "PRIMARY",
+                  address: row.address || null,
+                  city: row.city || null,
+                  state: row.state || null,
+                  postal_code: row.postal_code || null,
+                  district: row.district || null,
+                })
+                .select("id")
+                .single();
+              if (newAddr) existingAddressId = newAddr.id;
+            }
+            await markRowSuccess(supabase, jobId, rowNum, newCust.id);
+          }
+
+          if (existingCustomerId) {
+            nameMap.set(name.toLowerCase(), { id: existingCustomerId, addressId: existingAddressId });
+            if (row.phone) {
+              const digits = String(row.phone).replace(/[^0-9]/g, "");
+              if (digits.length >= 7) phoneMap.set(digits.slice(-10), { id: existingCustomerId, addressId: existingAddressId });
+            }
           }
           importedCount++;
         } catch (err: any) {
@@ -418,10 +502,10 @@ async function processModuleImportRows(
             }
           }
 
-          const sellingPrice = parseFloat(String(row.selling_price || 0));
-          const taxRate = parseFloat(String(row.tax_rate ?? 18));
-          const minStock = parseInt(String(row.min_stock || 0), 10);
-          const dailyCapacity = parseInt(String(row.daily_capacity || 100), 10);
+          const sellingPrice = parseNumberRobust(row.selling_price) ?? 0;
+          const taxRate = parseNumberRobust(row.tax_rate) ?? 18;
+          const minStock = parseNumberRobust(row.min_stock) ?? 0;
+          const dailyCapacity = parseNumberRobust(row.daily_capacity) ?? 100;
 
           const { data: existingProduct } = await supabase
             .from("products")
@@ -431,9 +515,8 @@ async function processModuleImportRows(
             .maybeSingle();
 
           const parseQty = (val: any) => {
-            if (val === null || val === undefined || String(val).trim() === "") return 0;
-            const n = parseFloat(String(val).replace(/[^0-9.-]/g, ""));
-            return isNaN(n) ? 0 : Math.max(0, n);
+            const n = parseNumberRobust(val);
+            return n === null ? 0 : Math.max(0, n);
           };
 
           const resolveQualityData = () => {
@@ -579,7 +662,7 @@ async function processModuleImportRows(
             continue;
           }
 
-          const qty = parseFloat(String(row.quantity || 0));
+          const qty = parseNumberRobust(row.quantity) ?? 0;
           if (qty <= 0) {
             addError(rowNum, row.sku, "Opening quantity must be greater than 0", row);
             await markRowFailed(supabase, jobId, rowNum, "Opening quantity must be greater than 0");
@@ -625,6 +708,7 @@ async function processModuleImportRows(
             inventoryId = newInv.id;
           }
 
+          const parsedDate = parseDateRobust(row.date);
           await supabase.from("inventory_transactions").insert({
             business_id: businessId,
             item_type: "finished_good",
@@ -635,7 +719,7 @@ async function processModuleImportRows(
             reference_id: inventoryId || null,
             notes: `Opening stock import: ${row.reference || "Opening Balance"} ${row.notes || ""}`.trim(),
             created_by: userId,
-            created_at: row.date ? new Date(row.date).toISOString() : new Date().toISOString(),
+            created_at: parsedDate ? new Date(parsedDate).toISOString() : new Date().toISOString(),
           });
 
           await markRowSuccess(supabase, jobId, rowNum, inventoryId);
@@ -677,9 +761,12 @@ async function processModuleImportRows(
               .insert({
                 business_id: businessId,
                 name,
-                unit: row.unit || "KG",
-                unit_cost: parseFloat(String(row.unit_cost || 0)),
-                min_stock: parseFloat(String(row.min_stock || 0)),
+                unit: normalizeRawMaterialUnit(row.unit),
+                purchase_price: parseNumberRobust(row.unit_cost) ?? 0,
+                min_stock: parseNumberRobust(row.min_stock) ?? 0,
+                current_stock: 0,
+                reorder_level: parseNumberRobust(row.min_stock) ?? 0,
+                status: "ACTIVE",
               })
               .select("id")
               .single();
@@ -688,7 +775,7 @@ async function processModuleImportRows(
             materialMap.set(name.toLowerCase(), newMat.id);
           }
 
-          const qty = parseFloat(String(row.quantity || 0));
+          const qty = parseNumberRobust(row.quantity) ?? 0;
           if (qty <= 0) {
             addError(rowNum, name, "Quantity must be greater than 0", row);
             await markRowFailed(supabase, jobId, rowNum, "Quantity must be greater than 0");
@@ -775,17 +862,15 @@ async function processModuleImportRows(
 
       const customerMap = new Map<string, { id: string; state?: string; district?: string }>();
       customers?.forEach((c: any) => {
-        customerMap.set(c.name.trim().toLowerCase(), {
+        const info = {
           id: c.id,
           state: (c as any).customer_addresses?.[0]?.state,
           district: (c as any).customer_addresses?.[0]?.district,
-        });
+        };
+        if (c.name) customerMap.set(c.name.trim().toLowerCase(), info);
         if (c.phone) {
-          customerMap.set(c.phone.trim(), {
-            id: c.id,
-            state: (c as any).customer_addresses?.[0]?.state,
-            district: (c as any).customer_addresses?.[0]?.district,
-          });
+          const digits = c.phone.replace(/[^0-9]/g, "");
+          if (digits.length >= 7) customerMap.set(digits.slice(-10), info);
         }
       });
 
@@ -817,26 +902,28 @@ async function processModuleImportRows(
             continue;
           }
 
-          const custQuery = String(firstRow.customer_phone || firstRow.customer_name || "").trim().toLowerCase();
-          let customerInfo = customerMap.get(custQuery);
+          const rawPhone = String(firstRow.customer_phone || "").replace(/[^0-9]/g, "");
+          const rawName = String(firstRow.customer_name || "").trim().toLowerCase();
+          let customerInfo = customerMap.get(rawName);
+          if (!customerInfo && rawPhone.length >= 7) {
+            customerInfo = customerMap.get(rawPhone.slice(-10));
+          }
 
           if (!customerInfo) {
             const custName = String(firstRow.customer_name || "Historical Customer").trim();
-            const { data: newCust, error: custErr } = await supabase.rpc("create_customer_with_address", {
-              target_business_id: businessId,
-              target_name: custName,
-              target_company_name: null,
-              target_phone: firstRow.customer_phone || null,
-              target_email: null,
-              target_gst_number: null,
-              target_payment_terms: "Historical",
-              target_credit_limit: "0",
-              target_address: null,
-              target_city: null,
-              target_state: null,
-              target_postal_code: null,
-              target_district: null,
-            });
+            const { data: newCust, error: custErr } = await supabase
+              .from("customers")
+              .insert({
+                business_id: businessId,
+                name: custName,
+                phone: firstRow.customer_phone || null,
+                payment_terms: "Historical",
+                credit_limit: 0,
+                status: "ACTIVE",
+              })
+              .select("id")
+              .single();
+
             if (custErr || !newCust) {
               addError(rowNum, orderNumber, `Could not resolve or create customer "${custName}".`, firstRow);
               for (const itm of items) {
@@ -844,8 +931,9 @@ async function processModuleImportRows(
               }
               continue;
             }
-            customerInfo = { id: newCust };
+            customerInfo = { id: newCust.id };
             customerMap.set(custName.toLowerCase(), customerInfo);
+            if (rawPhone.length >= 7) customerMap.set(rawPhone.slice(-10), customerInfo);
           }
 
           let subtotal = 0;
@@ -868,8 +956,8 @@ async function processModuleImportRows(
                   unit: "Piece",
                   production_unit: "Piece",
                   daily_capacity: 100,
-                  selling_price: parseFloat(String(itm.unit_price || 0)),
-                  tax_rate: parseFloat(String(itm.tax_rate ?? 18)),
+                  selling_price: parseNumberRobust(itm.unit_price) ?? 0,
+                  tax_rate: parseNumberRobust(itm.tax_rate) ?? 18,
                   active: true,
                 })
                 .select("id, sku, name, selling_price, tax_rate")
@@ -887,10 +975,10 @@ async function processModuleImportRows(
               productBySku.set(sku, prd);
             }
 
-            const qty = parseFloat(String(itm.quantity || 1));
-            const unitPrice = parseFloat(String(itm.unit_price ?? prd.selling_price ?? 0));
-            const discRate = parseFloat(String(itm.discount_rate || 0));
-            const taxRate = parseFloat(String(itm.tax_rate ?? prd.tax_rate ?? 18));
+            const qty = parseNumberRobust(itm.quantity) ?? 1;
+            const unitPrice = parseNumberRobust(itm.unit_price) ?? (prd.selling_price ?? 0);
+            const discRate = parseNumberRobust(itm.discount_rate) ?? 0;
+            const taxRate = parseNumberRobust(itm.tax_rate) ?? (prd.tax_rate ?? 18);
 
             const lineRaw = qty * unitPrice;
             const lineDisc = lineRaw * (discRate / 100);
@@ -923,6 +1011,7 @@ async function processModuleImportRows(
           if (itemFailed) continue;
 
           const totalAmount = subtotal - discountAmount + taxAmount;
+          const parsedOrderDate = parseDateRobust(firstRow.order_date) || new Date().toISOString().split("T")[0];
 
           const { data: newOrder, error: orderErr } = await supabase
             .from("orders")
@@ -930,7 +1019,7 @@ async function processModuleImportRows(
               business_id: businessId,
               customer_id: customerInfo.id,
               order_number: orderNumber,
-              order_date: firstRow.order_date || new Date().toISOString().split("T")[0],
+              order_date: parsedOrderDate,
               status: firstRow.status || "CONFIRMED",
               priority: "NORMAL",
               subtotal: Number(subtotal.toFixed(2)),
@@ -996,6 +1085,21 @@ async function processModuleImportRows(
     // 7. HISTORICAL PAYMENTS & BALANCES
     // -------------------------------------------------------------
     case "historical_payments": {
+      const { data: dbCustomers } = await supabase
+        .from("customers")
+        .select("id, name, company_name, phone")
+        .eq("business_id", businessId);
+
+      const custMap = new Map<string, any>();
+      (dbCustomers || []).forEach((c: any) => {
+        if (c.name) custMap.set(c.name.trim().toLowerCase(), c);
+        if (c.company_name) custMap.set(c.company_name.trim().toLowerCase(), c);
+        if (c.phone) {
+          const digits = c.phone.replace(/[^0-9]/g, "");
+          if (digits.length >= 7) custMap.set(digits.slice(-10), c);
+        }
+      });
+
       for (const row of records) {
         const rowNum = row._rowNumber || importedCount + 1;
         try {
@@ -1006,7 +1110,7 @@ async function processModuleImportRows(
             continue;
           }
 
-          const amount = parseFloat(String(row.amount || 0));
+          const amount = parseNumberRobust(row.amount) ?? 0;
           if (amount <= 0) {
             addError(rowNum, paymentNumber, "Payment amount must be greater than 0", row);
             await markRowFailed(supabase, jobId, rowNum, "Payment amount must be greater than 0");
@@ -1029,12 +1133,18 @@ async function processModuleImportRows(
 
           // Resolve customer
           const custName = String(row.customer_name || "").trim();
-          const { data: customer } = await supabase
-            .from("customers")
-            .select("id, name")
-            .eq("business_id", businessId)
-            .ilike("name", custName)
-            .maybeSingle();
+          const custDigits = custName.replace(/[^0-9]/g, "");
+          let customer = custMap.get(custName.toLowerCase()) || (custDigits.length >= 7 ? custMap.get(custDigits.slice(-10)) : null);
+
+          if (!customer && custName) {
+            const { data: cData } = await supabase
+              .from("customers")
+              .select("id, name")
+              .eq("business_id", businessId)
+              .ilike("name", custName)
+              .maybeSingle();
+            customer = cData;
+          }
 
           if (!customer) {
             addError(rowNum, paymentNumber, `Customer "${custName}" not found. Create customer first.`, row);
@@ -1070,6 +1180,7 @@ async function processModuleImportRows(
 
           // Deterministic idempotency key for this row in this job
           const idempotencyKey = `import-${jobId}-row-${rowNum}-${paymentNumber}`;
+          const paymentDate = parseDateRobust(row.payment_date) || new Date().toISOString().split("T")[0];
 
           // Insert into payments
           const { data: newPayment, error: payErr } = await supabase
@@ -1083,7 +1194,7 @@ async function processModuleImportRows(
               transaction_id: txnId,
               utr_number: utrNum,
               amount: amount,
-              payment_date: row.payment_date || new Date().toISOString().split("T")[0],
+              payment_date: paymentDate,
               payment_method: normalizePaymentMethod(row.payment_method),
               reference: row.reference || null,
               notes: row.notes || "Historical payment import",
@@ -1105,7 +1216,7 @@ async function processModuleImportRows(
             debit: 0,
             credit: amount,
             balance: 0,
-            entry_date: row.payment_date || new Date().toISOString().split("T")[0],
+            entry_date: paymentDate,
             created_by: userId,
           });
 
@@ -1209,9 +1320,12 @@ async function processModuleImportRows(
                 .insert({
                   business_id: businessId,
                   name: matName,
-                  unit: itm.unit || "KG",
-                  unit_cost: parseFloat(String(itm.unit_cost || 0)),
+                  unit: normalizeRawMaterialUnit(itm.unit),
+                  purchase_price: parseNumberRobust(itm.unit_cost) ?? 0,
                   min_stock: 0,
+                  current_stock: 0,
+                  reorder_level: 0,
+                  status: "ACTIVE",
                 })
                 .select("id")
                 .single();
@@ -1226,10 +1340,15 @@ async function processModuleImportRows(
               material = newMat;
             }
 
-            const ordQty = parseFloat(String(itm.ordered_quantity || 1));
-            const recQty = parseFloat(String(itm.received_quantity ?? ordQty));
-            const unitCost = parseFloat(String(itm.unit_cost || 0));
-            const taxRate = parseFloat(String(itm.tax_rate ?? 18));
+            const ordQty = parseNumberRobust(itm.ordered_quantity) ?? 1;
+            const recQty =
+              itm.received_quantity !== undefined &&
+              itm.received_quantity !== null &&
+              String(itm.received_quantity).trim() !== ""
+                ? (parseNumberRobust(itm.received_quantity) ?? ordQty)
+                : ordQty;
+            const unitCost = parseNumberRobust(itm.unit_cost) ?? 0;
+            const taxRate = parseNumberRobust(itm.tax_rate) ?? 18;
 
             const lineRaw = ordQty * unitCost;
             const lineTax = lineRaw * (taxRate / 100);
@@ -1251,6 +1370,7 @@ async function processModuleImportRows(
           if (poItemFailed) continue;
 
           const totalAmount = subtotal + taxAmount;
+          const parsedPoDate = parseDateRobust(firstRow.po_date) || new Date().toISOString().split("T")[0];
 
           const { data: newPo, error: poErr } = await supabase
             .from("purchase_orders")
@@ -1258,7 +1378,7 @@ async function processModuleImportRows(
               business_id: businessId,
               supplier_id: supplier.id,
               po_number: poNumber,
-              po_date: firstRow.po_date || new Date().toISOString().split("T")[0],
+              order_date: parsedPoDate,
               status: firstRow.status || "RECEIVED",
               subtotal: Number(subtotal.toFixed(2)),
               tax_amount: Number(taxAmount.toFixed(2)),
@@ -1292,7 +1412,7 @@ async function processModuleImportRows(
               unit_cost: itm.unit_cost,
               tax_rate: itm.tax_rate,
               received_by: userId,
-              received_at: firstRow.po_date ? new Date(firstRow.po_date).toISOString() : new Date().toISOString(),
+              received_at: parsedPoDate ? new Date(parsedPoDate).toISOString() : new Date().toISOString(),
               notes: "Historical procurement receipt",
             });
           }
@@ -1319,12 +1439,14 @@ async function processModuleImportRows(
         const rowNum = row._rowNumber || importedCount + 1;
         try {
           const category = String(row.category || "").trim();
-          const amount = parseFloat(String(row.amount || 0));
+          const amount = parseNumberRobust(row.amount) ?? 0;
           if (!category || amount <= 0) {
             addError(rowNum, row.reference, "Category and valid Amount (>0) are required.", row);
             await markRowFailed(supabase, jobId, rowNum, "Category and valid Amount (>0) are required.");
             continue;
           }
+
+          const parsedExpDate = parseDateRobust(row.expense_date) || new Date().toISOString().split("T")[0];
 
           const { data: newExp, error: expErr } = await supabase
             .from("expenses")
@@ -1332,7 +1454,7 @@ async function processModuleImportRows(
               business_id: businessId,
               category,
               amount,
-              expense_date: row.expense_date || new Date().toISOString().split("T")[0],
+              expense_date: parsedExpDate,
               reference: row.reference || null,
               description: row.description || "Historical expense import",
               status: row.status || "POSTED",
@@ -1436,8 +1558,8 @@ async function processModuleImportRows(
             continue;
           }
 
-          const amount = parseFloat(String(row.amount ?? ""));
-          if (isNaN(amount) || amount <= 0) {
+          const amount = parseNumberRobust(row.amount);
+          if (amount === null || isNaN(amount) || amount <= 0) {
             addError(
               rowNum,
               identifier,
@@ -1465,7 +1587,7 @@ async function processModuleImportRows(
             continue;
           }
 
-          const asOnDateStr = String(row.as_on_date || "").trim();
+          const asOnDateStr = parseDateRobust(row.as_on_date) || String(row.as_on_date || "").trim();
           if (!/^\d{4}-\d{2}-\d{2}$/.test(asOnDateStr) || isNaN(new Date(asOnDateStr).getTime())) {
             addError(
               rowNum,
@@ -1556,7 +1678,7 @@ export async function executeImportAction(payload: {
   fileHash: string;
   records: any[];
 }): Promise<ImportExecutionResponse> {
-  const { context, supabase } = await requireAdminAuth();
+  const { context, db } = await requireAdminAuth();
   const businessId = context.user.business_id;
   const userId = context.user.id;
   const { module, filename, fileHash, records } = payload;
@@ -1567,14 +1689,14 @@ export async function executeImportAction(payload: {
 
   // 1. Run Classification Engine to partition rows into NEW, DUPLICATE, INVALID, REJECTED
   const classification = await classifyImportRowsInternal(
-    supabase,
+    db,
     businessId,
     module,
     records
   );
 
   // 2. Create the import job record up-front with status PROCESSING
-  const { data: job, error: jobErr } = await supabase
+  const { data: job, error: jobErr } = await db
     .from("import_jobs")
     .insert({
       business_id: businessId,
@@ -1630,7 +1752,7 @@ export async function executeImportAction(payload: {
 
   for (let i = 0; i < jobRowsToInsert.length; i += 250) {
     const chunk = jobRowsToInsert.slice(i, i + 250);
-    const { error: insRowsErr } = await supabase.from("import_job_rows").insert(chunk);
+    const { error: insRowsErr } = await db.from("import_job_rows").insert(chunk);
     if (insRowsErr) {
       console.error("Error inserting import_job_rows chunk:", insRowsErr);
     }
@@ -1660,7 +1782,7 @@ export async function executeImportAction(payload: {
     }));
 
     importedCount = await processModuleImportRows(
-      supabase,
+      db,
       businessId,
       userId,
       jobId,
@@ -1697,7 +1819,7 @@ export async function executeImportAction(payload: {
       ? `Partially imported: ${importedCount} imported, ${skippedDuplicates} duplicates skipped, ${failedCount} errors.`
       : `Import failed: 0 imported, ${skippedDuplicates} duplicates skipped, ${failedCount} errors.`;
 
-  await supabase
+  await db
     .from("import_jobs")
     .update({
       imported_rows: importedCount,
@@ -1708,6 +1830,20 @@ export async function executeImportAction(payload: {
       completed_at: new Date().toISOString(),
     })
     .eq("id", jobId);
+
+  try {
+    revalidatePath("/import");
+    revalidatePath("/inventory");
+    revalidatePath("/orders");
+    revalidatePath("/payments");
+    revalidatePath("/customers");
+    revalidatePath("/suppliers");
+    revalidatePath("/products");
+    revalidatePath("/purchases");
+    revalidatePath("/expenses");
+  } catch (revErr) {
+    console.warn("Revalidation warning:", revErr);
+  }
 
   return {
     success: importedCount > 0 || (skippedDuplicates > 0 && failedCount === 0),
@@ -1725,12 +1861,12 @@ export async function executeImportAction(payload: {
  * Retries only failed or rejected rows for a previously executed import job
  */
 export async function retryImportJobAction(payload: { jobId: string }): Promise<RetryImportResponse> {
-  const { context, supabase } = await requireAdminAuth();
+  const { context, db } = await requireAdminAuth();
   const businessId = context.user.business_id;
   const userId = context.user.id;
 
   // 1. Fetch job
-  const { data: job, error: jobErr } = await supabase
+  const { data: job, error: jobErr } = await db
     .from("import_jobs")
     .select("*")
     .eq("id", payload.jobId)
@@ -1742,7 +1878,7 @@ export async function retryImportJobAction(payload: { jobId: string }): Promise<
   }
 
   // 2. Fetch failed/rejected rows
-  const { data: failedRows, error: fetchErr } = await supabase
+  const { data: failedRows, error: fetchErr } = await db
     .from("import_job_rows")
     .select("*")
     .eq("job_id", payload.jobId)
@@ -1774,7 +1910,7 @@ export async function retryImportJobAction(payload: { jobId: string }): Promise<
   }));
 
   const reclassification = await classifyImportRowsInternal(
-    supabase,
+    db,
     businessId,
     job.module as ImportModule,
     rawRecords
@@ -1785,7 +1921,7 @@ export async function retryImportJobAction(payload: { jobId: string }): Promise<
 
   for (const cr of reclassification.rows) {
     if (cr.classification === "DUPLICATE") {
-      await supabase
+      await db
         .from("import_job_rows")
         .update({
           status: "SKIPPED_DUPLICATE",
@@ -1803,7 +1939,7 @@ export async function retryImportJobAction(payload: { jobId: string }): Promise<
         errors: [cr.reason || "Validation failed on retry"],
         rawData: cr.data,
       });
-      await supabase
+      await db
         .from("import_job_rows")
         .update({
           status: cr.classification === "INVALID" ? "FAILED" : "REJECTED",
@@ -1826,7 +1962,7 @@ export async function retryImportJobAction(payload: { jobId: string }): Promise<
     }));
 
     const executedCount = await processModuleImportRows(
-      supabase,
+      db,
       businessId,
       userId,
       payload.jobId,
@@ -1845,7 +1981,7 @@ export async function retryImportJobAction(payload: { jobId: string }): Promise<
   }
 
   // Re-aggregate counts from import_job_rows
-  const { data: allJobRows } = await supabase
+  const { data: allJobRows } = await db
     .from("import_job_rows")
     .select("status")
     .eq("job_id", payload.jobId);
@@ -1868,7 +2004,7 @@ export async function retryImportJobAction(payload: { jobId: string }): Promise<
       ? `Successfully completed all rows (${importedTotal} imported, ${skippedTotal} duplicates skipped).`
       : `Batch partially completed: ${importedTotal} imported, ${failedTotal} failed.`;
 
-  await supabase
+  await db
     .from("import_jobs")
     .update({
       imported_rows: importedTotal,
@@ -1879,6 +2015,20 @@ export async function retryImportJobAction(payload: { jobId: string }): Promise<
       completed_at: new Date().toISOString(),
     })
     .eq("id", payload.jobId);
+
+  try {
+    revalidatePath("/import");
+    revalidatePath("/inventory");
+    revalidatePath("/orders");
+    revalidatePath("/payments");
+    revalidatePath("/customers");
+    revalidatePath("/suppliers");
+    revalidatePath("/products");
+    revalidatePath("/purchases");
+    revalidatePath("/expenses");
+  } catch (revErr) {
+    console.warn("Revalidation warning:", revErr);
+  }
 
   return {
     success: newlyImported > 0 || failedTotal === 0,

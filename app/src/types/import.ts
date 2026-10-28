@@ -65,6 +65,7 @@ export interface ImportValidationResult {
   invalidRowCount: number;
   validRows: any[];
   invalidRows: RowValidationError[];
+  allRows: any[];
   hasErrors: boolean;
 }
 
