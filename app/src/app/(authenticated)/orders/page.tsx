@@ -125,7 +125,7 @@ export default async function OrdersPage({
   let query = supabase
     .from("orders")
     .select(
-      "id, customer_id, order_number, order_date, priority, status, total_amount, paid_amount, due_amount, created_at, earliest_delivery_date, latest_delivery_date, expected_delivery_date, delivery_status, customers!inner(name, company_name), order_items(id)",
+      "id, customer_id, order_number, order_date, priority, status, total_amount, paid_amount, due_amount, created_at, earliest_delivery_date, latest_delivery_date, expected_delivery_date, delivery_status, customers!inner(name, company_name), order_items(id, quantity, dispatched_quantity)",
       { count: "exact" }
     )
     .eq("business_id", context.user.business_id);
@@ -232,6 +232,11 @@ export default async function OrdersPage({
       }
     }
 
+    const oItems = Array.isArray(o.order_items) ? o.order_items : [];
+    const totalOrderedQty = oItems.reduce((acc: number, it: any) => acc + (Number(it.quantity) || 0), 0);
+    const totalDispatchedQty = oItems.reduce((acc: number, it: any) => acc + (Number(it.dispatched_quantity) || 0), 0);
+    const totalRemainingQty = Math.max(0, totalOrderedQty - totalDispatchedQty);
+
     return {
       id: o.id,
       business_id: context.user.business_id,
@@ -246,12 +251,15 @@ export default async function OrdersPage({
       created_at: o.created_at,
       customer_name: o.customers?.name ?? o.customers?.[0]?.name ?? null,
       company_name: o.customers?.company_name ?? o.customers?.[0]?.company_name ?? null,
-      item_count: Array.isArray(o.order_items) ? o.order_items.length : 0,
+      item_count: oItems.length,
       earliest_delivery_date: o.earliest_delivery_date,
       latest_delivery_date: o.latest_delivery_date,
       expected_delivery_date: o.expected_delivery_date,
       delivery_status: o.delivery_status as DeliveryStatus,
       production_status: prodStatus,
+      total_ordered_quantity: totalOrderedQty,
+      total_dispatched_quantity: totalDispatchedQty,
+      total_remaining_quantity: totalRemainingQty,
     };
   });
 

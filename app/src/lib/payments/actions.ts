@@ -11,6 +11,7 @@ import type {
   CustomerSummary,
   CustomerAdvanceTransaction,
   CreatePaymentFormValues,
+  CreatePaymentResult,
   UpdatePaymentFormValues,
   DeletePaymentFormValues,
   PaymentStatus,
@@ -290,6 +291,9 @@ export async function getPaymentWithDetails(paymentId: string): Promise<PaymentW
         reference,
         notes,
         status,
+        idempotency_key,
+        transaction_id,
+        utr_number,
         created_at,
         updated_at,
         customers(name, company_name),
@@ -318,6 +322,9 @@ export async function getPaymentWithDetails(paymentId: string): Promise<PaymentW
       reference: row.reference,
       notes: row.notes,
       status: row.status,
+      idempotency_key: row.idempotency_key,
+      transaction_id: row.transaction_id,
+      utr_number: row.utr_number,
       created_at: row.created_at,
       updated_at: row.updated_at,
       customer_name: (row.customers as any)?.name || "Customer",
@@ -338,6 +345,9 @@ export async function getPaymentWithDetails(paymentId: string): Promise<PaymentW
     reference: p.reference,
     notes: p.notes,
     status: p.status as PaymentStatus,
+    idempotency_key: p.idempotency_key ?? null,
+    transaction_id: p.transaction_id ?? null,
+    utr_number: p.utr_number ?? null,
     created_at: p.created_at,
     updated_at: p.updated_at,
     customer_name: p.customer_name,
@@ -858,7 +868,7 @@ export async function getEligibleOrdersForPayment(customerId?: string) {
 
 export async function createPayment(
   values: CreatePaymentFormValues
-): Promise<{ payment_id: string; message: string }> {
+): Promise<CreatePaymentResult> {
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
   if (!hasPermission({ permissions: context.permissions }, "payments.add")) {
@@ -887,9 +897,16 @@ export async function createPayment(
     throw new Error(`Invalid payment status: ${status}`);
   }
 
-  // 5. Validate Reference and Notes
-  if (values.reference && values.reference.length > 128) {
-    throw new Error("Payment reference must not exceed 128 characters.");
+  // 5. Validate Reference, Transaction ID and Notes
+  const cleanRef = values.utr_number?.trim() || values.reference?.trim() || null;
+  const cleanTxn = values.transaction_id?.trim() || null;
+  const idempotencyKey = values.idempotency_key?.trim() || null;
+
+  if (cleanRef && cleanRef.length > 128) {
+    throw new Error("Payment reference / UTR must not exceed 128 characters.");
+  }
+  if (cleanTxn && cleanTxn.length > 128) {
+    throw new Error("External transaction ID must not exceed 128 characters.");
   }
   if (values.notes && values.notes.length > 2000) {
     throw new Error("Payment notes must not exceed 2000 characters.");
@@ -898,7 +915,27 @@ export async function createPayment(
   const supabase = await createServerSupabaseClient();
   if (!supabase) throw new Error("Supabase client not available");
 
-  // 6. Validate Customer Exists and Belongs to Business
+  // 6. Idempotency Check (Requirement 2 & 3)
+  // If an idempotency key was supplied and already posted, return original payment immediately
+  if (idempotencyKey) {
+    const { data: existingIdemp } = await supabase
+      .from("payments")
+      .select("id, payment_number, status, amount")
+      .eq("business_id", context.user.business_id)
+      .eq("idempotency_key", idempotencyKey)
+      .maybeSingle();
+
+    if (existingIdemp) {
+      return {
+        payment_id: existingIdemp.id,
+        payment_number: existingIdemp.payment_number,
+        already_processed: true,
+        message: "Payment request already processed",
+      };
+    }
+  }
+
+  // 7. Validate Customer Exists and Belongs to Business
   const { data: customer, error: custErr } = await supabase
     .from("customers")
     .select("id, name, status")
@@ -910,8 +947,7 @@ export async function createPayment(
     throw new Error("Selected customer not found or does not belong to your business.");
   }
 
-  // 7. Validate Order Details & Prevent Overpayment (Requirement 4)
-  let linkedOrder: any = null;
+  // 8. Validate Order Details & Prevent Overpayment
   if (values.order_id) {
     const { data: order, error: orderErr } = await supabase
       .from("orders")
@@ -930,10 +966,7 @@ export async function createPayment(
       throw new Error("Cannot record payment for a cancelled order.");
     }
 
-    linkedOrder = order;
     const currentDue = Number(order.due_amount) || 0;
-
-    // Strict overpayment rejection for order payments
     if (status === "SUCCESS" && amountNum > currentDue + 0.001) {
       throw new Error(
         `OVERPAYMENT_NOT_ALLOWED: Payment amount (₹${amountNum.toFixed(2)}) exceeds the order outstanding balance (₹${currentDue.toFixed(2)}).`
@@ -941,47 +974,76 @@ export async function createPayment(
     }
   }
 
-  // 8. Idempotency Guard (Requirement 6) - Prevent duplicate payment submissions on retries
-  const idempotencyWindow = new Date(Date.now() - 15000).toISOString();
-  let duplicateCheck = supabase
-    .from("payments")
-    .select("id, payment_number")
-    .eq("business_id", context.user.business_id)
-    .eq("customer_id", values.customer_id)
-    .eq("amount", amountNum)
-    .eq("payment_method", values.payment_method)
-    .gte("created_at", idempotencyWindow);
+  // 9. Duplicate Transaction ID Detection (Requirement 4)
+  if (cleanTxn) {
+    const { data: matchedTxn } = await supabase
+      .from("payments")
+      .select("id, payment_number")
+      .eq("business_id", context.user.business_id)
+      .eq("transaction_id", cleanTxn)
+      .in("status", ["SUCCESS", "PENDING"])
+      .maybeSingle();
 
-  if (values.order_id) {
-    duplicateCheck = duplicateCheck.eq("order_id", values.order_id);
-  }
-  if (values.reference?.trim()) {
-    duplicateCheck = duplicateCheck.eq("reference", values.reference.trim());
-  }
-
-  const { data: existingDupes } = await duplicateCheck;
-  if (existingDupes && existingDupes.length > 0) {
-    throw new Error(
-      `DUPLICATE_PAYMENT: A payment with identical details (${existingDupes[0].payment_number}) was just submitted. Please wait before retrying.`
-    );
+    if (matchedTxn) {
+      throw new Error(
+        `DUPLICATE_TRANSACTION: External Transaction ID "${cleanTxn}" has already been recorded for payment ${matchedTxn.payment_number}.`
+      );
+    }
   }
 
-  // 9. Execute Atomic Payment Creation via SQL RPC
-  const { data: paymentId, error: rpcErr } = await supabase.rpc("create_payment", {
+  // 10. Electronic Bank UTR / Reference Duplicate Detection (Requirement 4 & 5)
+  // CASH payments and empty references are exempted to allow genuine repeated cash payments
+  if (values.payment_method !== "CASH" && cleanRef && !values.allow_duplicate_reference) {
+    const { data: matchedUtr } = await supabase
+      .from("payments")
+      .select("id, payment_number, payment_date")
+      .eq("business_id", context.user.business_id)
+      .or(`utr_number.eq.${cleanRef},reference.eq.${cleanRef}`)
+      .in("status", ["SUCCESS", "PENDING"])
+      .maybeSingle();
+
+    if (matchedUtr) {
+      throw new Error(
+        `DUPLICATE_REFERENCE: Bank UTR/Reference "${cleanRef}" has already been recorded for payment ${matchedUtr.payment_number} on ${matchedUtr.payment_date}.`
+      );
+    }
+  }
+
+  // 11. Execute Atomic Payment Creation via SQL RPC
+  const { data: rpcData, error: rpcErr } = await supabase.rpc("create_payment", {
     p_business_id: context.user.business_id,
     p_customer_id: values.customer_id,
     p_amount: amountNum,
     p_payment_date: values.payment_date,
     p_payment_method: values.payment_method,
     p_order_id: values.order_id || null,
-    p_reference: values.reference?.trim() || null,
+    p_reference: cleanRef,
     p_notes: values.notes?.trim() || null,
     p_status: status,
+    p_idempotency_key: idempotencyKey,
+    p_transaction_id: cleanTxn,
+    p_utr_number: values.utr_number?.trim() || cleanRef,
+    p_allow_duplicate_reference: values.allow_duplicate_reference || false,
+    p_operator_id: context.user.id,
   });
 
   if (rpcErr) throw rpcErr;
 
-  // 10. Guarantee Authoritative Totals Sync (Requirement 1 & 5)
+  const result = typeof rpcData === "object" && rpcData !== null ? rpcData : { payment_id: rpcData };
+  const paymentId: string = result.payment_id;
+  const paymentNumber: string = result.payment_number;
+  const alreadyProcessed: boolean = Boolean(result.already_processed);
+
+  if (alreadyProcessed) {
+    return {
+      payment_id: paymentId,
+      payment_number: paymentNumber,
+      already_processed: true,
+      message: "Payment request already processed",
+    };
+  }
+
+  // 12. Guarantee Authoritative Totals Sync
   if (values.order_id) {
     await syncAuthoritativeOrderTotals(supabase, context.user.business_id, values.order_id);
   }
@@ -997,17 +1059,10 @@ export async function createPayment(
   }
 
   try {
-    const { data: pData } = await supabase
-      .from("payments")
-      .select("payment_number")
-      .eq("id", paymentId)
-      .eq("business_id", context.user.business_id)
-      .maybeSingle();
-
     await notifyPaymentReceived(
       context.user.business_id,
       paymentId,
-      pData?.payment_number || "Payment",
+      paymentNumber || "Payment",
       amountNum,
       context.user.id
     );
@@ -1015,7 +1070,12 @@ export async function createPayment(
     // Non-fatal
   }
 
-  return { payment_id: paymentId, message: "Payment created successfully" };
+  return {
+    payment_id: paymentId,
+    payment_number: paymentNumber,
+    already_processed: false,
+    message: "Payment created successfully",
+  };
 }
 
 export async function updatePayment(

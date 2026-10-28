@@ -27,7 +27,8 @@ type FilterKey =
   | "category"
   | "minDueAmount"
   | "rawMaterialId"
-  | "lowStockOnly";
+  | "lowStockOnly"
+  | "productCondition";
 
 const STATUS_OPTIONS: Record<string, { value: string; label: string }[]> = {
   order_status: [
@@ -67,6 +68,19 @@ const STATUS_OPTIONS: Record<string, { value: string; label: string }[]> = {
     { value: "5000", label: "> ₹5,000" },
     { value: "10000", label: "> ₹10,000" },
     { value: "50000", label: "> ₹50,000" },
+  ],
+  return_status: [
+    { value: "PENDING_INSPECTION", label: "Pending Inspection" },
+    { value: "APPROVED", label: "Approved" },
+    { value: "REJECTED", label: "Rejected" },
+    { value: "POSTED", label: "Posted" },
+    { value: "CANCELLED", label: "Cancelled" },
+  ],
+  product_condition: [
+    { value: "SALEABLE", label: "Saleable" },
+    { value: "DAMAGED", label: "Damaged" },
+    { value: "REWORK", label: "Rework" },
+    { value: "SCRAP", label: "Scrap" },
   ],
 };
 
@@ -180,6 +194,13 @@ const BASE_FILTER_CONFIGS: Record<
     { key: "dateRange", label: "Period", type: "date" },
     { key: "orderId", label: "Order #", type: "select" },
     { key: "status", label: "Delivery Status", type: "select", options: STATUS_OPTIONS.delivery_status },
+  ],
+  returns: [
+    { key: "dateRange", label: "Period", type: "date" },
+    { key: "customerId", label: "Customer", type: "select" },
+    { key: "orderId", label: "Order #", type: "select" },
+    { key: "status", label: "Return Status", type: "select", options: STATUS_OPTIONS.return_status },
+    { key: "productCondition", label: "Condition", type: "select", options: STATUS_OPTIONS.product_condition },
   ],
 };
 

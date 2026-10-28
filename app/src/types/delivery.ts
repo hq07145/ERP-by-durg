@@ -1,8 +1,11 @@
 export type DeliveryStatus =
+  | "PENDING"
   | "NOT_READY"
   | "READY"
   | "PACKED"
+  | "PARTIALLY_DISPATCHED"
   | "DISPATCHED"
+  | "FULLY_DISPATCHED"
   | "IN_TRANSIT"
   | "DELIVERED"
   | "CANCELLED";
@@ -27,10 +30,26 @@ export interface Delivery {
   updated_at: string;
 }
 
+export interface LinkedDeliveryReturn {
+  id: string;
+  return_number: string;
+  return_date: string;
+  status: string;
+  product_condition: string;
+  reason: string;
+  adjustment_type: string | null;
+  adjustment_amount: number;
+  returned_quantity: number;
+  product_name?: string;
+  sku?: string | null;
+  unit?: string;
+}
+
 export interface DeliveryWithDetails extends Delivery {
   order_number: string;
   customer_name: string | null;
   items: DeliveryItem[];
+  linked_returns?: LinkedDeliveryReturn[];
 }
 
 export interface DeliveryListItem {
@@ -62,6 +81,10 @@ export interface DeliveryItem {
   product_sku: string | null;
   ordered_quantity: string | number;
   delivered_quantity: string | number;
+  total_delivered_quantity?: number;
+  total_returned_quantity?: number;
+  net_retained_quantity?: number;
+  remaining_to_deliver?: number;
   unit: string;
 }
 
@@ -99,13 +122,17 @@ export interface DispatchDeliveryFormValues {
 
 export interface DeliveryStatusCounts {
   ALL: number;
+  PENDING?: number;
   READY: number;
   PACKED: number;
+  PARTIALLY_DISPATCHED?: number;
   DISPATCHED: number;
+  FULLY_DISPATCHED?: number;
   IN_TRANSIT: number;
   DELIVERED: number;
   CANCELLED: number;
   NOT_READY: number;
+  [key: string]: number | undefined;
 }
 
 export interface InTransitDeliveryFormValues {
@@ -125,34 +152,88 @@ export interface CancelDeliveryFormValues {
 }
 
 export const DELIVERY_STATUS_COLORS: Record<DeliveryStatus, string> = {
+  PENDING: "bg-amber-100 text-amber-800",
   NOT_READY: "bg-gray-100 text-gray-800",
   READY: "bg-blue-100 text-blue-800",
   PACKED: "bg-indigo-100 text-indigo-800",
+  PARTIALLY_DISPATCHED: "bg-teal-100 text-teal-800",
   DISPATCHED: "bg-purple-100 text-purple-800",
+  FULLY_DISPATCHED: "bg-emerald-100 text-emerald-800",
   IN_TRANSIT: "bg-orange-100 text-orange-800",
   DELIVERED: "bg-green-100 text-green-800",
   CANCELLED: "bg-red-100 text-red-800",
 };
 
 export const DELIVERY_STATUS_LABELS: Record<DeliveryStatus, string> = {
+  PENDING: "Pending",
   NOT_READY: "Not Ready",
   READY: "Ready",
   PACKED: "Packed",
+  PARTIALLY_DISPATCHED: "Partially Dispatched",
   DISPATCHED: "Dispatched",
+  FULLY_DISPATCHED: "Fully Dispatched",
   IN_TRANSIT: "In Transit",
   DELIVERED: "Delivered",
   CANCELLED: "Cancelled",
 };
 
 export const DELIVERY_STATUS_TRANSITIONS: Record<DeliveryStatus, DeliveryStatus[]> = {
+  PENDING: ["READY", "PARTIALLY_DISPATCHED", "DISPATCHED", "FULLY_DISPATCHED", "CANCELLED"],
   NOT_READY: ["READY", "CANCELLED"],
   READY: ["PACKED", "DISPATCHED", "CANCELLED"],
   PACKED: ["DISPATCHED", "READY", "CANCELLED"],
+  PARTIALLY_DISPATCHED: ["IN_TRANSIT", "DELIVERED", "CANCELLED"],
   DISPATCHED: ["IN_TRANSIT", "DELIVERED", "CANCELLED"],
+  FULLY_DISPATCHED: ["IN_TRANSIT", "DELIVERED", "CANCELLED"],
   IN_TRANSIT: ["DELIVERED", "CANCELLED"],
   DELIVERED: [],
   CANCELLED: [],
 };
+
+export interface OrderDispatchSummaryItem {
+  order_id: string;
+  order_number: string;
+  order_delivery_status: string;
+  order_item_id: string;
+  product_id: string;
+  product_name: string;
+  product_sku: string | null;
+  product_unit: string;
+  ordered_quantity: number;
+  previously_dispatched_quantity: number;
+  remaining_quantity: number;
+  is_item_fully_dispatched: boolean;
+}
+
+export interface CreatePartialDeliveryInput {
+  order_id: string;
+  delivery_date?: string;
+  delivery_number?: string;
+  vehicle_number?: string;
+  driver_name?: string;
+  driver_phone?: string;
+  tracking_number?: string;
+  invoice_number?: string;
+  notes?: string;
+  allow_override?: boolean;
+  override_reason?: string;
+  items: Array<{
+    order_item_id: string;
+    quantity: number;
+  }>;
+}
+
+export interface PartialDeliveryResult {
+  success: boolean;
+  delivery_id: string;
+  delivery_number: string;
+  order_number: string;
+  order_delivery_status: string;
+  total_dispatched_in_this_delivery: number;
+  total_order_remaining: number;
+  has_override?: boolean;
+  message?: string;
+}
 
 export interface EligibleDeliveryOrder {
   id: string;

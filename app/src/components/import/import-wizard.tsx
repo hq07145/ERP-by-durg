@@ -9,6 +9,9 @@ import type {
   ImportExecutionResponse,
   RowValidationError,
   ImportJobRecord,
+  ImportClassificationResult,
+  ClassifiedImportRow,
+  RetryImportResponse,
 } from "@/types/import";
 import { IMPORT_MODULE_SCHEMAS } from "@/lib/import/module-schemas";
 import {
@@ -20,6 +23,8 @@ import {
 import {
   checkDuplicateFileHash,
   executeImportAction,
+  classifyImportAction,
+  retryImportJobAction,
 } from "@/lib/import/actions";
 import {
   Upload,
@@ -44,6 +49,10 @@ import {
   ShoppingBag,
   Receipt,
   Wallet,
+  RotateCcw,
+  Copy,
+  Check,
+  ShieldCheck,
 } from "lucide-react";
 
 interface ImportWizardProps {
@@ -82,14 +91,41 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
     invalidRows: RowValidationError[];
     hasErrors: boolean;
   }>({ validRows: [], invalidRows: [], hasErrors: false });
-  const [previewFilter, setPreviewFilter] = useState<"all" | "valid" | "invalid">("all");
 
-  // Execution
+  // Classification State (Step 9)
+  const [classification, setClassification] = useState<ImportClassificationResult | null>(null);
+  const [isClassifying, setIsClassifying] = useState(false);
+  const [previewFilter, setPreviewFilter] = useState<"all" | "new" | "duplicate" | "errors">("all");
+
+  // Execution & Retry State (Step 9)
   const [isExecuting, setIsExecuting] = useState(false);
   const [executionResult, setExecutionResult] = useState<ImportExecutionResponse | null>(null);
   const [executionError, setExecutionError] = useState<string | null>(null);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [retryNotice, setRetryNotice] = useState<string | null>(null);
+  const [copiedBatchId, setCopiedBatchId] = useState(false);
 
   const currentSchema: ModuleSchema = IMPORT_MODULE_SCHEMAS[selectedModule];
+
+  // Helper to trigger server-side classification
+  const runClassification = async (records: any[], mod: ImportModule) => {
+    if (!records || records.length === 0) {
+      setClassification(null);
+      return;
+    }
+    setIsClassifying(true);
+    try {
+      const res = await classifyImportAction({
+        module: mod,
+        records,
+      });
+      setClassification(res);
+    } catch (err) {
+      console.error("Classification error:", err);
+    } finally {
+      setIsClassifying(false);
+    }
+  };
 
   // Handle module selection
   const handleSelectModule = (mod: ImportModule) => {
@@ -99,7 +135,9 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
     setDuplicateWarning(null);
     setMapping({});
     setValidationResult({ validRows: [], invalidRows: [], hasErrors: false });
+    setClassification(null);
     setExecutionResult(null);
+    setRetryNotice(null);
     setCurrentStep(2);
   };
 
@@ -117,7 +155,7 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
       setParsedFile(parsed);
       setMapping(parsed.detectedMapping);
 
-      // Check if file is duplicate
+      // Check if file hash has already been imported
       const duplicateCheck = await checkDuplicateFileHash(parsed.fileHash, selectedModule);
       if (duplicateCheck.isDuplicate && duplicateCheck.previousJob) {
         setDuplicateWarning(duplicateCheck.previousJob);
@@ -130,8 +168,10 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
         parsed.detectedMapping
       );
       setValidationResult(validated);
-
       setCurrentStep(3);
+
+      // Trigger server-side classification
+      await runClassification(validated.validRows, selectedModule);
     } catch (err: any) {
       console.error("File parse error:", err);
       setParseError(err.message || "Failed to parse file. Please ensure it is a valid .xlsx or .csv file.");
@@ -142,12 +182,13 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
   };
 
   // Handle manual column mapping change
-  const handleMappingChange = (targetField: string, sourceHeader: string) => {
+  const handleMappingChange = async (targetField: string, sourceHeader: string) => {
     const newMapping = { ...mapping, [targetField]: sourceHeader };
     setMapping(newMapping);
     if (parsedFile) {
       const validated = validateMappedRows(parsedFile.rawRows, currentSchema, newMapping);
       setValidationResult(validated);
+      await runClassification(validated.validRows, selectedModule);
     }
   };
 
@@ -177,6 +218,51 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
     }
   };
 
+  // Retry failed rows safely
+  const handleRetryFailedRows = async () => {
+    if (!executionResult?.jobId) return;
+
+    setIsRetrying(true);
+    setRetryNotice(null);
+
+    try {
+      const res: RetryImportResponse = await retryImportJobAction({
+        jobId: executionResult.jobId,
+      });
+
+      setExecutionResult({
+        ...executionResult,
+        importedRows: res.importedRows,
+        failedRows: res.failedRows,
+        skippedDuplicates: res.skippedDuplicates,
+        errors: res.errors,
+        message: res.message,
+      });
+
+      setRetryNotice(
+        res.newlyImportedRows > 0
+          ? `Safe retry completed: ${res.newlyImportedRows} newly imported. Remaining failed: ${res.failedRows}.`
+          : `Safe retry finished: 0 newly imported. Remaining failed: ${res.failedRows}.`
+      );
+
+      if (onImportComplete) onImportComplete();
+    } catch (err: any) {
+      console.error("Retry failed:", err);
+      setRetryNotice("Retry failed: " + (err.message || "Unknown error"));
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
+  // Copy batch ID
+  const handleCopyBatchId = () => {
+    if (executionResult?.jobId) {
+      navigator.clipboard.writeText(executionResult.jobId);
+      setCopiedBatchId(true);
+      setTimeout(() => setCopiedBatchId(false), 2000);
+    }
+  };
+
   // Reset wizard
   const handleStartNew = () => {
     setCurrentStep(1);
@@ -185,9 +271,39 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
     setDuplicateWarning(null);
     setMapping({});
     setValidationResult({ validRows: [], invalidRows: [], hasErrors: false });
+    setClassification(null);
     setExecutionResult(null);
     setExecutionError(null);
+    setRetryNotice(null);
   };
+
+  // Filtered rows for Step 3 table
+  const getFilteredRows = (): ClassifiedImportRow[] => {
+    if (!classification) {
+      return validationResult.validRows.map((r, i) => ({
+        rowNumber: r._rowNumber || i + 1,
+        identifier: r.name || r.sku || r.order_number || r.payment_number || r.po_number || `Row #${i + 1}`,
+        classification: "NEW",
+        reason: "Mapped valid row ready for classification.",
+        data: r,
+      }));
+    }
+
+    if (previewFilter === "new") {
+      return classification.rows.filter((r) => r.classification === "NEW");
+    }
+    if (previewFilter === "duplicate") {
+      return classification.rows.filter((r) => r.classification === "DUPLICATE");
+    }
+    if (previewFilter === "errors") {
+      return classification.rows.filter(
+        (r) => r.classification === "INVALID" || r.classification === "REJECTED"
+      );
+    }
+    return classification.rows;
+  };
+
+  const filteredRows = getFilteredRows();
 
   return (
     <div className="space-y-6">
@@ -248,105 +364,88 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
               4
             </span>
             <span className={`text-xs sm:text-sm font-semibold ${currentStep >= 4 ? "text-slate-900" : "text-slate-400"}`}>
-              Import Results
+              Results & Audit
             </span>
           </div>
         </div>
       </div>
 
-      {/* STEP 1: MODULE SELECTION & TEMPLATES */}
+      {/* STEP 1: MODULE SELECTION */}
       {currentStep === 1 && (
-        <div className="space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-bold text-slate-900">Choose Module to Import</h2>
-              <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-                Select an entity to download an official template or proceed with spreadsheet import.
-              </p>
-            </div>
-          </div>
+        <div className="space-y-4">
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h2 className="text-lg font-bold text-slate-900">Choose Module to Import</h2>
+            <p className="text-xs text-slate-500 mt-1">
+              Select which operational dataset you want to import via Excel or CSV.
+            </p>
 
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {Object.values(IMPORT_MODULE_SCHEMAS).map((schema) => {
-              const IconComp = MODULE_ICONS[schema.id] || FileSpreadsheet;
-              return (
-                <div
-                  key={schema.id}
-                  className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm hover:border-[var(--accent)] hover:shadow-md transition-all flex flex-col justify-between group"
-                >
-                  <div>
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--accent)]/10 text-[var(--accent)]">
-                        <IconComp className="h-5 w-5" />
-                      </div>
-                      <span className="text-[11px] font-mono font-semibold uppercase text-slate-400 bg-slate-50 px-2 py-0.5 rounded border border-slate-100">
-                        {schema.fields.length} Fields
-                      </span>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 mt-5">
+              {(Object.keys(IMPORT_MODULE_SCHEMAS) as ImportModule[]).map((modKey) => {
+                const schema = IMPORT_MODULE_SCHEMAS[modKey];
+                const Icon = MODULE_ICONS[modKey] || FileSpreadsheet;
+                const isSelected = selectedModule === modKey;
+
+                return (
+                  <button
+                    key={modKey}
+                    type="button"
+                    onClick={() => handleSelectModule(modKey)}
+                    className={`flex items-start gap-3.5 rounded-xl border p-4 text-left transition hover:shadow-sm ${
+                      isSelected
+                        ? "border-[var(--accent)] bg-[var(--accent)]/5 ring-1 ring-[var(--accent)]"
+                        : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50"
+                    }`}
+                  >
+                    <div
+                      className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
+                        isSelected ? "bg-[var(--accent)] text-white" : "bg-slate-100 text-slate-600"
+                      }`}
+                    >
+                      <Icon className="h-5 w-5" />
                     </div>
-                    <h3 className="text-base font-bold text-slate-900 group-hover:text-[var(--accent)] transition-colors">
-                      {schema.title}
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-1.5 leading-relaxed line-clamp-2">
-                      {schema.description}
-                    </p>
-                  </div>
-
-                  <div className="mt-5 pt-3.5 border-t border-slate-100 flex items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={() => downloadModuleTemplate(schema.id, "xlsx")}
-                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 transition"
-                      title="Download Excel Template"
-                    >
-                      <Download className="h-3.5 w-3.5 text-slate-400" />
-                      <span>Template</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => handleSelectModule(schema.id)}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 shadow-2xs transition"
-                    >
-                      <span>Upload Data</span>
-                      <ArrowRight className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <p className="font-bold text-sm text-slate-900 truncate">{schema.title}</p>
+                        <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                          {schema.fields.length} Fields
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1 line-clamp-2">{schema.description}</p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
 
-      {/* STEP 2: FILE UPLOAD */}
+      {/* STEP 2: FILE UPLOAD & TEMPLATE DOWNLOAD */}
       {currentStep === 2 && (
         <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-6">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-4">
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setCurrentStep(1)}
-                className="rounded-lg p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
-              >
-                <ArrowLeft className="h-5 w-5" />
-              </button>
-              <div>
-                <h2 className="text-lg font-bold text-slate-900">
-                  Upload {currentSchema.title} Spreadsheet
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Supported formats: Microsoft Excel (.xlsx, .xls) and CSV (.csv)
-                </p>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCurrentStep(1)}
+                  className="rounded-lg p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition mr-1"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </button>
+                <h2 className="text-lg font-bold text-slate-900">Upload {currentSchema.title} Spreadsheet</h2>
               </div>
+              <p className="text-xs text-slate-500 mt-1">{currentSchema.description}</p>
             </div>
 
-            <div className="flex items-center gap-2">
+            {/* Template Download Buttons */}
+            <div className="flex items-center gap-2 flex-wrap">
               <button
                 type="button"
                 onClick={() => downloadModuleTemplate(selectedModule, "xlsx")}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition shadow-2xs"
               >
-                <Download className="h-4 w-4 text-slate-400" />
+                <Download className="h-4 w-4 text-emerald-600" />
                 <span>Download .xlsx Template</span>
               </button>
               <button
@@ -371,6 +470,7 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
                     <li key={idx}>{note}</li>
                   ))}
                   <li>Headers do not need to match exactly; common variations are detected automatically.</li>
+                  <li>Stable identifiers (e.g. Phone, SKU, Transaction ID, UTR) prevent accidental duplicates.</li>
                 </ul>
               </div>
             </div>
@@ -415,7 +515,7 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
         </div>
       )}
 
-      {/* STEP 3: COLUMN MAPPING & LIVE PREVIEW */}
+      {/* STEP 3: COLUMN MAPPING & LIVE PREVIEW WITH DUPLICATE PROTECTION */}
       {currentStep === 3 && parsedFile && (
         <div className="space-y-6">
           {/* Top Bar */}
@@ -433,6 +533,12 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
                 <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
                   {parsedFile.totalRows} Rows
                 </span>
+                {isClassifying && (
+                  <span className="inline-flex items-center gap-1.5 text-xs text-amber-600 bg-amber-50 px-2.5 py-0.5 rounded-full border border-amber-200 font-medium">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>Checking Duplicates...</span>
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-500 mt-1">
                 Target Module: <strong className="text-slate-800">{currentSchema.title}</strong>
@@ -450,7 +556,14 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
 
               <button
                 type="button"
-                disabled={validationResult.validRows.length === 0 || isExecuting}
+                disabled={
+                  Boolean(
+                    isExecuting ||
+                    isClassifying ||
+                    (!classification && validationResult.validRows.length === 0) ||
+                    (classification && classification.newCount === 0 && classification.duplicateCount === 0)
+                  )
+                }
                 onClick={handleConfirmImport}
                 className="inline-flex items-center gap-2 rounded-lg bg-[var(--accent)] px-5 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50 transition shadow-2xs"
               >
@@ -459,9 +572,19 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
                     <Loader2 className="h-4 w-4 animate-spin" />
                     <span>Importing...</span>
                   </>
+                ) : isClassifying ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Classifying Rows...</span>
+                  </>
+                ) : classification && classification.newCount === 0 && classification.duplicateCount > 0 ? (
+                  <>
+                    <ShieldCheck className="h-4 w-4" />
+                    <span>Process & Skip {classification.duplicateCount} Duplicates</span>
+                  </>
                 ) : (
                   <>
-                    <span>Confirm & Import ({validationResult.validRows.length} Rows)</span>
+                    <span>Confirm & Import ({classification ? classification.newCount : validationResult.validRows.length} New Rows)</span>
                     <ArrowRight className="h-4 w-4" />
                   </>
                 )}
@@ -469,7 +592,7 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
             </div>
           </div>
 
-          {/* Duplicate Upload Warning Banner */}
+          {/* Duplicate File Warning Banner */}
           {duplicateWarning && (
             <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 shadow-sm text-xs text-amber-900">
               <div className="flex items-start gap-2.5">
@@ -477,22 +600,22 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
                 <div className="space-y-1">
                   <p className="font-bold text-sm text-amber-950">Duplicate File Warning</p>
                   <p>
-                    An identical file hash was already imported on{" "}
+                    An identical file was previously imported on{" "}
                     <strong>{new Date(duplicateWarning.created_at).toLocaleString()}</strong> by{" "}
-                    <strong>{duplicateWarning.creator_name || "Admin"}</strong> (Status:{" "}
-                    <span className="uppercase font-semibold">{duplicateWarning.status}</span>,{" "}
-                    {duplicateWarning.imported_rows} rows imported).
+                    <strong>{duplicateWarning.creator_name || "Admin"}</strong> (Batch:{" "}
+                    <span className="font-mono">{duplicateWarning.id}</span>).
                   </p>
                   <p className="text-amber-800 font-medium pt-0.5">
-                    Re-importing will not create duplicates for records with identical keys, but please ensure you intend to re-apply this file.
+                    Safe Duplicate Protection is active: re-uploading will detect existing records and skip them without duplicate postings.
                   </p>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Validation Status Cards */}
-          <div className="grid gap-4 sm:grid-cols-3">
+          {/* Step 9 Classification Metric Cards */}
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {/* Total Rows */}
             <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm flex items-center justify-between">
               <div>
                 <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Rows</p>
@@ -501,18 +624,40 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
               <FileText className="h-8 w-8 text-slate-300" />
             </div>
 
-            <div className="rounded-xl border border-green-200 bg-green-50/50 p-4 shadow-sm flex items-center justify-between">
+            {/* New Rows (Ready) */}
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 shadow-sm flex items-center justify-between">
               <div>
-                <p className="text-xs font-semibold text-green-700 uppercase tracking-wider">Valid Rows</p>
-                <p className="text-2xl font-bold text-green-900 mt-1">{validationResult.validRows.length}</p>
+                <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wider">New (Ready)</p>
+                <p className="text-2xl font-bold text-emerald-900 mt-1">
+                  {classification ? classification.newCount : validationResult.validRows.length}
+                </p>
+                <p className="text-[11px] text-emerald-600 mt-0.5">Will be imported</p>
               </div>
-              <CheckCircle2 className="h-8 w-8 text-green-500" />
+              <CheckCircle2 className="h-8 w-8 text-emerald-500" />
             </div>
 
+            {/* Duplicates (Will be Skipped) */}
+            <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-4 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-amber-700 uppercase tracking-wider">Duplicates</p>
+                <p className="text-2xl font-bold text-amber-900 mt-1">
+                  {classification ? classification.duplicateCount : 0}
+                </p>
+                <p className="text-[11px] text-amber-600 mt-0.5">Safely skipped</p>
+              </div>
+              <ShieldCheck className="h-8 w-8 text-amber-500" />
+            </div>
+
+            {/* Invalid & Rejected */}
             <div className="rounded-xl border border-red-200 bg-red-50/50 p-4 shadow-sm flex items-center justify-between">
               <div>
-                <p className="text-xs font-semibold text-red-700 uppercase tracking-wider">Rows with Errors</p>
-                <p className="text-2xl font-bold text-red-900 mt-1">{validationResult.invalidRows.length}</p>
+                <p className="text-xs font-semibold text-red-700 uppercase tracking-wider">Errors / Rejected</p>
+                <p className="text-2xl font-bold text-red-900 mt-1">
+                  {classification
+                    ? classification.invalidCount + classification.rejectedCount
+                    : validationResult.invalidRows.length}
+                </p>
+                <p className="text-[11px] text-red-600 mt-0.5">Blocked with reasons</p>
               </div>
               <div className="flex flex-col items-end gap-1">
                 <XCircle className="h-8 w-8 text-red-500" />
@@ -523,7 +668,7 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
                     className="text-[11px] font-bold text-red-700 hover:underline flex items-center gap-1"
                   >
                     <Download className="h-3 w-3" />
-                    <span>Download Errors</span>
+                    <span>Download</span>
                   </button>
                 )}
               </div>
@@ -541,10 +686,11 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
               </div>
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   setMapping(parsedFile.detectedMapping);
                   const validated = validateMappedRows(parsedFile.rawRows, currentSchema, parsedFile.detectedMapping);
                   setValidationResult(validated);
+                  await runClassification(validated.validRows, selectedModule);
                 }}
                 className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 transition"
               >
@@ -582,17 +728,20 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
             </div>
           </div>
 
-          {/* Live Data Preview */}
+          {/* Classified Data Preview Table (Requirement 5) */}
           <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
               <div>
-                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Spreadsheet Data Preview</h3>
+                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
+                  Classification & Row-level Preview
+                </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Review how rows validate with current column mappings.
+                  Pre-classified row-by-row before executing to prevent duplicate or invalid posting.
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              {/* Filter Tabs */}
+              <div className="flex items-center gap-1.5 flex-wrap">
                 <button
                   type="button"
                   onClick={() => setPreviewFilter("all")}
@@ -606,104 +755,125 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setPreviewFilter("valid")}
+                  onClick={() => setPreviewFilter("new")}
                   className={`rounded-lg px-3 py-1 text-xs font-semibold transition ${
-                    previewFilter === "valid"
-                      ? "bg-green-600 text-white"
-                      : "bg-green-50 text-green-700 hover:bg-green-100 border border-green-200"
+                    previewFilter === "new"
+                      ? "bg-emerald-600 text-white"
+                      : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200"
                   }`}
                 >
-                  Valid ({validationResult.validRows.length})
+                  New ({classification ? classification.newCount : validationResult.validRows.length})
                 </button>
                 <button
                   type="button"
-                  onClick={() => setPreviewFilter("invalid")}
+                  onClick={() => setPreviewFilter("duplicate")}
                   className={`rounded-lg px-3 py-1 text-xs font-semibold transition ${
-                    previewFilter === "invalid"
+                    previewFilter === "duplicate"
+                      ? "bg-amber-600 text-white"
+                      : "bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200"
+                  }`}
+                >
+                  Duplicates ({classification ? classification.duplicateCount : 0})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewFilter("errors")}
+                  className={`rounded-lg px-3 py-1 text-xs font-semibold transition ${
+                    previewFilter === "errors"
                       ? "bg-red-600 text-white"
                       : "bg-red-50 text-red-700 hover:bg-red-100 border border-red-200"
                   }`}
                 >
-                  Errors ({validationResult.invalidRows.length})
+                  Errors (
+                  {classification
+                    ? classification.invalidCount + classification.rejectedCount
+                    : validationResult.invalidRows.length}
+                  )
                 </button>
               </div>
             </div>
 
-            {/* Error Table if viewing errors */}
-            {previewFilter === "invalid" && (
-              <div className="overflow-x-auto rounded-lg border border-red-200">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-red-50/70 border-b border-red-200 text-red-900 uppercase font-semibold">
-                    <tr>
-                      <th className="p-3 w-16">Row #</th>
-                      <th className="p-3 w-48">Identifier</th>
-                      <th className="p-3">Validation Errors</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-red-100 bg-white">
-                    {validationResult.invalidRows.map((err, i) => (
-                      <tr key={i} className="hover:bg-red-50/30">
-                        <td className="p-3 font-mono font-bold text-red-700">{err.rowNumber}</td>
-                        <td className="p-3 font-semibold text-slate-900">{err.identifier || "—"}</td>
-                        <td className="p-3 text-red-700 space-y-0.5">
-                          {err.errors.map((eStr, ei) => (
-                            <div key={ei} className="flex items-center gap-1.5">
-                              <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
-                              <span>{eStr}</span>
-                            </div>
-                          ))}
-                        </td>
-                      </tr>
+            {/* Table */}
+            <div className="overflow-x-auto rounded-lg border border-slate-200 max-h-96">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-semibold uppercase sticky top-0 z-10">
+                  <tr>
+                    <th className="p-3 w-14">Row #</th>
+                    <th className="p-3 w-28">Status</th>
+                    <th className="p-3 w-40">Identifier</th>
+                    <th className="p-3 min-w-[220px]">Classification Reason</th>
+                    {currentSchema.fields.slice(0, 5).map((f) => (
+                      <th key={f.key} className="p-3 whitespace-nowrap">
+                        {f.label}
+                      </th>
                     ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {filteredRows.slice(0, 100).map((row, i) => {
+                    const statusClass =
+                      row.classification === "NEW"
+                        ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+                        : row.classification === "DUPLICATE"
+                        ? "bg-amber-100 text-amber-800 border-amber-200"
+                        : row.classification === "REJECTED"
+                        ? "bg-purple-100 text-purple-800 border-purple-200"
+                        : "bg-red-100 text-red-800 border-red-200";
 
-            {/* Valid / All Rows Preview Table */}
-            {previewFilter !== "invalid" && (
-              <div className="overflow-x-auto rounded-lg border border-slate-200 max-h-96">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-semibold uppercase sticky top-0">
-                    <tr>
-                      <th className="p-3 w-16">Row #</th>
-                      {currentSchema.fields.map((f) => (
-                        <th key={f.key} className="p-3 whitespace-nowrap">
-                          {f.label} {f.required && <span className="text-red-500">*</span>}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 bg-white">
-                    {validationResult.validRows.slice(0, 100).map((row, i) => (
+                    return (
                       <tr key={i} className="hover:bg-slate-50/50">
-                        <td className="p-3 font-mono text-slate-400">{row._rowNumber}</td>
-                        {currentSchema.fields.map((f) => (
-                          <td key={f.key} className="p-3 whitespace-nowrap text-slate-800">
-                            {row[f.key] !== null && row[f.key] !== undefined ? String(row[f.key]) : "—"}
+                        <td className="p-3 font-mono font-bold text-slate-500">{row.rowNumber}</td>
+                        <td className="p-3">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold border ${statusClass}`}
+                          >
+                            {row.classification}
+                          </span>
+                        </td>
+                        <td className="p-3 font-semibold text-slate-900 whitespace-nowrap">
+                          {row.identifier || "—"}
+                        </td>
+                        <td className="p-3 text-slate-600">
+                          <span className={row.classification !== "NEW" ? "font-medium text-slate-800" : ""}>
+                            {row.reason || "—"}
+                          </span>
+                        </td>
+                        {currentSchema.fields.slice(0, 5).map((f) => (
+                          <td key={f.key} className="p-3 whitespace-nowrap text-slate-700">
+                            {row.data[f.key] !== null && row.data[f.key] !== undefined
+                              ? String(row.data[f.key])
+                              : "—"}
                           </td>
                         ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            {validationResult.validRows.length > 100 && previewFilter !== "invalid" && (
+                    );
+                  })}
+                  {filteredRows.length === 0 && (
+                    <tr>
+                      <td colSpan={currentSchema.fields.slice(0, 5).length + 4} className="p-8 text-center text-slate-400">
+                        No rows found matching current filter ({previewFilter}).
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {filteredRows.length > 100 && (
               <p className="text-xs text-slate-400 text-right">
-                Showing first 100 of {validationResult.validRows.length} valid rows.
+                Showing first 100 of {filteredRows.length} filtered rows.
               </p>
             )}
           </div>
         </div>
       )}
 
-      {/* STEP 4: RESULTS */}
+      {/* STEP 4: RESULTS & SAFE RETRY (Requirements 6, 7, 9) */}
       {currentStep === 4 && executionResult && (
         <div className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm text-center space-y-6">
           <div className="flex flex-col items-center justify-center">
             {executionResult.failedRows === 0 ? (
-              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100 text-green-600 mb-3">
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 mb-3">
                 <CheckCircle2 className="h-10 w-10" />
               </div>
             ) : executionResult.importedRows > 0 ? (
@@ -723,16 +893,49 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
                 : "Import Failed"}
             </h2>
             <p className="text-sm text-slate-600 mt-1">{executionResult.message}</p>
+
+            {/* Import Batch ID (Requirement 7) */}
+            <div className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600">
+              <span className="font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Batch ID:</span>
+              <span className="font-mono font-bold text-slate-800">{executionResult.jobId}</span>
+              <button
+                type="button"
+                onClick={handleCopyBatchId}
+                title="Copy Batch ID"
+                className="text-slate-400 hover:text-slate-700 transition"
+              >
+                {copiedBatchId ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+              </button>
+            </div>
           </div>
 
-          <div className="mx-auto max-w-lg grid grid-cols-3 gap-4 border-y border-slate-100 py-4 text-center">
+          {/* Retry notice banner */}
+          {retryNotice && (
+            <div className="mx-auto max-w-xl rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs font-semibold text-blue-900 flex items-center justify-between">
+              <span>{retryNotice}</span>
+              <button
+                type="button"
+                onClick={() => setRetryNotice(null)}
+                className="text-blue-500 hover:text-blue-700"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {/* Counts Breakdown (Requirement 5 & 6) */}
+          <div className="mx-auto max-w-xl grid grid-cols-4 gap-3 border-y border-slate-100 py-4 text-center">
             <div>
               <p className="text-xs font-semibold text-slate-400 uppercase">Total Rows</p>
               <p className="text-xl font-bold text-slate-900 mt-1">{executionResult.totalRows}</p>
             </div>
             <div>
-              <p className="text-xs font-semibold text-green-600 uppercase">Imported</p>
-              <p className="text-xl font-bold text-green-700 mt-1">{executionResult.importedRows}</p>
+              <p className="text-xs font-semibold text-emerald-600 uppercase">Imported</p>
+              <p className="text-xl font-bold text-emerald-700 mt-1">{executionResult.importedRows}</p>
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-amber-600 uppercase">Duplicates Skipped</p>
+              <p className="text-xl font-bold text-amber-700 mt-1">{executionResult.skippedDuplicates ?? 0}</p>
             </div>
             <div>
               <p className="text-xs font-semibold text-red-600 uppercase">Failed</p>
@@ -740,23 +943,48 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
             </div>
           </div>
 
-          {executionResult.errors.length > 0 && (
-            <div className="mx-auto max-w-xl text-left bg-red-50/50 border border-red-200 rounded-lg p-4 space-y-2">
-              <div className="flex items-center justify-between">
+          {/* Error Report and Safe Retry Options (Requirement 9) */}
+          {executionResult.failedRows > 0 && (
+            <div className="mx-auto max-w-xl text-left bg-red-50/50 border border-red-200 rounded-lg p-5 space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <span className="text-xs font-bold text-red-900 uppercase">Failure Details</span>
-                <button
-                  type="button"
-                  onClick={() => downloadErrorReportFile(parsedFile?.filename || "import", executionResult.errors)}
-                  className="inline-flex items-center gap-1.5 text-xs font-bold text-red-700 hover:underline"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  <span>Download Error Report</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      downloadErrorReportFile(parsedFile?.filename || "import_errors", executionResult.errors)
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-md border border-red-300 bg-white px-2.5 py-1 text-xs font-bold text-red-700 hover:bg-red-50 transition shadow-2xs"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    <span>Download Error Report</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isRetrying}
+                    onClick={handleRetryFailedRows}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-3 py-1 text-xs font-bold text-white hover:bg-amber-700 transition disabled:opacity-50 shadow-2xs"
+                  >
+                    {isRetrying ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        <span>Retrying...</span>
+                      </>
+                    ) : (
+                      <>
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        <span>Safe Retry ({executionResult.failedRows} Rows)</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
               <ul className="text-xs text-red-700 divide-y divide-red-100 max-h-48 overflow-y-auto">
-                {executionResult.errors.slice(0, 10).map((err, idx) => (
-                  <li key={idx} className="py-1.5">
-                    Row {err.rowNumber}: {err.errors.join("; ")}
+                {executionResult.errors.map((err, idx) => (
+                  <li key={idx} className="py-1.5 flex items-start gap-2">
+                    <span className="font-mono font-bold text-red-900 shrink-0">Row {err.rowNumber}:</span>
+                    <span>{err.errors.join("; ")}</span>
                   </li>
                 ))}
               </ul>

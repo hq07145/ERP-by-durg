@@ -224,14 +224,34 @@ export function ReportTable({
         ];
       case "delivery":
         return [
-          { key: "delivery_number", header: "Delivery #" },
           { key: "order_number", header: "Order #" },
+          { key: "delivery_number", header: "Delivery #" },
           { key: "customer_name", header: "Customer" },
+          { key: "delivery_date", header: "Delivery Date" },
+          { key: "sku", header: "SKU" },
+          { key: "product_name", header: "Product" },
+          { key: "ordered_quantity", header: "Ordered Qty", align: "right" },
+          { key: "dispatched_quantity", header: "Dispatched Qty", align: "right" },
+          { key: "remaining_quantity", header: "Remaining Qty", align: "right" },
           { key: "status", header: "Status" },
-          { key: "expected_delivery_date", header: "Expected" },
-          { key: "tracking_number", header: "Tracking" },
           { key: "vehicle", header: "Vehicle" },
           { key: "driver", header: "Driver" },
+        ];
+      case "returns":
+        return [
+          { key: "return_number", header: "Return #" },
+          { key: "return_date", header: "Return Date" },
+          { key: "customer_name", header: "Customer" },
+          { key: "order_number", header: "Order #" },
+          { key: "delivery_number", header: "Delivery #" },
+          { key: "sku", header: "SKU" },
+          { key: "product_name", header: "Product" },
+          { key: "returned_quantity", header: "Returned Qty", align: "right" },
+          { key: "product_condition", header: "Condition" },
+          { key: "status", header: "Status" },
+          { key: "adjustment_type", header: "Adjustment" },
+          { key: "adjustment_amount", header: "Amount", align: "right" },
+          { key: "reason", header: "Reason" },
         ];
       default:
         return [];

@@ -29,7 +29,7 @@ import {
 
 import type { SalesSummary, ExpensesSummary } from "@/types/expense";
 
-export const defaultDashboardSummary: DashboardSummary = {
+const defaultDashboardSummary: DashboardSummary = {
   total_sales: 0,
   payments_received: 0,
   outstanding_due: 0,
@@ -158,7 +158,7 @@ export async function getDashboardSummary(
           .from("deliveries")
           .select("id", { count: "exact", head: true })
           .eq("business_id", context.user.business_id)
-          .in("status", ["READY", "PACKED", "DISPATCHED", "IN_TRANSIT"])
+          .in("status", ["READY", "PACKED", "DISPATCHED", "PARTIALLY_DISPATCHED", "FULLY_DISPATCHED", "IN_TRANSIT"])
           .lt("expected_delivery_date", today);
         overdueCount = overdueRes.count ?? 0;
       } catch (err) {
@@ -194,6 +194,18 @@ export async function getDashboardSummary(
       }
     }
 
+    let pendingReturnsCount = 0;
+    try {
+      const pRetRes = await supabase
+        .from("goods_returns")
+        .select("id", { count: "exact", head: true })
+        .eq("business_id", context.user.business_id)
+        .eq("status", "PENDING_INSPECTION");
+      pendingReturnsCount = pRetRes.count ?? 0;
+    } catch (err) {
+      console.error("Failed to fetch pending returns count:", err);
+    }
+
     const netSalesNum = Number(salesData.net_sales || 0);
     const expensesNum = Number(expensesData.total_expenses || 0);
     const profitNum = Math.round((netSalesNum - expensesNum) * 100) / 100;
@@ -211,6 +223,7 @@ export async function getDashboardSummary(
       delivered: deliveredCount,
       low_stock_items: lowStockCount,
       overdue_deliveries: overdueCount,
+      pending_returns: pendingReturnsCount,
     };
   } catch (err) {
     console.error("getDashboardSummary top-level error:", err);
@@ -743,7 +756,7 @@ export async function getUpcomingDeliveries(
         order:orders(order_number, customer:customers(name))
       `)
       .eq("business_id", context.user.business_id)
-      .in("status", ["PACKED", "DISPATCHED", "IN_TRANSIT"])
+      .in("status", ["PACKED", "DISPATCHED", "PARTIALLY_DISPATCHED", "FULLY_DISPATCHED", "IN_TRANSIT"])
       .gte("expected_delivery_date", effectiveStart);
 
     if (effectiveEnd) {

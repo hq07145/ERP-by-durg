@@ -37,12 +37,15 @@ import {
   markDeliveryInTransit,
   completeDelivery,
   cancelDelivery,
+  downloadDeliveryChallanPdf,
 } from "@/lib/delivery/actions";
+import { triggerDownload } from "@/lib/reports/export-client";
 import {
   validateAndNormalizeVehicleNumber,
   validateDriverMobile,
 } from "@/lib/delivery/validation";
-import { CreateDeliveryModal } from "./create-delivery-modal";
+import { CreatePartialDeliveryModal } from "./create-partial-delivery-modal";
+import { Printer } from "lucide-react";
 
 interface DeliveryListProps {
   deliveries: DeliveryListItem[];
@@ -97,6 +100,24 @@ export function DeliveryList({
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(initialCreateModalOpen);
+  const [downloadingChallanId, setDownloadingChallanId] = useState<string | null>(null);
+
+  const handleDownloadChallan = async (deliveryId: string, deliveryNum: string) => {
+    setDownloadingChallanId(deliveryId);
+    try {
+      const res = await downloadDeliveryChallanPdf(deliveryId);
+      if (res.success && res.base64) {
+        triggerDownload(res.base64, "application/pdf", res.filename || `Challan-${deliveryNum}.pdf`);
+      } else {
+        setActionError("Failed to generate challan PDF.");
+      }
+    } catch (err) {
+      console.error("Error downloading challan:", err);
+      setActionError(err instanceof Error ? err.message : "Failed to download challan.");
+    } finally {
+      setDownloadingChallanId(null);
+    }
+  };
 
   // Maintain local state for optimistic updates
   const [itemsList, setItemsList] = useState<DeliveryListItem[]>(deliveries);
@@ -326,8 +347,9 @@ export function DeliveryList({
           setLocalCounts((prev) => {
             if (!prev) return prev;
             const updated = { ...prev };
-            if (oldStatus in updated && updated[oldStatus as keyof DeliveryStatusCounts] > 0) {
-              updated[oldStatus as keyof DeliveryStatusCounts]--;
+            const prevCount = updated[oldStatus as keyof DeliveryStatusCounts] || 0;
+            if (prevCount > 0) {
+              updated[oldStatus as keyof DeliveryStatusCounts] = prevCount - 1;
             }
             updated.DISPATCHED++;
             return updated;
@@ -378,8 +400,9 @@ export function DeliveryList({
           setLocalCounts((prev) => {
             if (!prev) return prev;
             const updated = { ...prev };
-            if (oldStatus in updated && updated[oldStatus as keyof DeliveryStatusCounts] > 0) {
-              updated[oldStatus as keyof DeliveryStatusCounts]--;
+            const prevCount = updated[oldStatus as keyof DeliveryStatusCounts] || 0;
+            if (prevCount > 0) {
+              updated[oldStatus as keyof DeliveryStatusCounts] = prevCount - 1;
             }
             updated.DELIVERED++;
             return updated;
@@ -431,8 +454,9 @@ export function DeliveryList({
           setLocalCounts((prev) => {
             if (!prev) return prev;
             const updated = { ...prev };
-            if (oldStatus in updated && updated[oldStatus as keyof DeliveryStatusCounts] > 0) {
-              updated[oldStatus as keyof DeliveryStatusCounts]--;
+            const prevCount = updated[oldStatus as keyof DeliveryStatusCounts] || 0;
+            if (prevCount > 0) {
+              updated[oldStatus as keyof DeliveryStatusCounts] = prevCount - 1;
             }
             updated.CANCELLED++;
             return updated;
@@ -876,6 +900,20 @@ export function DeliveryList({
                               View
                             </Link>
                           )}
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadChallan(delivery.id, delivery.delivery_number)}
+                            disabled={downloadingChallanId === delivery.id}
+                            className="rounded-lg border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-semibold text-[#0F766E] hover:bg-teal-100 transition disabled:opacity-50 inline-flex items-center gap-1"
+                            title="Print / Download Delivery Challan PDF"
+                          >
+                            {downloadingChallanId === delivery.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Printer className="w-3 h-3" />
+                            )}
+                            <span>Challan</span>
+                          </button>
                           {actions.map((act) => (
                             <button
                               key={act.targetStatus}
@@ -1260,14 +1298,14 @@ export function DeliveryList({
           </div>
         </div>
       )}
-      {/* Create Delivery Modal */}
+      {/* Create Delivery Modal (Partial Dispatch) */}
       {canCreate && (
-        <CreateDeliveryModal
+        <CreatePartialDeliveryModal
           isOpen={isCreateModalOpen}
           onClose={() => setIsCreateModalOpen(false)}
           customers={customers || []}
           onSuccess={(res) => {
-            setActionSuccess(res.message);
+            setActionSuccess(res.message || `Delivery ${res.delivery_number} recorded successfully!`);
             router.refresh();
           }}
         />

@@ -218,6 +218,31 @@ export function PaymentDetail({ payment, canEdit, canDelete }: PaymentDetailProp
               {format(new Date(payment.created_at), "MMM d, yyyy HH:mm")}
             </p>
           </div>
+
+          {payment.utr_number && (
+            <div>
+              <p className="text-slate-500 font-medium">Bank UTR</p>
+              <p className="font-mono font-semibold text-teal-800 mt-0.5">
+                {payment.utr_number}
+              </p>
+            </div>
+          )}
+          {payment.transaction_id && (
+            <div>
+              <p className="text-slate-500 font-medium">Gateway / Trans ID</p>
+              <p className="font-mono font-semibold text-indigo-800 mt-0.5">
+                {payment.transaction_id}
+              </p>
+            </div>
+          )}
+          {payment.idempotency_key && (
+            <div className="sm:col-span-2">
+              <p className="text-slate-500 font-medium">Idempotency Key</p>
+              <p className="font-mono text-[11px] text-slate-600 mt-0.5 truncate" title={payment.idempotency_key}>
+                {payment.idempotency_key}
+              </p>
+            </div>
+          )}
         </div>
 
         {payment.notes && (

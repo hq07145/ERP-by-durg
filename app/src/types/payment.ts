@@ -15,6 +15,9 @@ export interface Payment {
   reference: string | null;
   notes: string | null;
   status: PaymentStatus;
+  idempotency_key?: string | null;
+  transaction_id?: string | null;
+  utr_number?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -106,6 +109,17 @@ export interface CreatePaymentFormValues {
   reference?: string;
   notes?: string;
   status?: PaymentStatus;
+  idempotency_key?: string;
+  transaction_id?: string;
+  utr_number?: string;
+  allow_duplicate_reference?: boolean;
+}
+
+export interface CreatePaymentResult {
+  payment_id: string;
+  payment_number?: string;
+  already_processed?: boolean;
+  message: string;
 }
 
 export interface UpdatePaymentFormValues {

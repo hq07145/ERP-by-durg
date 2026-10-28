@@ -13,7 +13,8 @@ export type ReportType =
   | "profit"
   | "production"
   | "inventory"
-  | "delivery";
+  | "delivery"
+  | "returns";
 
 export type ExportFormat = "csv" | "excel" | "pdf";
 
@@ -86,6 +87,13 @@ export interface DeliveryReportFilters extends BaseReportFilters {
   status?: DeliveryStatus;
 }
 
+export interface ReturnsReportFilters extends BaseReportFilters {
+  customerId?: string;
+  orderId?: string;
+  status?: string;
+  productCondition?: string;
+}
+
 export type ReportFilters =
   | SalesReportFilters
   | OrdersReportFilters
@@ -95,7 +103,8 @@ export type ReportFilters =
   | ProfitReportFilters
   | ProductionReportFilters
   | InventoryReportFilters
-  | DeliveryReportFilters;
+  | DeliveryReportFilters
+  | ReturnsReportFilters;
 
 // Report row types
 export interface SalesReportRow {
@@ -257,6 +266,12 @@ export interface DeliveryReportRow {
   order_id: string;
   order_number: string;
   customer_name: string | null;
+  delivery_date?: string | null;
+  sku?: string | null;
+  product_name?: string | null;
+  ordered_quantity?: number | string;
+  dispatched_quantity?: number | string;
+  remaining_quantity?: number | string;
   status: DeliveryStatus;
   expected_delivery_date: string | null;
   tracking_number: string | null;
@@ -264,6 +279,26 @@ export interface DeliveryReportRow {
   driver: string | null;
   dispatched_at: string | null;
   delivered_at: string | null;
+  created_at: string;
+}
+
+export interface GoodsReturnReportRow {
+  id: string;
+  return_number: string;
+  return_date: string;
+  customer_id: string;
+  customer_name: string;
+  order_number: string | null;
+  delivery_number: string | null;
+  invoice_number: string | null;
+  sku: string | null;
+  product_name: string | null;
+  returned_quantity: number | string;
+  product_condition: string;
+  status: string;
+  adjustment_type: string | null;
+  adjustment_amount: number | string;
+  reason: string;
   created_at: string;
 }
 
@@ -276,7 +311,8 @@ export type ReportRow =
   | ProfitReportRow
   | ProductionReportRow
   | InventoryReportRow
-  | DeliveryReportRow;
+  | DeliveryReportRow
+  | GoodsReturnReportRow;
 
 export interface ReportConfig {
   type: ReportType;
@@ -348,6 +384,13 @@ export const REPORT_CONFIGS: Record<ReportType, ReportConfig> = {
     title: "Delivery Report",
     description: "Delivery status and tracking information",
     requiredPermission: "delivery.view",
+    exportPermission: "reports.export",
+  },
+  returns: {
+    type: "returns",
+    title: "Goods Returns Report",
+    description: "Goods returns, condition inspection and financial adjustments",
+    requiredPermission: "reports.view",
     exportPermission: "reports.export",
   },
 };

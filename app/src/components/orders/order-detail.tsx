@@ -17,13 +17,17 @@ import type {
   OrderDeliveryItem,
   OrderProductionItem,
   CustomerAdvanceAllocation,
+  OrderGoodsReturnItem,
 } from "@/types/order";
 import {
   getOrderPaymentStatus,
   ORDER_PAYMENT_STATUS_COLORS,
   ORDER_PAYMENT_STATUS_LABELS,
 } from "@/types/order";
-import { createDeliveryFromOrder } from "@/lib/delivery/actions";
+import { createDeliveryFromOrder, downloadDeliveryChallanPdf, cancelPartialDelivery } from "@/lib/delivery/actions";
+import { triggerDownload } from "@/lib/reports/export-client";
+import { CreatePartialDeliveryModal } from "@/components/delivery/create-partial-delivery-modal";
+import { DELIVERY_STATUS_COLORS } from "@/types/delivery";
 import {
   Building2,
   Calendar,
@@ -52,6 +56,9 @@ import {
   Receipt,
   X,
   Wallet,
+  Eye,
+  Download,
+  RotateCcw,
 } from "lucide-react";
 
 interface DeliveryInfo {
@@ -84,6 +91,7 @@ interface OrderDetailProps {
   statusHistory: OrderStatusHistory[];
   payments?: OrderPaymentItem[];
   deliveries?: OrderDeliveryItem[];
+  returns?: OrderGoodsReturnItem[];
   productionOrders?: OrderProductionItem[];
   advanceAllocations?: CustomerAdvanceAllocation[];
   customerAdvanceBalance?: number;
@@ -148,6 +156,7 @@ export function OrderDetail({
   statusHistory,
   payments = [],
   deliveries = [],
+  returns = [],
   productionOrders = [],
   advanceAllocations = [],
   customerAdvanceBalance,
@@ -170,11 +179,54 @@ export function OrderDetail({
   const isConfirmingRef = useRef(false);
 
   const [showCreateDeliveryDialog, setShowCreateDeliveryDialog] = useState(false);
+  const [showPartialDeliveryModal, setShowPartialDeliveryModal] = useState(false);
+  const [downloadingChallanId, setDownloadingChallanId] = useState<string | null>(null);
+  const [cancelDeliveryTarget, setCancelDeliveryTarget] = useState<any | null>(null);
+  const [cancelDeliveryReason, setCancelDeliveryReason] = useState("");
+  const [isCancellingDelivery, setIsCancellingDelivery] = useState(false);
+  const [cancelDeliveryError, setCancelDeliveryError] = useState<string | null>(null);
   const [deliveryNumber, setDeliveryNumber] = useState("");
   const [deliveryNotes, setDeliveryNotes] = useState("");
   const [creatingDelivery, setCreatingDelivery] = useState(false);
   const [createDeliveryError, setCreateDeliveryError] = useState<string | null>(null);
   const [createDeliverySuccess, setCreateDeliverySuccess] = useState<string | null>(null);
+
+  const handleDownloadChallan = async (deliveryId: string, deliveryNum: string) => {
+    setDownloadingChallanId(deliveryId);
+    try {
+      const res = await downloadDeliveryChallanPdf(deliveryId);
+      if (res.success && res.base64) {
+        triggerDownload(res.base64, "application/pdf", res.filename || `Challan-${deliveryNum}.pdf`);
+      } else {
+        alert("Failed to generate challan PDF.");
+      }
+    } catch (err) {
+      console.error("Error downloading challan:", err);
+      alert(err instanceof Error ? err.message : "Failed to download challan.");
+    } finally {
+      setDownloadingChallanId(null);
+    }
+  };
+
+  const handleConfirmCancelDelivery = async () => {
+    if (!cancelDeliveryTarget) return;
+    if (!cancelDeliveryReason.trim()) {
+      setCancelDeliveryError("Cancellation reason is required.");
+      return;
+    }
+    setIsCancellingDelivery(true);
+    setCancelDeliveryError(null);
+    try {
+      await cancelPartialDelivery(cancelDeliveryTarget.id, cancelDeliveryReason.trim());
+      setCancelDeliveryTarget(null);
+      setCancelDeliveryReason("");
+      router.refresh();
+    } catch (err) {
+      setCancelDeliveryError(err instanceof Error ? err.message : "Failed to cancel delivery.");
+    } finally {
+      setIsCancellingDelivery(false);
+    }
+  };
 
   const [localStatus, setLocalStatus] = useState(order.status);
   useEffect(() => {
@@ -438,29 +490,20 @@ export function OrderDetail({
               )
             )}
 
-            {order.status === "CONFIRMED" && canCreateDelivery && isProductionComplete && !deliveries.some((d: any) => d.status !== "CANCELLED") && (
+            {order.status === "CONFIRMED" && canCreateDelivery && order.delivery_status !== "FULLY_DISPATCHED" && order.delivery_status !== "DELIVERED" && (
               <button
-                onClick={() => {
-                  setDeliveryNumber(`DEL-${order.order_number}-${Date.now().toString(36).toUpperCase()}`);
-                  setDeliveryNotes("");
-                  setCreateDeliveryError(null);
-                  setCreateDeliverySuccess(null);
-                  setShowCreateDeliveryDialog(true);
-                }}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 transition min-h-9"
+                onClick={() => setShowPartialDeliveryModal(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#0F766E] px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#0D655E] transition min-h-9"
               >
                 <Truck className="h-4 w-4" />
                 <span>Create Delivery</span>
               </button>
             )}
 
-            {order.status === "CONFIRMED" && canCreateDelivery && !isProductionComplete && !deliveries.some((d: any) => d.status !== "CANCELLED") && (
-              <span
-                title="Delivery creation is only permitted once all items have completed production"
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-100 px-3.5 py-2 text-xs font-medium text-slate-500 cursor-not-allowed min-h-9"
-              >
-                <Clock className="h-3.5 w-3.5" />
-                <span>Production Pending</span>
+            {(order.delivery_status === "FULLY_DISPATCHED" || order.delivery_status === "DELIVERED") && (
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs font-semibold text-emerald-800 min-h-9">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                <span>Fully Dispatched</span>
               </span>
             )}
           </div>
@@ -505,10 +548,12 @@ export function OrderDetail({
 
         <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
           <span className="text-[11px] font-semibold tracking-wider text-slate-500 uppercase">Delivery Status</span>
-          <p className="text-xl sm:text-2xl font-bold text-slate-800 mt-1">
-            {order.status === "DRAFT" || order.delivery_status === "PENDING" ? "PREDICTED" : (order.delivery_status || "PENDING")}
-          </p>
-          <span className="text-[11px] text-slate-500 mt-1 block">
+          <div className="mt-1 flex items-center gap-2">
+            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold border ${(DELIVERY_STATUS_COLORS as any)[order.delivery_status] || "bg-slate-100 text-slate-700 border-slate-200"}`}>
+              {(order.delivery_status || "PENDING").replace(/_/g, " ")}
+            </span>
+          </div>
+          <span className="text-[11px] text-slate-500 mt-1.5 block">
             {order.status === "DRAFT" || order.delivery_status === "PENDING" ? "Predicted Target: " : "Committed Target: "}
             <span className="font-semibold text-slate-800">{formatDate(order.expected_delivery_date)}</span>
           </span>
@@ -531,7 +576,11 @@ export function OrderDetail({
               <thead className="bg-slate-50">
                 <tr>
                   <th className="px-3.5 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Product</th>
-                  <th className="px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Qty</th>
+                  <th className="px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Ordered</th>
+                  <th className="px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Delivered</th>
+                  <th className="px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Total Returned</th>
+                  <th className="px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Net Retained</th>
+                  <th className="px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Remaining to Deliver</th>
                   <th className="px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Unit Price</th>
                   <th className="px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Disc %</th>
                   <th className="px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Taxable Val</th>
@@ -545,6 +594,10 @@ export function OrderDetail({
               <tbody className="divide-y divide-slate-100 bg-white text-sm">
                 {items.map((item) => {
                   const qty = Number(item.quantity) || 0;
+                  const totalDelivered = item.total_delivered_quantity !== undefined ? item.total_delivered_quantity : (Number(item.delivered_quantity || item.dispatched_quantity) || 0);
+                  const totalReturned = item.total_returned_quantity !== undefined ? item.total_returned_quantity : 0;
+                  const netRetained = item.net_retained_quantity !== undefined ? item.net_retained_quantity : Math.max(0, totalDelivered - totalReturned);
+                  const remainingToDeliver = item.remaining_to_deliver !== undefined ? item.remaining_to_deliver : Math.max(0, qty - totalDelivered);
                   const price = Number(item.unit_price) || 0;
                   const discRate = Number(item.discount_rate) || 0;
                   const gross = qty * price;
@@ -569,6 +622,18 @@ export function OrderDetail({
                       </td>
                       <td className="px-3 py-3 text-slate-700 text-right font-medium">
                         {qty.toFixed(2)} <span className="text-xs text-slate-500">{item.product_unit}</span>
+                      </td>
+                      <td className="px-3 py-3 text-right font-semibold text-teal-700">
+                        {totalDelivered.toFixed(2)} <span className="text-xs text-slate-500">{item.product_unit}</span>
+                      </td>
+                      <td className={`px-3 py-3 text-right font-semibold ${totalReturned > 0 ? "text-rose-600" : "text-slate-400"}`}>
+                        {totalReturned.toFixed(2)} <span className="text-xs text-slate-400">{item.product_unit}</span>
+                      </td>
+                      <td className="px-3 py-3 text-right font-bold text-emerald-700">
+                        {netRetained.toFixed(2)} <span className="text-xs text-slate-500">{item.product_unit}</span>
+                      </td>
+                      <td className={`px-3 py-3 text-right font-semibold ${remainingToDeliver > 0 ? "text-amber-600" : "text-emerald-700"}`}>
+                        {remainingToDeliver.toFixed(2)} <span className="text-xs text-slate-500">{item.product_unit}</span>
                       </td>
                       <td className="px-3 py-3 text-slate-700 text-right font-mono">
                         {formatCurrency(item.unit_price)}
@@ -962,12 +1027,24 @@ export function OrderDetail({
         ) : null}
       </div>
 
-      {/* Deliveries Table (Step 4) */}
+      {/* Deliveries Table (Step 3: Partial Dispatch Foundation & History) */}
       <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-base font-bold text-slate-900 mb-4 flex items-center gap-2">
-          <Truck className="w-4 h-4 text-[#0F766E]" />
-          <span>Deliveries ({deliveries.length})</span>
-        </h2>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+          <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+            <Truck className="w-4 h-4 text-[#0F766E]" />
+            <span>Delivery History ({deliveries.length})</span>
+          </h2>
+          {order.status === "CONFIRMED" && canCreateDelivery && order.delivery_status !== "FULLY_DISPATCHED" && order.delivery_status !== "DELIVERED" && (
+            <button
+              type="button"
+              onClick={() => setShowPartialDeliveryModal(true)}
+              className="inline-flex items-center gap-1 rounded-lg bg-teal-50 border border-teal-200 px-3 py-1.5 text-xs font-semibold text-[#0F766E] hover:bg-teal-100 transition"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Create Next Delivery</span>
+            </button>
+          )}
+        </div>
 
         {deliveries.length === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-200 p-6 text-center text-slate-500 text-xs">
@@ -975,32 +1052,211 @@ export function OrderDetail({
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-slate-200 text-left" role="table">
-              <thead className="bg-slate-50">
+            <table className="min-w-full divide-y divide-slate-200 text-left text-xs" role="table">
+              <thead className="bg-slate-50 text-slate-600 font-semibold uppercase tracking-wider">
                 <tr>
-                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Delivery #</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Expected Date</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Tracking #</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Dispatched</th>
-                  <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Delivered</th>
+                  <th className="px-4 py-3">Delivery #</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3 text-right">Quantity</th>
+                  <th className="px-4 py-3">Transport / Driver</th>
+                  <th className="px-4 py-3">Invoice Ref</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 bg-white text-sm">
-                {deliveries.map((del) => (
-                  <tr key={del.id} className="hover:bg-slate-50/50 transition">
-                    <td className="px-4 py-3 font-mono font-semibold text-slate-900">{del.delivery_number}</td>
-                    <td className="px-4 py-3">
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-                        {del.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-slate-600">{formatDate(del.expected_delivery_date)}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-slate-500">{del.tracking_number || "—"}</td>
-                    <td className="px-4 py-3 text-xs text-slate-600">{formatDate(del.dispatched_at)}</td>
-                    <td className="px-4 py-3 text-xs text-slate-600">{formatDate(del.delivered_at)}</td>
-                  </tr>
-                ))}
+              <tbody className="divide-y divide-slate-100 bg-white">
+                {deliveries.map((del) => {
+                  const isCancelled = del.status === "CANCELLED";
+                  const statusColor = (DELIVERY_STATUS_COLORS as any)[del.status] || "bg-slate-100 text-slate-700";
+                  return (
+                    <tr key={del.id} className="hover:bg-slate-50/50 transition">
+                      <td className="px-4 py-3">
+                        <span className="font-mono font-semibold text-slate-900 block">{del.delivery_number}</span>
+                        {del.linked_returns && del.linked_returns.length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {del.linked_returns.map((lr) => (
+                              <span
+                                key={lr.id}
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-rose-50 text-rose-700 border border-rose-200 font-medium"
+                                title={`Linked Return: ${lr.return_number}`}
+                              >
+                                <RotateCcw className="w-2.5 h-2.5" />
+                                <span>{lr.return_number}: {lr.returned_quantity.toLocaleString()} {lr.unit || ""} ({lr.status.replace(/_/g, " ")})</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border ${statusColor}`}>
+                          {del.status.replace(/_/g, " ")}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-slate-600">
+                        {formatDate(del.expected_delivery_date || del.created_at)}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">
+                        {del.total_quantity !== undefined ? `${del.total_quantity.toLocaleString()} ${del.unit || ""}` : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-slate-700">
+                        {del.vehicle || del.driver ? (
+                          <span>
+                            {del.vehicle ? <strong className="font-mono text-slate-900">{del.vehicle}</strong> : ""}
+                            {del.driver ? ` • ${del.driver}` : ""}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-slate-600">
+                        {(del as any).invoice_number || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
+                        <Link
+                          href={`/delivery/${del.id}`}
+                          className="inline-flex items-center gap-1 rounded px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition"
+                          title="View Delivery Details"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>View</span>
+                        </Link>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadChallan(del.id, del.delivery_number)}
+                          disabled={downloadingChallanId === del.id}
+                          className="inline-flex items-center gap-1 rounded px-2.5 py-1 bg-teal-50 hover:bg-teal-100 text-[#0F766E] border border-teal-200 text-xs font-semibold transition disabled:opacity-50"
+                          title="Print / Download Delivery Challan PDF"
+                        >
+                          {downloadingChallanId === del.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Printer className="w-3.5 h-3.5" />
+                          )}
+                          <span>Challan</span>
+                        </button>
+
+                        {!isCancelled && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCancelDeliveryTarget(del);
+                              setCancelDeliveryReason("");
+                              setCancelDeliveryError(null);
+                            }}
+                            className="inline-flex items-center gap-1 rounded px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold transition"
+                            title="Cancel Delivery"
+                          >
+                            <XCircle className="w-3.5 h-3.5" />
+                            <span>Cancel</span>
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Goods Returns History Card */}
+      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+          <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+            <RotateCcw className="w-4 h-4 text-[#0F766E]" />
+            <span>Goods Returns History ({returns.length})</span>
+          </h2>
+          <Link
+            href={`/returns?order_id=${order.id}`}
+            className="inline-flex items-center gap-1 rounded-lg bg-teal-50 border border-teal-200 px-3 py-1.5 text-xs font-semibold text-[#0F766E] hover:bg-teal-100 transition"
+          >
+            <span>Manage Returns</span>
+            <ChevronRight className="w-3.5 h-3.5" />
+          </Link>
+        </div>
+
+        {returns.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-200 p-6 text-center text-slate-500 text-xs">
+            No goods returns recorded for this order.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-200 text-left text-xs" role="table">
+              <thead className="bg-slate-50 text-slate-600 font-semibold uppercase tracking-wider">
+                <tr>
+                  <th className="px-4 py-3">Return #</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3">Delivery Ref</th>
+                  <th className="px-4 py-3">Product</th>
+                  <th className="px-4 py-3 text-right">Returned Qty</th>
+                  <th className="px-4 py-3">Condition</th>
+                  <th className="px-4 py-3">Adjustment</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 bg-white">
+                {returns.map((ret) => {
+                  const statusColors: Record<string, string> = {
+                    PENDING_INSPECTION: "bg-amber-50 text-amber-700 border-amber-200",
+                    APPROVED: "bg-blue-50 text-blue-700 border-blue-200",
+                    POSTED: "bg-emerald-50 text-emerald-700 border-emerald-200",
+                    REJECTED: "bg-rose-50 text-rose-700 border-rose-200",
+                    CANCELLED: "bg-slate-100 text-slate-600 border-slate-200",
+                  };
+                  return (
+                    <tr key={ret.id} className="hover:bg-slate-50/50 transition">
+                      <td className="px-4 py-3 font-mono font-semibold text-slate-900">
+                        {ret.return_number}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border ${statusColors[ret.status] || "bg-slate-100 text-slate-700"}`}>
+                          {ret.status.replace(/_/g, " ")}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-slate-600">
+                        {formatDate(ret.return_date)}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-slate-700">
+                        {ret.delivery_id ? (
+                          <Link
+                            href={`/delivery/${ret.delivery_id}`}
+                            className="text-[#0F766E] hover:underline"
+                          >
+                            {ret.delivery_number || "Delivery Challan"}
+                          </Link>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-slate-900">
+                        {ret.product_name || "Product"}
+                        {ret.sku ? <span className="text-[10px] font-mono text-slate-400 block">SKU: {ret.sku}</span> : null}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono font-bold text-rose-600">
+                        {ret.returned_quantity.toLocaleString()} {ret.unit || "units"}
+                      </td>
+                      <td className="px-4 py-3 font-medium text-slate-700">
+                        {ret.product_condition}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-slate-600">
+                        {ret.adjustment_type ? `${ret.adjustment_type.replace(/_/g, " ")} (₹${ret.adjustment_amount})` : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <Link
+                          href={`/returns/${ret.id}`}
+                          className="inline-flex items-center gap-1 rounded px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition"
+                          title="View Return Details"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>View</span>
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1083,81 +1339,84 @@ export function OrderDetail({
       </div>
 
 
-      {/* Create Delivery Dialog */}
-      {showCreateDeliveryDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
-            <h2 className="text-lg font-bold text-slate-900 mb-4">Create Delivery - #{order.order_number}</h2>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Delivery Number</label>
-                <input
-                  type="text"
-                  value={deliveryNumber}
-                  onChange={(e) => setDeliveryNumber(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 p-2.5 text-sm focus:border-[#0F766E] focus:outline-none focus:ring-1 focus:ring-[#0F766E]"
-                  placeholder="Auto-generated or custom identifier"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Notes (Optional)</label>
-                <textarea
-                  value={deliveryNotes}
-                  onChange={(e) => setDeliveryNotes(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 p-2.5 text-sm focus:border-[#0F766E] focus:outline-none focus:ring-1 focus:ring-[#0F766E]"
-                  rows={3}
-                  placeholder="Dispatch instructions or driver notes..."
-                />
-              </div>
-              {createDeliveryError && (
-                <div className="rounded-lg bg-rose-50 border border-rose-200 p-3 text-rose-800 text-xs">
-                  {createDeliveryError}
-                </div>
-              )}
-              {createDeliverySuccess && (
-                <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-emerald-800 text-xs">
-                  {createDeliverySuccess}
-                </div>
-              )}
-            </div>
-            <div className="flex justify-end gap-2.5 mt-6">
+      {/* Partial Delivery Creation Modal (Step 3) */}
+      <CreatePartialDeliveryModal
+        isOpen={showPartialDeliveryModal}
+        onClose={() => setShowPartialDeliveryModal(false)}
+        orderId={order.id}
+        orderNumber={order.order_number}
+        customerName={order.customer?.name}
+        onSuccess={(result) => {
+          setShowPartialDeliveryModal(false);
+          router.refresh();
+        }}
+      />
+
+      {/* Cancel Delivery Confirmation Dialog (Step 3) */}
+      {cancelDeliveryTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <XCircle className="w-4 h-4 text-rose-600" />
+                <span>Cancel Delivery #{cancelDeliveryTarget.delivery_number}</span>
+              </h3>
               <button
                 type="button"
-                onClick={() => setShowCreateDeliveryDialog(false)}
-                disabled={creatingDelivery}
+                onClick={() => setCancelDeliveryTarget(null)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Are you sure you want to cancel this delivery? The dispatched quantities will be reversed and restored to the order balance. Delivery record will be retained as CANCELLED for audit history.
+            </p>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                Reason for Cancellation <span className="text-rose-500">*</span>
+              </label>
+              <textarea
+                rows={3}
+                value={cancelDeliveryReason}
+                onChange={(e) => setCancelDeliveryReason(e.target.value)}
+                placeholder="e.g. Order item damaged before dispatch, truck breakdown, customer requested change..."
+                className="w-full text-xs rounded-lg border border-slate-300 p-2.5 focus:border-[#0F766E] focus:outline-none focus:ring-1 focus:ring-[#0F766E]"
+                required
+              />
+            </div>
+
+            {cancelDeliveryError && (
+              <div className="rounded-lg bg-rose-50 border border-rose-200 p-3 text-xs text-rose-800">
+                {cancelDeliveryError}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2.5 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setCancelDeliveryTarget(null)}
+                disabled={isCancellingDelivery}
                 className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
-                Cancel
+                Keep Delivery
               </button>
               <button
                 type="button"
-                onClick={async () => {
-                  setCreatingDelivery(true);
-                  setCreateDeliveryError(null);
-                  try {
-                    const result = await createDeliveryFromOrder({
-                      order_id: order.id,
-                      delivery_number: deliveryNumber,
-                      notes: deliveryNotes || undefined,
-                    });
-                    setCreateDeliverySuccess(`Delivery created successfully! ID: ${result.delivery_id}`);
-                    setDeliveryNumber("");
-                    setDeliveryNotes("");
-                    setTimeout(() => {
-                      setShowCreateDeliveryDialog(false);
-                      setCreateDeliverySuccess(null);
-                      window.location.reload();
-                    }, 1500);
-                  } catch (error) {
-                    setCreateDeliveryError(error instanceof Error ? error.message : "Failed to create delivery");
-                  } finally {
-                    setCreatingDelivery(false);
-                  }
-                }}
-                disabled={creatingDelivery || !deliveryNumber.trim()}
-                className="rounded-lg bg-[#0F766E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#0D655E] disabled:opacity-50 transition"
+                onClick={handleConfirmCancelDelivery}
+                disabled={isCancellingDelivery || !cancelDeliveryReason.trim()}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50 transition"
               >
-                {creatingDelivery ? "Creating..." : "Create Delivery"}
+                {isCancellingDelivery ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Cancelling...</span>
+                  </>
+                ) : (
+                  <span>Confirm Cancellation</span>
+                )}
               </button>
             </div>
           </div>

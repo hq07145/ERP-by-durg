@@ -60,8 +60,18 @@ export function PaymentForm({
   );
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("BANK_TRANSFER");
   const [reference, setReference] = useState<string>("");
+  const [transactionId, setTransactionId] = useState<string>("");
+  const [utrNumber, setUtrNumber] = useState<string>("");
   const [notes, setNotes] = useState<string>("");
   const [status, setStatus] = useState<PaymentStatus>("SUCCESS");
+
+  // Client-side idempotency key generated per form instance
+  const [idempotencyKey] = useState<string>(() => {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+    return "pay-idem-" + Date.now() + "-" + Math.random().toString(36).substring(2, 9);
+  });
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -140,11 +150,21 @@ export function PaymentForm({
           payment_date: paymentDate,
           payment_method: paymentMethod,
           reference: reference.trim() || undefined,
+          transaction_id: transactionId.trim() || undefined,
+          utr_number: utrNumber.trim() || undefined,
+          idempotency_key: idempotencyKey,
           notes: notes.trim() || undefined,
           status: status,
         });
 
-        setSuccessMessage(res.message || "Payment recorded successfully!");
+        if (res.already_processed) {
+          setSuccessMessage(
+            `Existing payment verified: ${res.payment_number || "Payment"} was already recorded. (Duplicate request blocked safely).`
+          );
+        } else {
+          setSuccessMessage(res.message || "Payment recorded successfully!");
+        }
+
         setTimeout(() => {
           if (orderId) {
             router.push(`/orders/${orderId}?notice=payment_recorded`);
@@ -339,15 +359,15 @@ export function PaymentForm({
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {/* 6. Reference / Transaction ID */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          {/* 6. Reference / Cheque # */}
           <div className="space-y-1.5">
             <label className="block text-xs font-semibold text-slate-700">
-              Transaction Reference / UTR / Cheque #
+              Reference / Cheque #
             </label>
             <input
               type="text"
-              placeholder="e.g. UTR-982341209, CHQ-00123"
+              placeholder="e.g. CHQ-00123 / Draft"
               maxLength={128}
               value={reference}
               onChange={(e) => setReference(e.target.value)}
@@ -355,7 +375,39 @@ export function PaymentForm({
             />
           </div>
 
-          {/* 7. Status */}
+          {/* 7. Bank UTR Number */}
+          <div className="space-y-1.5">
+            <label className="block text-xs font-semibold text-slate-700">
+              Bank UTR Number
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. UTR-982341209"
+              maxLength={128}
+              value={utrNumber}
+              onChange={(e) => setUtrNumber(e.target.value)}
+              className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-xs text-slate-900 focus:border-[#0F766E] focus:outline-none focus:ring-1 focus:ring-[#0F766E]"
+            />
+          </div>
+
+          {/* 8. External Transaction ID */}
+          <div className="space-y-1.5">
+            <label className="block text-xs font-semibold text-slate-700">
+              External Gateway / Trans ID
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. TXN-10934812"
+              maxLength={128}
+              value={transactionId}
+              onChange={(e) => setTransactionId(e.target.value)}
+              className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-xs text-slate-900 focus:border-[#0F766E] focus:outline-none focus:ring-1 focus:ring-[#0F766E]"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          {/* 9. Status */}
           <div className="space-y-1.5">
             <label className="block text-xs font-semibold text-slate-700">
               Payment Status <span className="text-rose-500">*</span>
@@ -368,6 +420,17 @@ export function PaymentForm({
               <option value="SUCCESS">Success (Immediate Credit & Ledger Posting)</option>
               <option value="PENDING">Pending (Awaiting Bank Clearance)</option>
             </select>
+          </div>
+
+          {/* 10. Protection Notice */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs flex flex-col justify-center">
+            <div className="flex items-center gap-1.5 text-slate-700 font-semibold text-[11px]">
+              <Sparkles className="w-3.5 h-3.5 text-[#0F766E]" />
+              <span>Duplicate Payment Protection Active</span>
+            </div>
+            <p className="text-[11px] text-slate-500 mt-1 leading-snug">
+              Client idempotency protects against rapid double-clicks. Unique sequences generate <code className="text-[#0F766E] font-bold">PAY-YYYY-XXXXXX</code> automatically.
+            </p>
           </div>
         </div>
 

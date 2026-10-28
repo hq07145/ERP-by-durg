@@ -25,6 +25,8 @@ export interface DashboardSummary {
   low_stock_items: string | number;
   // Delivery
   overdue_deliveries: string | number;
+  // Goods Returns
+  pending_returns?: string | number;
 }
 
 export interface TrendDataPoint {
