@@ -313,27 +313,9 @@ export function validateMappedRows(
         }
         mappedRecord[field.key] = gstClean;
       } else if (field.type === "select" && field.options) {
-        const upperVal = valStr.toUpperCase();
-        let matched = field.options.find((opt) => opt.toUpperCase() === upperVal);
-
-        // Alias normalization for Product Units (e.g. BDL / Bundle, PCS / Piece, MTR / Meter, etc.)
-        if (!matched && schema.id === "products" && field.key === "unit") {
-          const lowerVal = valStr.toLowerCase().trim();
-          if (lowerVal.startsWith("bundle") || lowerVal.startsWith("bdl") || lowerVal === "bd") {
-            matched = "BDL";
-          } else if (lowerVal.startsWith("piece") || lowerVal.startsWith("pc") || lowerVal === "nos") {
-            matched = "PCS";
-          } else if (lowerVal.startsWith("meter") || lowerVal.startsWith("mtr") || lowerVal === "m") {
-            matched = "MTR";
-          } else if (lowerVal.startsWith("box") || lowerVal.startsWith("bx")) {
-            matched = "BOX";
-          } else if (lowerVal.startsWith("kg") || lowerVal.startsWith("kilo")) {
-            matched = "KG";
-          } else if (lowerVal.startsWith("set")) {
-            matched = "SET";
-          }
-        }
-
+        const cleanVal = valStr.trim();
+        const upperVal = cleanVal.toUpperCase();
+        const matched = field.options.find((opt) => opt.trim().toUpperCase() === upperVal);
         if (!matched) {
           rowErrors.push(
             `${field.label} must be one of: ${field.options.join(", ")} (got "${valStr}").`
