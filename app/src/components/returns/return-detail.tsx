@@ -157,11 +157,17 @@ export function ReturnDetail({
     setIsProcessing(true);
 
     try {
-      await postGoodsReturnAction({
+      const res: any = await postGoodsReturnAction({
         return_id: returnData.id,
       });
 
-      setActionSuccess("Goods Return successfully posted! Stock and financial adjustments applied.");
+      const postedQty = res?.posted_quantity ?? returnData.returned_quantity;
+      const updatedStock = res?.updated_current_stock;
+      const stockMsg = updatedStock !== undefined && updatedStock !== null
+        ? ` Restocked ${postedQty} units into finished goods inventory (Current warehouse stock: ${Number(updatedStock).toLocaleString()} units).`
+        : ` Restocked ${postedQty} units into inventory.`;
+
+      setActionSuccess(`Goods Return successfully posted!${stockMsg} Financial adjustments applied.`);
       setShowPostModal(false);
       setTimeout(() => router.refresh(), 800);
     } catch (err: any) {
@@ -393,17 +399,42 @@ export function ReturnDetail({
           <div className="text-xs font-medium text-slate-500">Inventory Movement</div>
           <div className="text-sm font-bold mt-1">
             {returnData.status === "POSTED" ? (
-              <span className="text-emerald-600 flex items-center gap-1">
-                <Check className="w-4 h-4" /> Posted to Stock
-              </span>
+              returnData.product_condition === "SALEABLE" ? (
+                <span className="text-emerald-600 flex items-center gap-1">
+                  <Check className="w-4 h-4" /> Restocked (+{returnData.returned_quantity})
+                </span>
+              ) : (
+                <span className="text-purple-600 flex items-center gap-1">
+                  <AlertCircle className="w-4 h-4" /> Quarantined ({returnData.product_condition})
+                </span>
+              )
             ) : returnData.status === "CANCELLED" ? (
               <span className="text-slate-400">Reversed / Cancelled</span>
+            ) : returnData.status === "REJECTED" ? (
+              <span className="text-rose-600">Rejected (No Stock)</span>
             ) : (
-              <span className="text-amber-600">No Movement (Pending)</span>
+              <span className="text-amber-600">Pending Posting</span>
             )}
           </div>
           <div className="text-[11px] text-slate-400 mt-0.5">
-            {returnData.status === "POSTED" ? "Stock updated" : "Isolated from inventory"}
+            {returnData.status === "POSTED" ? (
+              returnData.product_condition === "SALEABLE" ? (
+                <span>
+                  Current Stock:{" "}
+                  <strong className="text-slate-700">
+                    {returnData.product_stock?.[returnData.product_id || returnData.items?.[0]?.product_id]?.current_stock !== undefined
+                      ? `${Number(returnData.product_stock[returnData.product_id || returnData.items?.[0]?.product_id].current_stock).toLocaleString()} units`
+                      : "Updated in warehouse"}
+                  </strong>
+                </span>
+              ) : (
+                "Quarantine ledger recorded (Saleable stock unaffected)"
+              )
+            ) : returnData.status === "CANCELLED" ? (
+              "Stock movement reversed"
+            ) : (
+              "Isolated from inventory"
+            )}
           </div>
         </div>
       </div>
@@ -595,6 +626,61 @@ export function ReturnDetail({
               )}
             </div>
           </div>
+
+          {/* Linked Inventory Stock Movements */}
+          {returnData.inventory_transactions && returnData.inventory_transactions.length > 0 && (
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  Stock Movements ({returnData.inventory_transactions.length})
+                </h3>
+                <Link
+                  href="/inventory/transactions"
+                  className="text-[11px] font-semibold text-emerald-600 hover:underline flex items-center gap-1"
+                >
+                  View All Tx <ExternalLink className="w-3 h-3" />
+                </Link>
+              </div>
+
+              <div className="space-y-2.5">
+                {returnData.inventory_transactions.map((tx: any) => {
+                  const isStockIn = tx.transaction_type === "STOCK_IN";
+                  const isStockOut = tx.transaction_type === "STOCK_OUT";
+                  return (
+                    <div
+                      key={tx.id}
+                      className="p-3 bg-slate-50 border border-slate-100 rounded-xl space-y-1 text-xs"
+                    >
+                      <div className="flex items-center justify-between font-semibold">
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                            isStockIn
+                              ? "bg-emerald-100 text-emerald-800"
+                              : isStockOut
+                              ? "bg-rose-100 text-rose-800"
+                              : "bg-purple-100 text-purple-800"
+                          }`}
+                        >
+                          {tx.transaction_type}
+                        </span>
+                        <span className="font-mono font-bold text-slate-800">
+                          {isStockIn ? "+" : isStockOut ? "-" : ""}
+                          {Number(tx.quantity).toLocaleString()} units
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-500 truncate" title={tx.notes || ""}>
+                        {tx.notes || `Reference: ${tx.reference_type}`}
+                      </div>
+                      <div className="text-[10px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-200/60">
+                        <span className="font-mono">{tx.reference_type}</span>
+                        <span>{new Date(tx.created_at).toLocaleString()}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Audit Timeline */}
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3">

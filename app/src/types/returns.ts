@@ -111,6 +111,16 @@ export interface GoodsReturnWithDetails extends GoodsReturn {
   product_name?: string | null;
   product_sku?: string | null;
   items: GoodsReturnItem[];
+  inventory_transactions?: Array<{
+    id: string;
+    item_type: string;
+    transaction_type: string;
+    quantity: number;
+    reference_type: string;
+    notes?: string | null;
+    created_at: string;
+  }>;
+  product_stock?: Record<string, { current_stock: number; available_stock: number }>;
 }
 
 export interface CreateGoodsReturnInput {

@@ -206,7 +206,7 @@ export function CreateReturnModal({
     if (selectedOrderItem && Number(returnedQuantity) > returnLimits.max) {
       if (!allowOverride) {
         setError(
-          `Returned quantity (${returnedQuantity} ${returnLimits.unit}) exceeds eligible returnable quantity (${returnLimits.max} ${returnLimits.unit}) for this item. Delivered: ${returnLimits.delivered}, previously returned: ${returnLimits.returned + returnLimits.pending}. Enable Authorized Override to proceed.`
+          `Returned quantity (${returnedQuantity} ${returnLimits.unit}) exceeds eligible returnable quantity (${returnLimits.max} ${returnLimits.unit}) for this item. Delivered: ${returnLimits.delivered}, posted returned: ${returnLimits.returned}${returnLimits.pending > 0 ? `, pending approval: ${returnLimits.pending}` : ""}. Enable Authorized Override to proceed.`
         );
         return;
       }
@@ -449,9 +449,14 @@ export function CreateReturnModal({
                 </div>
                 <div className="bg-white p-2 rounded-lg border border-teal-100/80 shadow-2xs">
                   <span className="text-[10px] text-slate-400 block uppercase font-medium">Prev Returned</span>
-                  <span className={`font-mono font-semibold ${returnLimits.returned + returnLimits.pending > 0 ? "text-rose-600" : "text-slate-400"}`}>
-                    {(returnLimits.returned + returnLimits.pending).toLocaleString()} {returnLimits.unit}
+                  <span className={`font-mono font-semibold ${returnLimits.returned > 0 ? "text-rose-600" : "text-slate-400"}`}>
+                    {returnLimits.returned.toLocaleString()} {returnLimits.unit}
                   </span>
+                  {returnLimits.pending > 0 && (
+                    <span className="text-[9px] text-amber-600 font-medium block">
+                      +{returnLimits.pending.toLocaleString()} pending
+                    </span>
+                  )}
                 </div>
                 <div className="bg-white p-2 rounded-lg border border-teal-200 shadow-2xs">
                   <span className="text-[10px] text-teal-700 block uppercase font-bold">Max Returnable</span>
