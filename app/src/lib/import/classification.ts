@@ -3,6 +3,7 @@ import type {
   ClassifiedImportRow,
   ImportClassificationResult,
 } from "../../types/import";
+import { parseDateRobust, parseNumberRobust } from "./file-parser";
 
 /**
  * Server-side classification engine for Excel/CSV imports.
@@ -54,13 +55,17 @@ export async function classifyImportRowsInternal(
       // 2. Customers
       const { data: dbCustomers } = await supabase
         .from("customers")
-        .select("id, name, company_name")
+        .select("id, name, company_name, phone")
         .eq("business_id", businessId);
 
       const customerMap = new Map<string, string>();
       (dbCustomers || []).forEach((c: any) => {
         if (c.name) customerMap.set(c.name.trim().toLowerCase(), c.id);
         if (c.company_name) customerMap.set(c.company_name.trim().toLowerCase(), c.id);
+        if (c.phone) {
+          const digits = c.phone.replace(/[^0-9]/g, "");
+          if (digits.length >= 7) customerMap.set(digits.slice(-10), c.id);
+        }
       });
 
       // 3. Orders
@@ -86,11 +91,23 @@ export async function classifyImportRowsInternal(
         const method = String(row.payment_method || "BANK_TRANSFER").trim().toUpperCase();
         const custName = String(row.customer_name || "").trim();
         const rawAmt = row.amount;
-        const amt = parseFloat(String(rawAmt || 0));
-        const payDate = String(row.payment_date || "").trim();
+        const amt = parseNumberRobust(rawAmt) ?? 0;
+        const payDate = parseDateRobust(row.payment_date) || String(row.payment_date || "").trim();
         const orderNum = String(row.order_number || "").trim();
 
         const identifier = payNum || txnId || rawRef || `Row #${rowNum}`;
+
+        if (row._validationErrors && row._validationErrors.length > 0) {
+          invalidCount++;
+          classifiedRows.push({
+            rowNumber: rowNum,
+            identifier,
+            classification: "INVALID",
+            reason: row._validationErrors.join("; "),
+            data: row,
+          });
+          return;
+        }
 
         if (!payNum) {
           invalidCount++;
@@ -104,7 +121,12 @@ export async function classifyImportRowsInternal(
           return;
         }
 
-        if (!custName || !customerMap.has(custName.toLowerCase())) {
+        const custPhoneDigits = custName.replace(/[^0-9]/g, "");
+        const matchedCustId =
+          customerMap.get(custName.toLowerCase()) ||
+          (custPhoneDigits.length >= 7 ? customerMap.get(custPhoneDigits.slice(-10)) : null);
+
+        if (!matchedCustId) {
           invalidCount++;
           classifiedRows.push({
             rowNumber: rowNum,
@@ -128,13 +150,13 @@ export async function classifyImportRowsInternal(
           return;
         }
 
-        if (payDate && (!/^\d{4}-\d{2}-\d{2}$/.test(payDate) || isNaN(new Date(payDate).getTime()))) {
+        if (row.payment_date && !parseDateRobust(row.payment_date)) {
           invalidCount++;
           classifiedRows.push({
             rowNumber: rowNum,
             identifier,
             classification: "INVALID",
-            reason: `Payment Date must be a valid date in YYYY-MM-DD format (got "${payDate}").`,
+            reason: `Payment Date must be a valid date in YYYY-MM-DD or DD/MM/YYYY format (got "${row.payment_date}").`,
             data: row,
           });
           return;
@@ -287,6 +309,18 @@ export async function classifyImportRowsInternal(
         const cleanPhone = rawPhone.replace(/[^0-9]/g, "");
         const identifier = name || rawPhone || `Row #${rowNum}`;
 
+        if (row._validationErrors && row._validationErrors.length > 0) {
+          invalidCount++;
+          classifiedRows.push({
+            rowNumber: rowNum,
+            identifier,
+            classification: "INVALID",
+            reason: row._validationErrors.join("; "),
+            data: row,
+          });
+          return;
+        }
+
         if (!name) {
           invalidCount++;
           classifiedRows.push({
@@ -386,6 +420,18 @@ export async function classifyImportRowsInternal(
         const name = String(row.name || "").trim();
         const identifier = sku || name || `Row #${rowNum}`;
 
+        if (row._validationErrors && row._validationErrors.length > 0) {
+          invalidCount++;
+          classifiedRows.push({
+            rowNumber: rowNum,
+            identifier,
+            classification: "INVALID",
+            reason: row._validationErrors.join("; "),
+            data: row,
+          });
+          return;
+        }
+
         if (!sku || !name) {
           invalidCount++;
           classifiedRows.push({
@@ -457,6 +503,18 @@ export async function classifyImportRowsInternal(
         const name = String(row.name || "").trim();
         const identifier = name || `Row #${rowNum}`;
 
+        if (row._validationErrors && row._validationErrors.length > 0) {
+          invalidCount++;
+          classifiedRows.push({
+            rowNumber: rowNum,
+            identifier,
+            classification: "INVALID",
+            reason: row._validationErrors.join("; "),
+            data: row,
+          });
+          return;
+        }
+
         if (!name) {
           invalidCount++;
           classifiedRows.push({
@@ -525,8 +583,20 @@ export async function classifyImportRowsInternal(
         const rowNum = row._rowNumber || index + 1;
         const orderNum = String(row.order_number || "").trim();
         const sku = String(row.product_sku || "").trim();
-        const qty = parseFloat(String(row.quantity || 0));
+        const qty = parseNumberRobust(row.quantity) ?? 0;
         const identifier = orderNum || `Row #${rowNum}`;
+
+        if (row._validationErrors && row._validationErrors.length > 0) {
+          invalidCount++;
+          classifiedRows.push({
+            rowNumber: rowNum,
+            identifier,
+            classification: "INVALID",
+            reason: row._validationErrors.join("; "),
+            data: row,
+          });
+          return;
+        }
 
         if (!orderNum) {
           invalidCount++;
@@ -596,6 +666,18 @@ export async function classifyImportRowsInternal(
         const poNum = String(row.po_number || "").trim();
         const mat = String(row.material_name || "").trim();
         const identifier = poNum || `Row #${rowNum}`;
+
+        if (row._validationErrors && row._validationErrors.length > 0) {
+          invalidCount++;
+          classifiedRows.push({
+            rowNumber: rowNum,
+            identifier,
+            classification: "INVALID",
+            reason: row._validationErrors.join("; "),
+            data: row,
+          });
+          return;
+        }
 
         if (!poNum || !mat) {
           invalidCount++;
@@ -667,12 +749,29 @@ export async function classifyImportRowsInternal(
         const rowNum = row._rowNumber || index + 1;
         const custCode = String(row.customer_code || "").trim().toLowerCase();
         const custName = String(row.customer_name || "").trim().toLowerCase();
-        const amt = parseFloat(String(row.amount || 0));
-        const asOnDate = String(row.as_on_date || "").trim();
+        const amt = parseNumberRobust(row.amount) ?? 0;
+        const asOnDate = parseDateRobust(row.as_on_date) || String(row.as_on_date || "").trim();
 
         const identifier = row.customer_name || row.customer_code || `Row #${rowNum}`;
 
-        const matched = custMap.get(custCode) || custMap.get(custName);
+        if (row._validationErrors && row._validationErrors.length > 0) {
+          invalidCount++;
+          classifiedRows.push({
+            rowNumber: rowNum,
+            identifier,
+            classification: "INVALID",
+            reason: row._validationErrors.join("; "),
+            data: row,
+          });
+          return;
+        }
+
+        const cleanCodeDigits = custCode.replace(/[^0-9]/g, "");
+        const matched =
+          custMap.get(custCode) ||
+          custMap.get(custName) ||
+          (cleanCodeDigits.length >= 7 ? custMap.get(cleanCodeDigits.slice(-10)) : null);
+
         if (!matched) {
           invalidCount++;
           classifiedRows.push({
@@ -697,13 +796,13 @@ export async function classifyImportRowsInternal(
           return;
         }
 
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(asOnDate) || isNaN(new Date(asOnDate).getTime())) {
+        if (row.as_on_date && !parseDateRobust(row.as_on_date)) {
           invalidCount++;
           classifiedRows.push({
             rowNumber: rowNum,
             identifier,
             classification: "INVALID",
-            reason: `As-on Date must be valid YYYY-MM-DD (got "${asOnDate}").`,
+            reason: `As-on Date must be valid YYYY-MM-DD or DD/MM/YYYY (got "${row.as_on_date}").`,
             data: row,
           });
           return;
@@ -777,8 +876,20 @@ export async function classifyImportRowsInternal(
       records.forEach((row, index) => {
         const rowNum = row._rowNumber || index + 1;
         const sku = String(row.sku || "").trim();
-        const qty = parseFloat(String(row.quantity || 0));
+        const qty = parseNumberRobust(row.quantity) ?? 0;
         const identifier = sku || `Row #${rowNum}`;
+
+        if (row._validationErrors && row._validationErrors.length > 0) {
+          invalidCount++;
+          classifiedRows.push({
+            rowNumber: rowNum,
+            identifier,
+            classification: "INVALID",
+            reason: row._validationErrors.join("; "),
+            data: row,
+          });
+          return;
+        }
 
         const prodId = prodMap.get(sku.toLowerCase());
         if (!prodId) {
@@ -872,8 +983,20 @@ export async function classifyImportRowsInternal(
       records.forEach((row, index) => {
         const rowNum = row._rowNumber || index + 1;
         const matName = String(row.material_name || "").trim();
-        const qty = parseFloat(String(row.quantity || 0));
+        const qty = parseNumberRobust(row.quantity) ?? 0;
         const identifier = matName || `Row #${rowNum}`;
+
+        if (row._validationErrors && row._validationErrors.length > 0) {
+          invalidCount++;
+          classifiedRows.push({
+            rowNumber: rowNum,
+            identifier,
+            classification: "INVALID",
+            reason: row._validationErrors.join("; "),
+            data: row,
+          });
+          return;
+        }
 
         if (!matName) {
           invalidCount++;
@@ -958,9 +1081,21 @@ export async function classifyImportRowsInternal(
       records.forEach((row, index) => {
         const rowNum = row._rowNumber || index + 1;
         const cat = String(row.category || "").trim();
-        const amt = parseFloat(String(row.amount || 0));
+        const amt = parseNumberRobust(row.amount) ?? 0;
         const ref = String(row.reference || "").trim();
         const identifier = ref || cat || `Row #${rowNum}`;
+
+        if (row._validationErrors && row._validationErrors.length > 0) {
+          invalidCount++;
+          classifiedRows.push({
+            rowNumber: rowNum,
+            identifier,
+            classification: "INVALID",
+            reason: row._validationErrors.join("; "),
+            data: row,
+          });
+          return;
+        }
 
         if (!cat || isNaN(amt) || amt <= 0) {
           invalidCount++;

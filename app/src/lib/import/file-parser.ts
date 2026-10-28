@@ -174,6 +174,67 @@ export async function parseUploadedFile(
 }
 
 /**
+ * Robust date parser supporting YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, and Excel serial numbers
+ */
+export function parseDateRobust(valStr?: any): string | null {
+  if (valStr === undefined || valStr === null || valStr === "") return null;
+  const s = String(valStr).trim();
+
+  // Excel serial number (e.g. 45678)
+  if (/^\d{5}$/.test(s)) {
+    const serial = parseInt(s, 10);
+    const utcDays = serial - 25569;
+    const utcValue = utcDays * 86400;
+    const dateInfo = new Date(utcValue * 1000);
+    if (!isNaN(dateInfo.getTime())) {
+      return dateInfo.toISOString().split("T")[0];
+    }
+  }
+
+  // Standard YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) return s;
+  }
+
+  // DD/MM/YYYY or DD-MM-YYYY
+  const dmyMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (dmyMatch) {
+    const day = parseInt(dmyMatch[1], 10);
+    const month = parseInt(dmyMatch[2], 10);
+    const year = parseInt(dmyMatch[3], 10);
+    if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+      const iso = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      const d = new Date(iso);
+      if (!isNaN(d.getTime())) return iso;
+    }
+  }
+
+  // General fallback
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) {
+    try {
+      return d.toISOString().split("T")[0];
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Robust number parser stripping commas, spaces, currency symbols
+ */
+export function parseNumberRobust(valStr?: any): number | null {
+  if (valStr === undefined || valStr === null || valStr === "") return null;
+  const cleaned = String(valStr).replace(/[^0-9.-]/g, "");
+  if (!cleaned || cleaned === "-" || cleaned === ".") return null;
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? null : num;
+}
+
+/**
  * Validates parsed rows against the module schema and column mapping
  */
 export function validateMappedRows(
@@ -183,9 +244,11 @@ export function validateMappedRows(
 ): {
   validRows: any[];
   invalidRows: RowValidationError[];
+  allRows: any[];
   hasErrors: boolean;
 } {
   const validRows: any[] = [];
+  const allRows: any[] = [];
   const errors: RowValidationError[] = [];
 
   const seenIdentifiers = new Set<string>();
@@ -222,9 +285,8 @@ export function validateMappedRows(
 
       // Type validations
       if (field.type === "number") {
-        const cleaned = valStr.replace(/[^0-9.-]/g, "");
-        const num = parseFloat(cleaned);
-        if (isNaN(num)) {
+        const num = parseNumberRobust(valStr);
+        if (num === null) {
           rowErrors.push(`${field.label} must be a valid number (got "${valStr}").`);
         } else if (schema.id === "customer_opening_balances" && field.key === "amount" && num <= 0) {
           rowErrors.push(`${field.label} must be a positive number greater than 0.`);
@@ -232,16 +294,11 @@ export function validateMappedRows(
           mappedRecord[field.key] = num;
         }
       } else if (field.type === "date") {
-        const d = new Date(valStr);
-        if (isNaN(d.getTime())) {
-          rowErrors.push(`${field.label} must be a valid date (YYYY-MM-DD, got "${valStr}").`);
+        const parsedDate = parseDateRobust(valStr);
+        if (!parsedDate) {
+          rowErrors.push(`${field.label} must be a valid date (YYYY-MM-DD or DD/MM/YYYY, got "${valStr}").`);
         } else {
-          // Format standard YYYY-MM-DD
-          try {
-            mappedRecord[field.key] = d.toISOString().split("T")[0];
-          } catch {
-            mappedRecord[field.key] = valStr;
-          }
+          mappedRecord[field.key] = parsedDate;
         }
       } else if (field.type === "email") {
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(valStr)) {
@@ -285,7 +342,6 @@ export function validateMappedRows(
       }
     } else {
       if (idVal && schema.id !== "historical_orders" && schema.id !== "purchases") {
-        // (Orders and Purchases can repeat the ID for multiple line items)
         const idKey = String(idVal).toLowerCase();
         if (seenIdentifiers.has(idKey)) {
           rowErrors.push(`Duplicate ${schema.identifierField} in file: "${idVal}".`);
@@ -296,6 +352,8 @@ export function validateMappedRows(
     }
 
     if (rowErrors.length > 0) {
+      mappedRecord._validationErrors = rowErrors;
+      mappedRecord._rawData = row;
       errors.push({
         rowNumber,
         identifier: idVal ? String(idVal) : undefined,
@@ -305,11 +363,13 @@ export function validateMappedRows(
     } else {
       validRows.push(mappedRecord);
     }
+    allRows.push(mappedRecord);
   });
 
   return {
     validRows,
     invalidRows: errors,
+    allRows,
     hasErrors: errors.length > 0,
   };
 }

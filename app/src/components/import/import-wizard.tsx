@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
+import { useRouter } from "next/navigation";
 import type {
   ImportModule,
   ModuleSchema,
@@ -73,6 +74,8 @@ const MODULE_ICONS: Record<ImportModule, any> = {
 };
 
 export function ImportWizard({ onImportComplete }: ImportWizardProps) {
+  const router = useRouter();
+
   // Wizard state: 1 = Module, 2 = Upload, 3 = Mapping & Preview, 4 = Import / Results
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3 | 4>(1);
   const [selectedModule, setSelectedModule] = useState<ImportModule>("customers");
@@ -90,7 +93,8 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
     validRows: any[];
     invalidRows: RowValidationError[];
     hasErrors: boolean;
-  }>({ validRows: [], invalidRows: [], hasErrors: false });
+    allRows?: any[];
+  }>({ validRows: [], invalidRows: [], hasErrors: false, allRows: [] });
 
   // Classification State (Step 9)
   const [classification, setClassification] = useState<ImportClassificationResult | null>(null);
@@ -134,7 +138,7 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
     setParseError(null);
     setDuplicateWarning(null);
     setMapping({});
-    setValidationResult({ validRows: [], invalidRows: [], hasErrors: false });
+    setValidationResult({ validRows: [], invalidRows: [], hasErrors: false, allRows: [] });
     setClassification(null);
     setExecutionResult(null);
     setRetryNotice(null);
@@ -170,8 +174,8 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
       setValidationResult(validated);
       setCurrentStep(3);
 
-      // Trigger server-side classification
-      await runClassification(validated.validRows, selectedModule);
+      // Trigger server-side classification with allRows
+      await runClassification(validated.allRows || validated.validRows, selectedModule);
     } catch (err: any) {
       console.error("File parse error:", err);
       setParseError(err.message || "Failed to parse file. Please ensure it is a valid .xlsx or .csv file.");
@@ -188,7 +192,7 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
     if (parsedFile) {
       const validated = validateMappedRows(parsedFile.rawRows, currentSchema, newMapping);
       setValidationResult(validated);
-      await runClassification(validated.validRows, selectedModule);
+      await runClassification(validated.allRows || validated.validRows, selectedModule);
     }
   };
 
@@ -204,11 +208,16 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
         module: selectedModule,
         filename: parsedFile.filename,
         fileHash: parsedFile.fileHash,
-        records: validationResult.validRows,
+        records: validationResult.allRows || validationResult.validRows,
       });
 
       setExecutionResult(res);
       setCurrentStep(4);
+      try {
+        router.refresh();
+      } catch (e) {
+        console.warn("router refresh warning:", e);
+      }
       if (onImportComplete) onImportComplete();
     } catch (err: any) {
       console.error("Import execution failed:", err);
@@ -245,6 +254,11 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
           : `Safe retry finished: 0 newly imported. Remaining failed: ${res.failedRows}.`
       );
 
+      try {
+        router.refresh();
+      } catch (e) {
+        console.warn("router refresh warning:", e);
+      }
       if (onImportComplete) onImportComplete();
     } catch (err: any) {
       console.error("Retry failed:", err);
@@ -280,13 +294,17 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
   // Filtered rows for Step 3 table
   const getFilteredRows = (): ClassifiedImportRow[] => {
     if (!classification) {
-      return validationResult.validRows.map((r, i) => ({
-        rowNumber: r._rowNumber || i + 1,
-        identifier: r.name || r.sku || r.order_number || r.payment_number || r.po_number || `Row #${i + 1}`,
-        classification: "NEW",
-        reason: "Mapped valid row ready for classification.",
-        data: r,
-      }));
+      const rowsToShow = validationResult.allRows || validationResult.validRows;
+      return rowsToShow.map((r, i) => {
+        const isInvalid = Boolean(r._validationErrors && r._validationErrors.length > 0);
+        return {
+          rowNumber: r._rowNumber || i + 1,
+          identifier: r.name || r.sku || r.order_number || r.payment_number || r.po_number || `Row #${i + 1}`,
+          classification: isInvalid ? ("INVALID" as const) : ("NEW" as const),
+          reason: isInvalid ? r._validationErrors.join("; ") : "Mapped valid row ready for classification.",
+          data: r,
+        };
+      });
     }
 
     if (previewFilter === "new") {
@@ -608,6 +626,19 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
                   <p className="text-amber-800 font-medium pt-0.5">
                     Safe Duplicate Protection is active: re-uploading will detect existing records and skip them without duplicate postings.
                   </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Execution Error Banner */}
+          {executionError && (
+            <div className="rounded-xl border border-red-300 bg-red-50 p-4 shadow-sm text-xs text-red-900">
+              <div className="flex items-start gap-2.5">
+                <XCircle className="h-5 w-5 text-red-600 mt-0.5 shrink-0" />
+                <div className="space-y-1">
+                  <p className="font-bold text-sm text-red-950">Import Failed</p>
+                  <p>{executionError}</p>
                 </div>
               </div>
             </div>
