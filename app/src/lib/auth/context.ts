@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { cache } from "react";
+import { cookies } from "next/headers";
 import type { AppRole, AppUser } from "@/types/business";
 import { hasPermission } from "@/lib/permissions/authorization";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
@@ -24,7 +25,7 @@ interface CachedContext {
 }
 
 const authCache = new Map<string, CachedContext>();
-const CACHE_TTL_MS = 60 * 1000; // 60 seconds
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes cache TTL
 
 export function invalidateAuthCache(authUserId?: string) {
   if (authUserId) {
@@ -34,22 +35,69 @@ export function invalidateAuthCache(authUserId?: string) {
   }
 }
 
-export const getAuthContext = cache(async function getAuthContext(): Promise<AuthContext | null> {
-  const supabase = await createServerSupabaseClient();
-  if (!supabase) return null;
+export function setCachedAuthContext(authUserId: string, context: AuthContext) {
+  authCache.set(authUserId, { context, expiresAt: Date.now() + CACHE_TTL_MS });
+}
 
-  const { data: authData, error: authError } = await supabase.auth.getUser();
-  if (authError || !authData.user) return null;
+export function extractUserIdFromCookie(raw: string): { userId: string; exp: number } | null {
+  try {
+    let str = raw;
+    if (str.startsWith("base64-")) {
+      str = Buffer.from(str.slice(7), "base64url").toString("utf8");
+    }
+    const parsed = JSON.parse(str);
+    const token =
+      typeof parsed === "string"
+        ? parsed
+        : parsed.access_token || (Array.isArray(parsed) ? parsed[0] : null);
 
-  const userId = authData.user.id;
-  const now = Date.now();
-  const cached = authCache.get(userId);
-  if (cached && cached.expiresAt > now) {
-    return cached.context;
+    if (token && typeof token === "string") {
+      const parts = token.split(".");
+      if (parts.length >= 2) {
+        const payload = JSON.parse(Buffer.from(parts[1], "base64").toString("utf8"));
+        if (payload?.sub) {
+          return { userId: String(payload.sub), exp: Number(payload.exp || 0) };
+        }
+      }
+    }
+
+    if (parsed.user?.id) {
+      return { userId: String(parsed.user.id), exp: Number(parsed.expires_at || 0) };
+    }
+    return null;
+  } catch {
+    return null;
   }
+}
 
-  // Use server admin client to resolve role & permissions in a single unified PostgREST query
-  const admin = createAdminSupabaseClient() || supabase;
+export function getRawAuthCookie(allCookies: { name: string; value: string }[]): string | null {
+  const baseCookie = allCookies.find(
+    (c) => c.name.startsWith("sb-") && c.name.endsWith("-auth-token")
+  );
+  if (baseCookie) return baseCookie.value;
+
+  const chunk0 = allCookies.find(
+    (c) => c.name.startsWith("sb-") && c.name.includes("-auth-token.0")
+  );
+  if (chunk0) {
+    const baseName = chunk0.name.replace(/\.0$/, "");
+    let combined = "";
+    for (let i = 0; ; i++) {
+      const chunk = allCookies.find((c) => c.name === `${baseName}.${i}`);
+      if (!chunk) break;
+      combined += chunk.value;
+    }
+    return combined || null;
+  }
+  return null;
+}
+
+export async function fetchAuthContextForUser(
+  authUserId: string,
+  fallbackSupabase?: any
+): Promise<AuthContext | null> {
+  const admin = createAdminSupabaseClient() || fallbackSupabase;
+  if (!admin) return null;
 
   const { data: unified, error: uError } = await admin
     .from("users")
@@ -69,7 +117,7 @@ export const getAuthContext = cache(async function getAuthContext(): Promise<Aut
         permission:permissions(module, action)
       )
     `)
-    .eq("auth_user_id", authData.user.id)
+    .eq("auth_user_id", authUserId)
     .maybeSingle();
 
   if (uError || !unified) return null;
@@ -138,7 +186,7 @@ export const getAuthContext = cache(async function getAuthContext(): Promise<Aut
   const businessName = business?.legal_name || business?.name || "SANKALP IRRIGATION";
 
   const result: AuthContext = {
-    authUserId: authData.user.id,
+    authUserId,
     user: profile,
     role,
     roleKey: role ? normalizeRoleKey(role.name) : null,
@@ -146,8 +194,56 @@ export const getAuthContext = cache(async function getAuthContext(): Promise<Aut
     businessName,
   };
 
-  authCache.set(userId, { context: result, expiresAt: Date.now() + CACHE_TTL_MS });
   return result;
+}
+
+export const getAuthContext = cache(async function getAuthContext(): Promise<AuthContext | null> {
+  const now = Date.now();
+
+  // 1. Fast Path: inspect incoming session cookie directly (0.01ms, zero remote network calls)
+  try {
+    const cookieStore = await cookies();
+    const allCookies = cookieStore.getAll();
+    const rawCookie = getRawAuthCookie(allCookies);
+    if (rawCookie) {
+      const cookieUser = extractUserIdFromCookie(rawCookie);
+      if (cookieUser && cookieUser.exp * 1000 > now) {
+        const cached = authCache.get(cookieUser.userId);
+        if (cached && cached.expiresAt > now) {
+          return cached.context;
+        }
+
+        // Cache miss: resolve user context from DB directly without Supabase GoTrue network roundtrip
+        const supabase = await createServerSupabaseClient();
+        const context = await fetchAuthContextForUser(cookieUser.userId, supabase);
+        if (context) {
+          authCache.set(cookieUser.userId, { context, expiresAt: now + CACHE_TTL_MS });
+          return context;
+        }
+      }
+    }
+  } catch {
+    // Fall back to standard flow if cookie reading encounters unexpected state
+  }
+
+  // 2. Fallback Path: standard Supabase Auth user check
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return null;
+
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+  if (authError || !authData.user) return null;
+
+  const userId = authData.user.id;
+  const cached = authCache.get(userId);
+  if (cached && cached.expiresAt > now) {
+    return cached.context;
+  }
+
+  const context = await fetchAuthContextForUser(userId, supabase);
+  if (context) {
+    authCache.set(userId, { context, expiresAt: now + CACHE_TTL_MS });
+  }
+  return context;
 });
 
 export async function requireAuthContext(): Promise<AuthContext> {
