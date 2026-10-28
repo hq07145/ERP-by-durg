@@ -242,6 +242,34 @@ export async function getGoodsReturnById(returnId: string): Promise<GoodsReturnW
     sku: it.products?.sku || "",
   }));
 
+  // Fetch linked inventory stock movements for audit trail and UI verification
+  const { data: invTx } = await supabase
+    .from("inventory_transactions")
+    .select("id, item_type, transaction_type, quantity, reference_type, notes, created_at")
+    .eq("reference_id", returnId)
+    .order("created_at", { ascending: false });
+
+  // Fetch current finished goods stock for involved products
+  const pids = formattedItems.map((it: any) => it.product_id).filter(Boolean);
+  if (ret.product_id && !pids.includes(ret.product_id)) pids.push(ret.product_id);
+  const productStock: Record<string, { current_stock: number; available_stock: number }> = {};
+
+  if (pids.length > 0) {
+    const { data: stockRows } = await supabase
+      .from("inventory")
+      .select("item_id, current_stock, available_stock")
+      .eq("business_id", context.user.business_id)
+      .eq("item_type", "finished_good")
+      .in("item_id", pids);
+
+    (stockRows || []).forEach((r: any) => {
+      productStock[r.item_id] = {
+        current_stock: Number(r.current_stock || 0),
+        available_stock: Number(r.available_stock || 0),
+      };
+    });
+  }
+
   return {
     ...ret,
     customer_name: ret.customers?.name || "Unknown Customer",
@@ -250,6 +278,8 @@ export async function getGoodsReturnById(returnId: string): Promise<GoodsReturnW
     product_name: ret.products?.name || null,
     product_sku: ret.products?.sku || null,
     items: formattedItems,
+    inventory_transactions: (invTx as any) || [],
+    product_stock: productStock,
   };
 }
 
@@ -472,7 +502,8 @@ export async function getCustomerDeliveredOrders(customerId: string) {
       }
 
       // Calculate previously returned quantities for this order item
-      let approvedReturned = 0;
+      // Requirement 5: Show Prev Returned from valid, successfully Posted returns only
+      let postedReturned = 0;
       let pendingReturned = 0;
 
       activeReturns.forEach((ret: any) => {
@@ -481,25 +512,25 @@ export async function getCustomerDeliveredOrders(customerId: string) {
             ret.goods_return_items.forEach((gri: any) => {
               if (gri.order_item_id === oi.id) {
                 const q = Number(gri.returned_quantity || 0);
-                if (ret.status === "PENDING_INSPECTION") {
+                if (ret.status === "POSTED") {
+                  postedReturned += q;
+                } else if (ret.status === "PENDING_INSPECTION" || ret.status === "APPROVED") {
                   pendingReturned += q;
-                } else if (ret.status === "POSTED" || ret.status === "APPROVED") {
-                  approvedReturned += q;
                 }
               }
             });
           } else if (ret.order_item_id === oi.id) {
             const q = Number(ret.returned_quantity || 0);
-            if (ret.status === "PENDING_INSPECTION") {
+            if (ret.status === "POSTED") {
+              postedReturned += q;
+            } else if (ret.status === "PENDING_INSPECTION" || ret.status === "APPROVED") {
               pendingReturned += q;
-            } else if (ret.status === "POSTED" || ret.status === "APPROVED") {
-              approvedReturned += q;
             }
           }
         }
       });
 
-      const maxReturnQuantity = Math.max(0, deliveredQty - approvedReturned - pendingReturned);
+      const maxReturnQuantity = Math.max(0, deliveredQty - postedReturned - pendingReturned);
 
       return {
         id: oi.id,
@@ -509,9 +540,9 @@ export async function getCustomerDeliveredOrders(customerId: string) {
         unit: oi.products?.unit || "units",
         ordered_quantity: Number(oi.quantity || 0),
         delivered_quantity: deliveredQty,
-        already_returned_quantity: approvedReturned,
+        already_returned_quantity: postedReturned,
         pending_returned_quantity: pendingReturned,
-        net_retained_quantity: Math.max(0, deliveredQty - approvedReturned),
+        net_retained_quantity: Math.max(0, deliveredQty - postedReturned),
         max_return_quantity: maxReturnQuantity,
         unit_price: oi.unit_price,
       };
@@ -520,7 +551,7 @@ export async function getCustomerDeliveredOrders(customerId: string) {
     const deliveries = validDeliveries.map((del: any) => {
       const delItems = (del.delivery_items || []).map((di: any) => {
         const itemDelivered = Number(di.delivered_quantity || 0);
-        let delApprovedReturned = 0;
+        let delPostedReturned = 0;
         let delPendingReturned = 0;
 
         activeReturns.forEach((ret: any) => {
@@ -529,32 +560,32 @@ export async function getCustomerDeliveredOrders(customerId: string) {
               ret.goods_return_items.forEach((gri: any) => {
                 if (gri.order_item_id === di.order_item_id || gri.delivery_item_id === di.id) {
                   const q = Number(gri.returned_quantity || 0);
-                  if (ret.status === "PENDING_INSPECTION") {
+                  if (ret.status === "POSTED") {
+                    delPostedReturned += q;
+                  } else if (ret.status === "PENDING_INSPECTION" || ret.status === "APPROVED") {
                     delPendingReturned += q;
-                  } else if (ret.status === "POSTED" || ret.status === "APPROVED") {
-                    delApprovedReturned += q;
                   }
                 }
               });
             } else if (ret.order_item_id === di.order_item_id) {
               const q = Number(ret.returned_quantity || 0);
-              if (ret.status === "PENDING_INSPECTION") {
+              if (ret.status === "POSTED") {
+                delPostedReturned += q;
+              } else if (ret.status === "PENDING_INSPECTION" || ret.status === "APPROVED") {
                 delPendingReturned += q;
-              } else if (ret.status === "POSTED" || ret.status === "APPROVED") {
-                delApprovedReturned += q;
               }
             }
           }
         });
 
-        const maxDelReturn = Math.max(0, itemDelivered - delApprovedReturned - delPendingReturned);
+        const maxDelReturn = Math.max(0, itemDelivered - delPostedReturned - delPendingReturned);
 
         return {
           id: di.id,
           order_item_id: di.order_item_id,
           product_id: di.product_id,
           delivered_quantity: itemDelivered,
-          already_returned_quantity: delApprovedReturned,
+          already_returned_quantity: delPostedReturned,
           pending_returned_quantity: delPendingReturned,
           max_return_quantity: maxDelReturn,
         };
@@ -597,4 +628,26 @@ export async function getReturnProducts() {
     .order("name", { ascending: true });
 
   return products || [];
+}
+
+export async function reconcileGoodsReturnInventoryAction(dryRun: boolean = true) {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+
+  const supabase = createAdminSupabaseClient();
+  if (!supabase) throw new Error("Supabase admin client not available");
+
+  const { data, error } = await supabase.rpc("reconcile_goods_return_inventory", {
+    p_business_id: context.user.business_id,
+    p_dry_run: dryRun,
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  revalidatePath("/inventory");
+  revalidatePath("/inventory/transactions");
+  revalidatePath("/returns");
+  return data;
 }

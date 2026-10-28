@@ -1,5 +1,3 @@
-"use server";
-
 import { getAuthContext, type AuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
