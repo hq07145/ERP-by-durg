@@ -93,6 +93,49 @@ export interface ImportExecutionResponse {
   totalRows: number;
   importedRows: number;
   failedRows: number;
+  skippedDuplicates?: number;
   errors: RowValidationError[];
   message: string;
 }
+
+export type RowClassificationStatus = "NEW" | "DUPLICATE" | "INVALID" | "REJECTED";
+
+export interface ClassifiedImportRow {
+  rowNumber: number;
+  identifier?: string;
+  classification: RowClassificationStatus;
+  reason?: string;
+  data: Record<string, any>;
+  existingRecordId?: string;
+}
+
+export interface ImportClassificationResult {
+  totalRows: number;
+  newCount: number;
+  duplicateCount: number;
+  invalidCount: number;
+  rejectedCount: number;
+  rows: ClassifiedImportRow[];
+}
+
+export interface ImportJobRowRecord {
+  id: string;
+  job_id: string;
+  business_id: string;
+  row_number: number;
+  identifier: string | null;
+  classification: RowClassificationStatus;
+  status: "PENDING" | "IMPORTED" | "SKIPPED_DUPLICATE" | "FAILED" | "REJECTED";
+  reason: string | null;
+  error_message: string | null;
+  raw_data: Record<string, any>;
+  imported_record_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RetryImportResponse extends ImportExecutionResponse {
+  retriedRows: number;
+  newlyImportedRows: number;
+}
+

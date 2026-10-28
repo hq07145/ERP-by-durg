@@ -17,6 +17,7 @@ import type {
   ProductionReportFilters,
   InventoryReportFilters,
   DeliveryReportFilters,
+  ReturnsReportFilters,
   SalesReportRow,
   OrdersReportRow,
   PaymentsReportRow,
@@ -26,6 +27,7 @@ import type {
   ProductionReportRow,
   InventoryReportRow,
   DeliveryReportRow,
+  GoodsReturnReportRow,
   ReportRow,
   DistrictSalesSummaryItem,
 } from "@/types/reports";
@@ -1567,9 +1569,17 @@ export async function getDeliveryReport(
     .from("deliveries")
     .select(
       `
-      id, delivery_number, order_id, status, expected_delivery_date,
+      id, delivery_number, delivery_date, order_id, status, expected_delivery_date,
       tracking_number, vehicle, driver, dispatched_at, delivered_at, created_at,
-      order:orders!inner(order_number, customer:customers!inner(name))
+      order:orders(
+        order_number,
+        customer:customers(name, company_name),
+        order_items(id, product_id, quantity, dispatched_quantity, products(name, sku))
+      ),
+      delivery_items(
+        id, order_item_id, product_id, ordered_quantity, delivered_quantity,
+        products(name, sku)
+      )
     `
     )
     .eq("business_id", context.user.business_id);
@@ -1579,26 +1589,150 @@ export async function getDeliveryReport(
   if (filters.orderId) query = query.eq("order_id", filters.orderId);
   if (filters.status) query = query.eq("status", filters.status);
 
-  query = query.order("expected_delivery_date", { ascending: true }).range(offset, offset + limit - 1);
+  query = query.order("created_at", { ascending: false }).range(offset, offset + limit - 1);
 
   const { data, error } = await query;
   if (error) throw error;
 
-  return ((data as unknown as DeliveryQueryResult[]) ?? []).map((d) => ({
-    id: d.id,
-    delivery_number: d.delivery_number,
-    order_id: d.order_id,
-    order_number: d.order?.order_number ?? "",
-    customer_name: d.order?.customer?.name ?? null,
-    status: d.status as any,
-    expected_delivery_date: d.expected_delivery_date,
-    tracking_number: d.tracking_number,
-    vehicle: d.vehicle,
-    driver: d.driver,
-    dispatched_at: d.dispatched_at,
-    delivered_at: d.delivered_at,
-    created_at: d.created_at,
-  }));
+  const resultRows: DeliveryReportRow[] = [];
+  for (const d of (data ?? []) as any[]) {
+    const orderObj = Array.isArray(d.order) ? d.order[0] : d.order;
+    const custObj = orderObj?.customer ? (Array.isArray(orderObj.customer) ? orderObj.customer[0] : orderObj.customer) : null;
+    const custName = custObj?.company_name || custObj?.name || "—";
+    const ordNum = orderObj?.order_number || "—";
+    const delDate = d.delivery_date || (d.expected_delivery_date ? d.expected_delivery_date.split("T")[0] : d.created_at?.split("T")[0]);
+    const dItems = Array.isArray(d.delivery_items) ? d.delivery_items : [];
+    const oItems = orderObj?.order_items ? (Array.isArray(orderObj.order_items) ? orderObj.order_items : [orderObj.order_items]) : [];
+
+    if (dItems.length > 0) {
+      for (const di of dItems) {
+        const prodObj = Array.isArray(di.products) ? di.products[0] : di.products;
+        const matchingOi = oItems.find((oi: any) => oi.id === di.order_item_id || oi.product_id === di.product_id);
+        const oiProd = matchingOi?.products ? (Array.isArray(matchingOi.products) ? matchingOi.products[0] : matchingOi.products) : null;
+        const ordQty = Number(di.ordered_quantity ?? matchingOi?.quantity ?? 0);
+        const dispQty = Number(di.delivered_quantity ?? 0);
+        const totalDispOnItem = Number(matchingOi?.dispatched_quantity ?? dispQty);
+        const remQty = Math.max(0, ordQty - totalDispOnItem);
+
+        resultRows.push({
+          id: `${d.id}-${di.id || Math.random()}`,
+          delivery_number: d.delivery_number,
+          order_id: d.order_id,
+          order_number: ordNum,
+          customer_name: custName,
+          delivery_date: delDate,
+          sku: prodObj?.sku || oiProd?.sku || "—",
+          product_name: prodObj?.name || oiProd?.name || "—",
+          ordered_quantity: ordQty,
+          dispatched_quantity: dispQty,
+          remaining_quantity: remQty,
+          status: d.status as any,
+          expected_delivery_date: d.expected_delivery_date,
+          tracking_number: d.tracking_number,
+          vehicle: d.vehicle,
+          driver: d.driver,
+          dispatched_at: d.dispatched_at,
+          delivered_at: d.delivered_at,
+          created_at: d.created_at,
+        });
+      }
+    } else {
+      resultRows.push({
+        id: d.id,
+        delivery_number: d.delivery_number,
+        order_id: d.order_id,
+        order_number: ordNum,
+        customer_name: custName,
+        delivery_date: delDate,
+        sku: "—",
+        product_name: "—",
+        ordered_quantity: 0,
+        dispatched_quantity: 0,
+        remaining_quantity: 0,
+        status: d.status as any,
+        expected_delivery_date: d.expected_delivery_date,
+        tracking_number: d.tracking_number,
+        vehicle: d.vehicle,
+        driver: d.driver,
+        dispatched_at: d.dispatched_at,
+        delivered_at: d.delivered_at,
+        created_at: d.created_at,
+      });
+    }
+  }
+
+  return resultRows;
+}
+
+export async function getReturnsReport(
+  filters: ReturnsReportFilters,
+  limit = 10000,
+  offset = 0
+): Promise<GoodsReturnReportRow[]> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+  if (!hasPermission({ permissions: context.permissions }, "reports.view")) {
+    throw new Error("Forbidden: reports.view");
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) throw new Error("Supabase client not available");
+
+  const { startDate, endDate } = resolveDateRange(filters);
+
+  let query = supabase
+    .from("goods_returns")
+    .select(
+      `
+      id, return_number, return_date, status, product_condition, returned_quantity,
+      adjustment_type, adjustment_amount, reason, created_at,
+      customer:customers(id, name, company_name),
+      order:orders(order_number),
+      delivery:deliveries(delivery_number),
+      product:products(name, sku),
+      invoice_number
+    `
+    )
+    .eq("business_id", context.user.business_id);
+
+  if (startDate) query = query.gte("return_date", startDate);
+  if (endDate) query = query.lte("return_date", endDate);
+  if (filters.customerId) query = query.eq("customer_id", filters.customerId);
+  if (filters.orderId) query = query.eq("order_id", filters.orderId);
+  if (filters.status) query = query.eq("status", filters.status);
+  if (filters.productCondition) query = query.eq("product_condition", filters.productCondition);
+
+  query = query.order("return_date", { ascending: false }).range(offset, offset + limit - 1);
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  return ((data ?? []) as any[]).map((r) => {
+    const custObj = Array.isArray(r.customer) ? r.customer[0] : r.customer;
+    const ordObj = Array.isArray(r.order) ? r.order[0] : r.order;
+    const delObj = Array.isArray(r.delivery) ? r.delivery[0] : r.delivery;
+    const prodObj = Array.isArray(r.product) ? r.product[0] : r.product;
+
+    return {
+      id: r.id,
+      return_number: r.return_number,
+      return_date: r.return_date,
+      customer_id: custObj?.id || "",
+      customer_name: custObj?.company_name || custObj?.name || "—",
+      order_number: ordObj?.order_number || null,
+      delivery_number: delObj?.delivery_number || null,
+      invoice_number: r.invoice_number || null,
+      sku: prodObj?.sku || null,
+      product_name: prodObj?.name || null,
+      returned_quantity: Number(r.returned_quantity || 0),
+      product_condition: r.product_condition,
+      status: r.status,
+      adjustment_type: r.adjustment_type || null,
+      adjustment_amount: Number(r.adjustment_amount || 0),
+      reason: r.reason,
+      created_at: r.created_at,
+    };
+  });
 }
 
 // ============================================
@@ -1806,6 +1940,22 @@ export async function getReportPreview(
       if (endDate) countQuery = countQuery.lte("expected_delivery_date", endDate);
       if ((filters as DeliveryReportFilters).orderId) countQuery = countQuery.eq("order_id", (filters as DeliveryReportFilters).orderId);
       if ((filters as DeliveryReportFilters).status) countQuery = countQuery.eq("status", (filters as DeliveryReportFilters).status);
+      const cRes = await countQuery;
+      totalCount = cRes.count ?? rows.length;
+      break;
+    }
+    case "returns": {
+      rows = await getReturnsReport(filters as ReturnsReportFilters, limit, offset);
+      let countQuery = supabase
+        .from("goods_returns")
+        .select("id", { count: "exact", head: true })
+        .eq("business_id", context.user.business_id);
+      if (startDate) countQuery = countQuery.gte("return_date", startDate);
+      if (endDate) countQuery = countQuery.lte("return_date", endDate);
+      if ((filters as ReturnsReportFilters).customerId) countQuery = countQuery.eq("customer_id", (filters as ReturnsReportFilters).customerId);
+      if ((filters as ReturnsReportFilters).orderId) countQuery = countQuery.eq("order_id", (filters as ReturnsReportFilters).orderId);
+      if ((filters as ReturnsReportFilters).status) countQuery = countQuery.eq("status", (filters as ReturnsReportFilters).status);
+      if ((filters as ReturnsReportFilters).productCondition) countQuery = countQuery.eq("product_condition", (filters as ReturnsReportFilters).productCondition);
       const cRes = await countQuery;
       totalCount = cRes.count ?? rows.length;
       break;
@@ -2158,33 +2308,104 @@ function getReportConfig(type: ReportType, rows: ReportRow[]): ReportExportData 
     }
     case "delivery": {
       const headers = [
-        "Delivery #",
         "Order #",
+        "Delivery #",
         "Customer",
+        "Delivery Date",
+        "SKU",
+        "Product",
+        "Ordered Qty",
+        "Dispatched Qty",
+        "Remaining Qty",
         "Status",
-        "Expected Date",
-        "Tracking #",
         "Vehicle",
         "Driver",
-        "Dispatched",
-        "Delivered",
-        "Created",
+        "Tracking #",
       ];
       const mappedRows = (rows as DeliveryReportRow[]).map((r) => [
-        r.delivery_number,
         r.order_number,
+        r.delivery_number,
         r.customer_name ?? "",
+        r.delivery_date ?? r.expected_delivery_date ?? "",
+        r.sku ?? "",
+        r.product_name ?? "",
+        r.ordered_quantity ?? 0,
+        r.dispatched_quantity ?? 0,
+        r.remaining_quantity ?? 0,
         r.status,
-        r.expected_delivery_date ?? "",
-        r.tracking_number ?? "",
         r.vehicle ?? "",
         r.driver ?? "",
-        r.dispatched_at ?? "",
-        r.delivered_at ?? "",
-        r.created_at,
+        r.tracking_number ?? "",
       ]);
-      const totals = [`TOTAL DELIVERIES: ${rows.length}`, "", "", "", "", "", "", "", "", "", ""];
+      const deliveryRows = rows as DeliveryReportRow[];
+      const totals = [
+        `TOTAL ROWS: ${rows.length}`,
+        "",
+        "",
+        "",
+        "",
+        "",
+        deliveryRows.reduce((sum, r) => sum + (Number(r.ordered_quantity) || 0), 0),
+        deliveryRows.reduce((sum, r) => sum + (Number(r.dispatched_quantity) || 0), 0),
+        deliveryRows.reduce((sum, r) => sum + (Number(r.remaining_quantity) || 0), 0),
+        "",
+        "",
+        "",
+        "",
+      ];
       return { headers, rows: mappedRows, totals, title: "Delivery Report" };
+    }
+    case "returns": {
+      const headers = [
+        "Return #",
+        "Return Date",
+        "Customer",
+        "Order #",
+        "Delivery #",
+        "Invoice #",
+        "SKU",
+        "Product",
+        "Returned Qty",
+        "Condition",
+        "Status",
+        "Adjustment",
+        "Amount",
+        "Reason",
+      ];
+      const mappedRows = (rows as GoodsReturnReportRow[]).map((r) => [
+        r.return_number,
+        r.return_date,
+        r.customer_name ?? "",
+        r.order_number ?? "",
+        r.delivery_number ?? "",
+        r.invoice_number ?? "",
+        r.sku ?? "",
+        r.product_name ?? "",
+        r.returned_quantity ?? 0,
+        r.product_condition,
+        r.status,
+        r.adjustment_type ?? "",
+        formatCurrencyVal(Number(r.adjustment_amount)),
+        r.reason ?? "",
+      ]);
+      const returnRows = rows as GoodsReturnReportRow[];
+      const totals = [
+        `TOTAL ROWS: ${rows.length}`,
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        returnRows.reduce((sum, r) => sum + (Number(r.returned_quantity) || 0), 0),
+        "",
+        "",
+        "",
+        formatCurrencyVal(returnRows.reduce((sum, r) => sum + (Number(r.adjustment_amount) || 0), 0)),
+        "",
+      ];
+      return { headers, rows: mappedRows, totals, title: "Goods Returns Report" };
     }
   }
 }
@@ -2220,6 +2441,9 @@ async function fetchReportData(type: ReportType, filters: ReportFilters): Promis
       break;
     case "delivery":
       rows = await getDeliveryReport(filters as DeliveryReportFilters, exportLimit, 0);
+      break;
+    case "returns":
+      rows = await getReturnsReport(filters as ReturnsReportFilters, exportLimit, 0);
       break;
   }
 
@@ -3563,6 +3787,8 @@ export async function exportReport(
     numericColumnIndices = [3, 4, 5, 6, 7, 8];
   } else if (reportType === "production") {
     numericColumnIndices = [4];
+  } else if (reportType === "returns") {
+    numericColumnIndices = [8, 12];
   }
 
   const opData: OperationalReportData = {

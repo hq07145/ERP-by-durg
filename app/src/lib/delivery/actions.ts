@@ -5,9 +5,12 @@ import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { updateOrderDeliveryDatesFromSchedules, scheduleProductionQueue } from "@/lib/production/scheduler";
 import { notifyDeliveryEvent } from "@/lib/notifications/actions";
 import { validateAndNormalizeVehicleNumber, validateDriverMobile, validateInvoiceNumber } from "@/lib/delivery/validation";
+import { DEFAULT_SETTINGS } from "@/lib/settings/constants";
+import { generateDeliveryChallanPdf } from "@/lib/delivery/challan-pdf";
 import type {
   DeliveryListItem,
   DeliveryWithDetails,
@@ -25,6 +28,9 @@ import type {
   CreateManualDeliveryInput,
   CustomerOrderForDelivery,
   CustomerDropdownItem,
+  OrderDispatchSummaryItem,
+  CreatePartialDeliveryInput,
+  PartialDeliveryResult,
 } from "@/types/delivery";
 
 // ============================================
@@ -200,8 +206,96 @@ export async function getDeliveryWithItems(deliveryId: string): Promise<Delivery
     : null;
   const customerName = customerObj?.company_name || customerObj?.name || null;
 
+  // Query all non-cancelled deliveries and all returns for this order to compute exact totals
+  let allOrderDeliveries: any[] = [];
+  let linkedReturnsData: any[] = [];
+
+  if (d.order_id) {
+    const [delRes, retRes] = await Promise.all([
+      supabase
+        .from("deliveries")
+        .select(`
+          id,
+          delivery_number,
+          status,
+          delivery_items (
+            order_item_id,
+            product_id,
+            delivered_quantity
+          )
+        `)
+        .eq("order_id", d.order_id)
+        .neq("status", "CANCELLED"),
+      supabase
+        .from("goods_returns")
+        .select(`
+          id,
+          return_number,
+          return_date,
+          status,
+          product_condition,
+          reason,
+          adjustment_type,
+          adjustment_amount,
+          returned_quantity,
+          delivery_id,
+          order_item_id,
+          products (name, sku, unit),
+          goods_return_items (
+            id,
+            order_item_id,
+            delivery_item_id,
+            product_id,
+            returned_quantity,
+            product_condition,
+            products (name, sku, unit)
+          )
+        `)
+        .eq("order_id", d.order_id)
+        .order("created_at", { ascending: false }),
+    ]);
+
+    allOrderDeliveries = delRes.data || [];
+    linkedReturnsData = retRes.data || [];
+  }
+
   const items: DeliveryItem[] = ((d.delivery_items as any[]) || []).map((di: any) => {
     const prod = Array.isArray(di.products) ? di.products[0] : di.products;
+    const ordered = Number(di.ordered_quantity || 0);
+    const delivered = Number(di.delivered_quantity || 0);
+
+    // Sum of valid, non-cancelled deliveries for this order_item
+    let totalDelivered = 0;
+    allOrderDeliveries.forEach((otherDel) => {
+      (otherDel.delivery_items || []).forEach((otherItem: any) => {
+        if (otherItem.order_item_id === di.order_item_id) {
+          totalDelivered += Number(otherItem.delivered_quantity || 0);
+        }
+      });
+    });
+    if (totalDelivered === 0 && d.status !== "CANCELLED") {
+      totalDelivered = delivered;
+    }
+
+    // Sum of eligible returns according to posted-return rules (status === 'POSTED')
+    let totalReturned = 0;
+    linkedReturnsData.forEach((ret: any) => {
+      if (ret.status === "POSTED") {
+        if (ret.goods_return_items && ret.goods_return_items.length > 0) {
+          ret.goods_return_items.forEach((gri: any) => {
+            if (gri.order_item_id === di.order_item_id) {
+              totalReturned += Number(gri.returned_quantity || 0);
+            }
+          });
+        } else if (ret.order_item_id === di.order_item_id) {
+          totalReturned += Number(ret.returned_quantity || 0);
+        }
+      }
+    });
+
+    const netRetained = Math.max(0, totalDelivered - totalReturned);
+    const remainingToDeliver = Math.max(0, ordered - totalDelivered);
+
     return {
       id: di.id,
       business_id: di.business_id,
@@ -210,11 +304,41 @@ export async function getDeliveryWithItems(deliveryId: string): Promise<Delivery
       product_id: di.product_id,
       product_name: prod?.name || "Product",
       product_sku: prod?.sku || null,
-      ordered_quantity: di.ordered_quantity,
-      delivered_quantity: di.delivered_quantity,
+      ordered_quantity: ordered,
+      delivered_quantity: delivered,
+      total_delivered_quantity: totalDelivered,
+      total_returned_quantity: totalReturned,
+      net_retained_quantity: netRetained,
+      remaining_to_deliver: remainingToDeliver,
       unit: prod?.unit || "units",
     };
   });
+
+  const relevantReturns = linkedReturnsData
+    .filter(
+      (ret) =>
+        ret.delivery_id === deliveryId ||
+        (ret.goods_return_items || []).some((gri: any) =>
+          items.some((it) => it.id === gri.delivery_item_id || it.order_item_id === gri.order_item_id)
+        )
+    )
+    .map((ret) => {
+      const prod = Array.isArray(ret.products) ? ret.products[0] : ret.products;
+      return {
+        id: ret.id,
+        return_number: ret.return_number,
+        return_date: ret.return_date,
+        status: ret.status,
+        product_condition: ret.product_condition,
+        reason: ret.reason,
+        adjustment_type: ret.adjustment_type,
+        adjustment_amount: Number(ret.adjustment_amount || 0),
+        returned_quantity: Number(ret.returned_quantity || 0),
+        product_name: prod?.name,
+        sku: prod?.sku,
+        unit: prod?.unit || "units",
+      };
+    });
 
   return {
     id: d.id,
@@ -237,6 +361,7 @@ export async function getDeliveryWithItems(deliveryId: string): Promise<Delivery
     order_number: orderObj?.order_number || "—",
     customer_name: customerName,
     items,
+    linked_returns: relevantReturns,
   };
 }
 
@@ -1781,5 +1906,409 @@ export async function createManualDelivery(
     delivery_number: uniqueDeliveryNumber,
     order_number: order.order_number,
     message: `Delivery ${uniqueDeliveryNumber} created successfully for Order ${order.order_number}! Status: Delivered.`,
+  };
+}
+
+// ============================================
+// PARTIAL DISPATCH FOUNDATION & CHALLAN ACTIONS
+// ============================================
+
+/**
+ * Get dynamic dispatch summary for an order.
+ * Calculates ordered, previously dispatched (excluding cancelled), and remaining quantities per line item.
+ */
+export async function getOrderDispatchSummary(
+  orderId: string
+): Promise<OrderDispatchSummaryItem[]> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+  if (
+    !hasPermission({ permissions: context.permissions }, "delivery.view") &&
+    !hasPermission({ permissions: context.permissions }, "orders.view")
+  ) {
+    throw new Error("Forbidden: delivery.view or orders.view required.");
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) throw new Error("Supabase client not available");
+
+  // Call PostgreSQL RPC get_order_dispatch_summary(p_order_id)
+  const { data, error } = await supabase.rpc("get_order_dispatch_summary", {
+    p_order_id: orderId,
+  });
+
+  if (error) {
+    console.error("Error calling get_order_dispatch_summary:", error);
+    throw new Error(`Failed to load dispatch summary: ${error.message}`);
+  }
+
+  // Also query product sku & unit for display richness
+  const { data: orderItems } = await supabase
+    .from("order_items")
+    .select("id, products(sku, unit)")
+    .eq("order_id", orderId);
+
+  const itemMetaMap = new Map<string, { sku: string | null; unit: string }>();
+  (orderItems ?? []).forEach((oi: any) => {
+    const prod = Array.isArray(oi.products) ? oi.products[0] : oi.products;
+    itemMetaMap.set(oi.id, {
+      sku: prod?.sku || null,
+      unit: prod?.unit || "units",
+    });
+  });
+
+  return (data ?? []).map((row: any) => {
+    const meta = itemMetaMap.get(row.order_item_id) || { sku: null, unit: "units" };
+    return {
+      order_id: row.order_id,
+      order_number: row.order_number,
+      order_delivery_status: row.order_delivery_status,
+      order_item_id: row.order_item_id,
+      product_id: row.product_id,
+      product_name: row.product_name,
+      product_sku: meta.sku,
+      product_unit: meta.unit,
+      ordered_quantity: parseFloat(row.ordered_quantity) || 0,
+      previously_dispatched_quantity: parseFloat(row.previously_dispatched_quantity) || 0,
+      remaining_quantity: parseFloat(row.remaining_quantity) || 0,
+      is_item_fully_dispatched: !!row.is_item_fully_dispatched,
+    };
+  });
+}
+
+/**
+ * Atomically create a partial (or full) delivery against a sales order.
+ * Serializes concurrent dispatches via DB row-level locks and validates line item quantities.
+ */
+export async function createPartialDelivery(
+  input: CreatePartialDeliveryInput
+): Promise<PartialDeliveryResult> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+  if (!hasPermission({ permissions: context.permissions }, "delivery.create")) {
+    throw new Error("Forbidden: delivery.create permission required to dispatch orders.");
+  }
+
+  const businessId = context.user.business_id;
+
+  if (!input.order_id || !input.order_id.trim()) {
+    throw new Error("Order ID is required.");
+  }
+
+  const validItems = (input.items || []).filter(
+    (it) => it.order_item_id && Number(it.quantity) > 0
+  );
+
+  if (validItems.length === 0) {
+    throw new Error("At least one line item with delivery quantity greater than 0 is required.");
+  }
+
+  // Validate vehicle number if provided
+  let normalizedVehicle: string | null = null;
+  if (input.vehicle_number && input.vehicle_number.trim()) {
+    const vRes = validateAndNormalizeVehicleNumber(input.vehicle_number);
+    if (!vRes.isValid) {
+      throw new Error(vRes.error || "Invalid vehicle number.");
+    }
+    normalizedVehicle = vRes.normalized;
+  }
+
+  // Validate invoice number if provided
+  let normalizedInvoice: string | null = null;
+  if (input.invoice_number && input.invoice_number.trim()) {
+    const iRes = validateInvoiceNumber(input.invoice_number);
+    if (!iRes.isValid) {
+      throw new Error(iRes.error || "Invalid invoice number.");
+    }
+    normalizedInvoice = iRes.normalized;
+  }
+
+  const deliveryDateVal = input.delivery_date && input.delivery_date.trim()
+    ? input.delivery_date.trim()
+    : new Date().toISOString().split("T")[0];
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) throw new Error("Supabase client not available");
+
+  // Call the atomic database function created in Step 2
+  const { data, error } = await supabase.rpc("create_partial_delivery", {
+    p_business_id: businessId,
+    p_order_id: input.order_id,
+    p_delivery_items: validItems.map((it) => ({
+      order_item_id: it.order_item_id,
+      quantity: Number(it.quantity),
+    })),
+    p_delivery_date: deliveryDateVal,
+    p_delivery_number: input.delivery_number && input.delivery_number.trim() ? input.delivery_number.trim() : null,
+    p_vehicle: normalizedVehicle,
+    p_driver: input.driver_name?.trim() || null,
+    p_driver_phone: input.driver_phone?.trim() || null,
+    p_tracking_number: input.tracking_number?.trim() || null,
+    p_invoice_number: normalizedInvoice,
+    p_notes: input.notes?.trim() || null,
+    p_status: "DISPATCHED",
+    p_allow_override: !!input.allow_override,
+    p_override_reason: input.override_reason?.trim() || null,
+    p_operator_id: context.user.id,
+  });
+
+  if (error) {
+    console.error("Error creating partial delivery RPC:", error);
+    throw new Error(error.message || "Failed to create partial delivery record.");
+  }
+
+  const res = data as PartialDeliveryResult;
+
+  try {
+    await notifyDeliveryEvent(businessId, res.delivery_id, input.order_id, "dispatched", context.user.id);
+  } catch {
+    // Non-fatal
+  }
+
+  try {
+    revalidatePath(`/orders/${input.order_id}`);
+    revalidatePath("/orders");
+    revalidatePath("/delivery");
+  } catch {
+    // Non-fatal
+  }
+
+  return {
+    success: true,
+    delivery_id: res.delivery_id,
+    delivery_number: res.delivery_number,
+    order_number: res.order_number,
+    order_delivery_status: res.order_delivery_status,
+    total_dispatched_in_this_delivery: res.total_dispatched_in_this_delivery,
+    total_order_remaining: res.total_order_remaining,
+    has_override: res.has_override,
+    message: `Delivery ${res.delivery_number} recorded successfully! Order status: ${res.order_delivery_status.replace(/_/g, " ")}.`,
+  };
+}
+
+/**
+ * Atomically cancel a partial delivery.
+ * Reverts dispatched quantities, restores remaining quantities, and updates parent order status.
+ */
+export async function cancelPartialDelivery(
+  deliveryId: string,
+  reason: string
+): Promise<{ success: boolean; message: string; cancelled: boolean }> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+  if (!hasPermission({ permissions: context.permissions }, "delivery.cancel")) {
+    throw new Error("Forbidden: delivery.cancel permission required.");
+  }
+
+  if (!reason || !reason.trim()) {
+    throw new Error("Cancellation reason is required.");
+  }
+
+  const businessId = context.user.business_id;
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) throw new Error("Supabase client not available");
+
+  const { data, error } = await supabase.rpc("cancel_partial_delivery", {
+    p_delivery_id: deliveryId,
+    p_business_id: businessId,
+    p_reason: reason.trim(),
+    p_operator_id: context.user.id,
+  });
+
+  if (error) {
+    console.error("Error cancelling partial delivery:", error);
+    throw new Error(error.message || "Failed to cancel delivery.");
+  }
+
+  const res = data as any;
+  if (res.already_cancelled) {
+    return {
+      success: true,
+      cancelled: false,
+      message: "Delivery is already cancelled.",
+    };
+  }
+
+  try {
+    if (res.order_id) {
+      revalidatePath(`/orders/${res.order_id}`);
+    }
+    revalidatePath("/orders");
+    revalidatePath("/delivery");
+  } catch {
+    // Non-fatal
+  }
+
+  return {
+    success: true,
+    cancelled: true,
+    message: `Delivery ${res.delivery_number} has been cancelled. Order balance restored (Remaining: ${res.total_remaining}).`,
+  };
+}
+
+/**
+ * Generate and return base64 Delivery Challan PDF for download.
+ */
+export async function downloadDeliveryChallanPdf(
+  deliveryId: string
+): Promise<{ success: boolean; base64: string; filename: string }> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+  if (
+    !hasPermission({ permissions: context.permissions }, "delivery.view") &&
+    !hasPermission({ permissions: context.permissions }, "orders.view")
+  ) {
+    throw new Error("Forbidden: delivery.view or orders.view permission required.");
+  }
+
+  const businessId = context.user.business_id;
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) throw new Error("Supabase client not available");
+
+  // Fetch delivery with order and customer
+  const { data: del, error: delErr } = await supabase
+    .from("deliveries")
+    .select(`
+      id,
+      delivery_number,
+      delivery_date,
+      invoice_number,
+      status,
+      vehicle,
+      driver,
+      driver_phone,
+      tracking_number,
+      notes,
+      created_at,
+      orders (
+        id,
+        order_number,
+        order_date,
+        total_amount,
+        customers (
+          id,
+          name,
+          company_name,
+          phone,
+          email,
+          gst_number
+        )
+      )
+    `)
+    .eq("id", deliveryId)
+    .eq("business_id", businessId)
+    .single();
+
+  if (delErr || !del) {
+    throw new Error("Delivery record not found.");
+  }
+
+  // Fetch delivery items
+  const { data: delItems, error: itemsErr } = await supabase
+    .from("delivery_items")
+    .select(`
+      id,
+      delivered_quantity,
+      ordered_quantity,
+      order_item_id,
+      product_id,
+      order_items (
+        quantity,
+        dispatched_quantity
+      ),
+      products (
+        name,
+        sku,
+        unit
+      )
+    `)
+    .eq("delivery_id", deliveryId)
+    .eq("business_id", businessId);
+
+  if (itemsErr) {
+    throw new Error("Failed to load delivery items.");
+  }
+
+  // Fetch business details from business_settings or fallback
+  const { data: bSetting } = await supabase
+    .from("business_settings")
+    .select("value")
+    .eq("business_id", businessId)
+    .eq("key", "business_details")
+    .maybeSingle();
+
+  const businessDetails = (bSetting?.value as any) || DEFAULT_SETTINGS.business_details;
+
+  const orderObj = Array.isArray(del.orders) ? del.orders[0] : del.orders;
+  const custObj = orderObj ? (Array.isArray(orderObj.customers) ? orderObj.customers[0] : orderObj.customers) : null;
+
+  const itemsFormatted = (delItems ?? []).map((di: any, index: number) => {
+    const prod = Array.isArray(di.products) ? di.products[0] : di.products;
+    const oi = Array.isArray(di.order_items) ? di.order_items[0] : di.order_items;
+
+    const ordered = Number(oi?.quantity ?? di.ordered_quantity ?? 0);
+    const currDispatched = Number(di.delivered_quantity ?? 0);
+    const totalDispatchedSoFar = Number(oi?.dispatched_quantity ?? currDispatched);
+    const remaining = Math.max(0, ordered - totalDispatchedSoFar);
+
+    return {
+      item_index: index + 1,
+      product_name: prod?.name || "Product",
+      product_sku: prod?.sku || null,
+      unit: prod?.unit || "units",
+      ordered_quantity: ordered,
+      previously_dispatched_quantity: Math.max(0, totalDispatchedSoFar - currDispatched),
+      current_delivery_quantity: currDispatched,
+      remaining_quantity: remaining,
+    };
+  });
+
+  const pdfBase64 = generateDeliveryChallanPdf({
+    business: {
+      name: businessDetails?.name || "SANKALP IRRIGATION",
+      legal_name: businessDetails?.legal_name,
+      tagline: businessDetails?.tagline || "ISI CERTIFIED COMPANY | INLINE-ONLINE DRIP MAKER",
+      gst_number: businessDetails?.gst_number || "23AAMPQ5857F1ZE",
+      address: businessDetails?.address || "Icchapur Road, Shahpur, Dist. Burhanpur (M.P.) 450-445",
+      state: businessDetails?.state || "Madhya Pradesh",
+      phone: businessDetails?.phone,
+      email: businessDetails?.email || "sankalpirrigation80@gmail.com",
+    },
+    delivery: {
+      id: del.id,
+      delivery_number: del.delivery_number,
+      delivery_date: del.delivery_date || del.created_at,
+      invoice_number: del.invoice_number,
+      status: del.status,
+      vehicle: del.vehicle,
+      driver: del.driver,
+      driver_phone: del.driver_phone,
+      tracking_number: del.tracking_number,
+      notes: del.notes,
+      created_at: del.created_at,
+    },
+    order: {
+      id: orderObj?.id || "",
+      order_number: orderObj?.order_number || "",
+      order_date: orderObj?.order_date,
+      total_amount: orderObj?.total_amount,
+    },
+    customer: {
+      name: custObj?.name || "Customer",
+      company_name: custObj?.company_name,
+      phone: custObj?.phone,
+      email: custObj?.email,
+      address: (custObj as any)?.address,
+      state: (custObj as any)?.state,
+      gst_number: custObj?.gst_number,
+    },
+    items: itemsFormatted,
+  });
+
+  const filename = `Challan-${del.delivery_number}.pdf`;
+  return {
+    success: true,
+    base64: pdfBase64,
+    filename,
   };
 }

@@ -348,6 +348,7 @@ DECLARE
   v_remaining NUMERIC;
   v_has_excess BOOLEAN := FALSE;
   v_order_status TEXT;
+  v_positive_items_count INT := 0;
   v_total_ordered NUMERIC := 0;
   v_total_dispatched NUMERIC := 0;
   v_total_remaining NUMERIC := 0;
@@ -410,9 +411,15 @@ BEGIN
     v_oi_id := (v_item->>'order_item_id')::UUID;
     v_qty := (v_item->>'quantity')::NUMERIC;
 
-    IF v_qty <= 0 THEN
+    IF v_qty < 0 THEN
+      RAISE EXCEPTION 'NEGATIVE_QUANTITY: Dispatched quantity cannot be negative for order item %', v_oi_id USING ERRCODE = '23514';
+    END IF;
+
+    IF v_qty = 0 THEN
       CONTINUE; -- Ignore zero quantity items
     END IF;
+
+    v_positive_items_count := v_positive_items_count + 1;
 
     -- Lock order_item row
     SELECT * INTO v_oi
@@ -446,6 +453,11 @@ BEGIN
       END IF;
     END IF;
   END LOOP;
+
+  -- Ensure at least one item had quantity > 0
+  IF v_positive_items_count = 0 THEN
+    RAISE EXCEPTION 'EMPTY_DELIVERY_ITEMS: At least one item with quantity > 0 must be specified' USING ERRCODE = '23514';
+  END IF;
 
   -- 6. Insert into deliveries table
   INSERT INTO public.deliveries (

@@ -33,6 +33,7 @@ import {
   FileSpreadsheet,
   Database,
   Wallet,
+  RotateCcw,
   type LucideIcon,
 } from "lucide-react";
 import { NotificationBell } from "@/components/notifications/notification-bell";
@@ -271,6 +272,12 @@ export function WorkspaceNavClient({
             href: "/delivery",
             icon: Send,
             visible: permissions.canViewDeliveries,
+          },
+          {
+            name: "Goods Returns",
+            href: "/returns",
+            icon: RotateCcw,
+            visible: permissions.canViewDeliveries || permissions.canViewOrders,
           },
         ],
       },

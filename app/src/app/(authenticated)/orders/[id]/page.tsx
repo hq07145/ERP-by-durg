@@ -30,6 +30,7 @@ export default async function OrderPage({ params, searchParams }: PageProps) {
     { data: statusHistory },
     { data: payments },
     { data: deliveries },
+    { data: returns },
     { data: productionOrders },
     { data: businessDetails },
     { data: advanceAllocations }
@@ -42,7 +43,7 @@ export default async function OrderPage({ params, searchParams }: PageProps) {
       .single(),
     supabase
       .from("order_items")
-      .select("id, business_id, order_id, product_id, product_name, quality_grade, variant_id, quantity, unit_price, discount_rate, tax_rate, line_total, taxable_amount, cgst_rate, cgst_amount, sgst_rate, sgst_amount, igst_rate, igst_amount, created_at, updated_at, products(name, sku, unit, quality_grade)")
+      .select("id, business_id, order_id, product_id, product_name, quality_grade, variant_id, quantity, unit_price, discount_rate, tax_rate, line_total, taxable_amount, cgst_rate, cgst_amount, sgst_rate, sgst_amount, igst_rate, igst_amount, dispatched_quantity, delivered_quantity, created_at, updated_at, products(name, sku, unit, quality_grade)")
       .eq("business_id", context.user.business_id)
       .eq("order_id", id)
       .order("created_at"),
@@ -60,7 +61,36 @@ export default async function OrderPage({ params, searchParams }: PageProps) {
       .order("payment_date", { ascending: false }),
     supabase
       .from("deliveries")
-      .select("id, delivery_number, status, expected_delivery_date, tracking_number, vehicle, driver, dispatched_at, delivered_at, notes, created_at")
+      .select("id, delivery_number, invoice_number, status, expected_delivery_date, tracking_number, vehicle, driver, dispatched_at, delivered_at, notes, created_at, delivery_items(id, order_item_id, delivered_quantity, products(unit))")
+      .eq("business_id", context.user.business_id)
+      .eq("order_id", id)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("goods_returns")
+      .select(`
+        id,
+        return_number,
+        return_date,
+        status,
+        product_condition,
+        reason,
+        adjustment_type,
+        adjustment_amount,
+        returned_quantity,
+        delivery_id,
+        order_item_id,
+        deliveries (delivery_number),
+        products (name, sku, unit),
+        goods_return_items (
+          id,
+          order_item_id,
+          delivery_item_id,
+          product_id,
+          returned_quantity,
+          product_condition,
+          products (name, sku, unit)
+        )
+      `)
       .eq("business_id", context.user.business_id)
       .eq("order_id", id)
       .order("created_at", { ascending: false }),
@@ -141,12 +171,103 @@ export default async function OrderPage({ params, searchParams }: PageProps) {
     const resolvedUnit = prod?.unit ?? "";
     const resolvedQualityGrade = i.quality_grade || prod?.quality_grade || null;
 
+    // Total delivered from valid, non-cancelled deliveries
+    let totalDelivered = 0;
+    (deliveries ?? []).filter((d: any) => d.status !== "CANCELLED").forEach((d: any) => {
+      (d.delivery_items || []).forEach((di: any) => {
+        if (di.order_item_id === i.id) {
+          totalDelivered += Number(di.delivered_quantity || 0);
+        }
+      });
+    });
+    if (totalDelivered === 0) {
+      totalDelivered = Number(i.delivered_quantity || i.dispatched_quantity || 0);
+    }
+
+    // Total returned from POSTED returns
+    let totalReturned = 0;
+    (returns ?? []).forEach((ret: any) => {
+      if (ret.status === "POSTED") {
+        if (ret.goods_return_items && ret.goods_return_items.length > 0) {
+          ret.goods_return_items.forEach((gri: any) => {
+            if (gri.order_item_id === i.id) {
+              totalReturned += Number(gri.returned_quantity || 0);
+            }
+          });
+        } else if (ret.order_item_id === i.id) {
+          totalReturned += Number(ret.returned_quantity || 0);
+        }
+      }
+    });
+
+    const netRetained = Math.max(0, totalDelivered - totalReturned);
+    const remainingToDeliver = Math.max(0, Number(i.quantity || 0) - totalDelivered);
+
     return {
       ...i,
       product_name: resolvedName,
       product_sku: resolvedSku,
       product_unit: resolvedUnit,
       quality_grade: resolvedQualityGrade,
+      total_delivered_quantity: totalDelivered,
+      total_returned_quantity: totalReturned,
+      net_retained_quantity: netRetained,
+      remaining_to_deliver: remainingToDeliver,
+    };
+  });
+
+  const deliveriesWithDetails = (deliveries ?? []).map((d: any) => {
+    const dItems = d.delivery_items || [];
+    const totalQty = dItems.reduce((acc: number, di: any) => acc + Number(di.delivered_quantity || 0), 0);
+    const unit = dItems[0]?.products?.unit || "";
+
+    const linkedRets = (returns ?? [])
+      .filter(
+        (ret: any) =>
+          ret.delivery_id === d.id ||
+          (ret.goods_return_items || []).some((gri: any) =>
+            dItems.some((di: any) => di.id === gri.delivery_item_id)
+          )
+      )
+      .map((ret: any) => {
+        const p = unwrapRelation(ret.products);
+        return {
+          id: ret.id,
+          return_number: ret.return_number,
+          returned_quantity: Number(ret.returned_quantity || 0),
+          status: ret.status,
+          product_condition: ret.product_condition,
+          unit: p?.unit,
+        };
+      });
+
+    return {
+      ...d,
+      total_quantity: totalQty,
+      unit,
+      linked_returns: linkedRets,
+    };
+  });
+
+  const formattedReturns = (returns ?? []).map((ret: any) => {
+    const p = unwrapRelation(ret.products);
+    const del = unwrapRelation(ret.deliveries);
+    return {
+      id: ret.id,
+      return_number: ret.return_number,
+      return_date: ret.return_date,
+      status: ret.status,
+      product_condition: ret.product_condition,
+      reason: ret.reason,
+      adjustment_type: ret.adjustment_type,
+      adjustment_amount: Number(ret.adjustment_amount || 0),
+      returned_quantity: Number(ret.returned_quantity || 0),
+      delivery_id: ret.delivery_id,
+      delivery_number: del?.delivery_number || null,
+      order_item_id: ret.order_item_id,
+      product_name: p?.name || "Product",
+      sku: p?.sku || null,
+      unit: p?.unit || "units",
     };
   });
 
@@ -293,7 +414,8 @@ export default async function OrderPage({ params, searchParams }: PageProps) {
         items={itemsWithProduct}
         statusHistory={historyWithUser}
         payments={(payments ?? []) as any}
-        deliveries={(deliveries ?? []) as any}
+        deliveries={(deliveriesWithDetails ?? []) as any}
+        returns={(formattedReturns ?? []) as any}
         productionOrders={productionWithProduct}
         advanceAllocations={(advanceAllocations ?? []) as any}
         customerAdvanceBalance={customerAdvBal.availableAdvance}

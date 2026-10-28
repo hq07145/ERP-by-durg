@@ -263,13 +263,32 @@ export function OrdersList({
       case "LOW":
         return "bg-slate-100 text-slate-600 border-slate-200";
       case "NORMAL":
-        return "bg-emerald-50 text-emerald-700 border-emerald-200";
+        return "bg-blue-50 text-blue-700 border-blue-200";
       case "HIGH":
         return "bg-amber-50 text-amber-700 border-amber-200";
       case "URGENT":
         return "bg-rose-50 text-rose-700 border-rose-200";
       default:
         return "bg-slate-100 text-slate-600 border-slate-200";
+    }
+  };
+
+  const getDeliveryBadge = (status?: string | null) => {
+    switch (status) {
+      case "FULLY_DISPATCHED":
+      case "DELIVERED":
+        return "bg-emerald-50 text-emerald-700 border-emerald-200";
+      case "PARTIALLY_DISPATCHED":
+      case "PARTIALLY_DELIVERED":
+        return "bg-amber-50 text-amber-700 border-amber-200";
+      case "OVERDUE":
+        return "bg-rose-50 text-rose-700 border-rose-200";
+      case "ON_TIME":
+        return "bg-sky-50 text-sky-700 border-sky-200";
+      case "CANCELLED":
+        return "bg-slate-100 text-slate-500 border-slate-200 line-through";
+      default:
+        return "bg-slate-50 text-slate-600 border-slate-200";
     }
   };
 
@@ -523,7 +542,7 @@ export function OrdersList({
                 <th className="px-4 py-3.5 text-xs font-semibold text-slate-600 uppercase tracking-wider">Order #</th>
                 <th className="px-4 py-3.5 text-xs font-semibold text-slate-600 uppercase tracking-wider">Customer</th>
                 <th className="px-4 py-3.5 text-xs font-semibold text-slate-600 uppercase tracking-wider">Date</th>
-                <th className="px-4 py-3.5 text-xs font-semibold text-slate-600 uppercase tracking-wider text-right">Items</th>
+                <th className="px-4 py-3.5 text-xs font-semibold text-slate-600 uppercase tracking-wider text-right">Qty & Dispatch</th>
                 <th className="px-4 py-3.5 text-xs font-semibold text-slate-600 uppercase tracking-wider text-right">Total</th>
                 {permissions.canViewPayments && (
                   <>
@@ -532,8 +551,8 @@ export function OrdersList({
                   </>
                 )}
                 <th className="px-4 py-3.5 text-xs font-semibold text-slate-600 uppercase tracking-wider">Priority</th>
-                <th className="px-4 py-3.5 text-xs font-semibold text-slate-600 uppercase tracking-wider">Status</th>
-                <th className="px-4 py-3.5 text-xs font-semibold text-slate-600 uppercase tracking-wider">Delivery Target</th>
+                <th className="px-4 py-3.5 text-xs font-semibold text-slate-600 uppercase tracking-wider">Order Status</th>
+                <th className="px-4 py-3.5 text-xs font-semibold text-slate-600 uppercase tracking-wider">Delivery</th>
                 <th className="px-4 py-3.5 text-xs font-semibold text-slate-600 uppercase tracking-wider text-right">Actions</th>
               </tr>
             </thead>
@@ -552,8 +571,15 @@ export function OrdersList({
                   <td className="px-4 py-3 text-xs text-slate-600 whitespace-nowrap">
                     {formatDate(o.order_date)}
                   </td>
-                  <td className="px-4 py-3 text-right font-medium text-slate-700">
-                    {o.item_count}
+                  <td className="px-4 py-3 text-right">
+                    <div className="font-semibold text-slate-900">
+                      {o.total_ordered_quantity != null ? `${o.total_ordered_quantity} pcs` : `${o.item_count} items`}
+                    </div>
+                    {o.total_dispatched_quantity != null && o.total_dispatched_quantity > 0 && (
+                      <div className="text-[11px] text-[#0F766E] font-medium">
+                        Disp: {o.total_dispatched_quantity} | Rem: {o.total_remaining_quantity ?? 0}
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-right font-mono font-bold text-slate-900 whitespace-nowrap">
                     {formatCurrency(o.total_amount)}
@@ -591,22 +617,25 @@ export function OrdersList({
                     </div>
                   </td>
                   <td className="px-4 py-3 text-xs whitespace-nowrap">
-                    {o.expected_delivery_date ? (
-                      <div className="space-y-0.5">
-                        <div className="font-semibold text-slate-800">{formatDate(o.expected_delivery_date)}</div>
-                        {o.status === "DRAFT" || o.delivery_status === "PENDING" ? (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-teal-50 text-teal-700 border border-teal-200">
-                            Predicted
+                    <div className="space-y-1">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${getDeliveryBadge(o.delivery_status)}`}>
+                        {(o.delivery_status || "PENDING").replace(/_/g, " ")}
+                      </span>
+                      {o.expected_delivery_date ? (
+                        <div className="text-[11px] text-slate-500">
+                          {formatDate(o.expected_delivery_date)}
+                          <span className={`ml-1 inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-medium border ${
+                            o.status === "DRAFT" || o.delivery_status === "PENDING"
+                              ? "bg-teal-50 text-teal-700 border-teal-200"
+                              : "bg-sky-50 text-sky-700 border-sky-200"
+                          }`}>
+                            {o.status === "DRAFT" || o.delivery_status === "PENDING" ? "Predicted" : "Target"}
                           </span>
-                        ) : (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-50 text-sky-700 border border-sky-200">
-                            Scheduled
-                          </span>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="text-slate-400">—</span>
-                    )}
+                        </div>
+                      ) : (
+                        <div className="text-slate-400">—</div>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
                     <div className="flex items-center justify-end gap-1.5">
@@ -691,6 +720,9 @@ export function OrdersList({
                     Prod: {o.production_status === "COMPLETED" ? "Completed" : o.production_status === "IN_PROGRESS" ? "In Progress" : "Pending"}
                   </span>
                 )}
+                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${getDeliveryBadge(o.delivery_status)}`}>
+                  {(o.delivery_status || "PENDING").replace(/_/g, " ")}
+                </span>
                 <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${ORDER_PAYMENT_STATUS_COLORS[getOrderPaymentStatus(o.total_amount, o.paid_amount, o.due_amount)]}`}>
                   {ORDER_PAYMENT_STATUS_LABELS[getOrderPaymentStatus(o.total_amount, o.paid_amount, o.due_amount)]}
                 </span>
@@ -708,8 +740,15 @@ export function OrdersList({
                 <span className="text-slate-800 font-medium">{formatDate(o.order_date)}</span>
               </div>
               <div>
-                <span className="text-slate-400 block text-[10px] uppercase">Line Items</span>
-                <span className="text-slate-800 font-medium">{o.item_count} items</span>
+                <span className="text-slate-400 block text-[10px] uppercase">Qty & Dispatch</span>
+                <span className="text-slate-800 font-medium">
+                  {o.total_ordered_quantity != null ? `${o.total_ordered_quantity} pcs` : `${o.item_count} items`}
+                  {o.total_dispatched_quantity != null && o.total_dispatched_quantity > 0 && (
+                    <span className="text-[10px] text-[#0F766E] font-semibold block">
+                      Disp: {o.total_dispatched_quantity} | Rem: {o.total_remaining_quantity ?? 0}
+                    </span>
+                  )}
+                </span>
               </div>
               <div>
                 <span className="text-slate-400 block text-[10px] uppercase">Delivery Target</span>

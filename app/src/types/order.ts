@@ -1,6 +1,6 @@
 export type OrderStatus = "DRAFT" | "CONFIRMED" | "CANCELLED";
 export type OrderPriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
-export type DeliveryStatus = "PENDING" | "ON_TIME" | "OVERDUE" | "DELIVERED" | "CANCELLED";
+export type DeliveryStatus = "PENDING" | "ON_TIME" | "OVERDUE" | "PARTIALLY_DISPATCHED" | "PARTIALLY_DELIVERED" | "FULLY_DISPATCHED" | "DELIVERED" | "CANCELLED";
 export type OrderPaymentStatus = "UNPAID" | "PARTIAL" | "PAID";
 
 export function getOrderPaymentStatus(
@@ -109,12 +109,20 @@ export interface OrderItem {
   // Quality / grade & variant
   quality_grade?: string | null;
   variant_id?: string | null;
+  // Delivery & dispatch tracking
+  dispatched_quantity?: string | number;
+  delivered_quantity?: string | number;
+  remaining_quantity?: string | number;
 }
 
 export interface OrderItemWithProduct extends OrderItem {
   product_name: string;
   product_sku: string | null;
   product_unit: string;
+  total_delivered_quantity?: number;
+  total_returned_quantity?: number;
+  net_retained_quantity?: number;
+  remaining_to_deliver?: number;
 }
 
 export interface OrderWithCustomer extends Order {
@@ -187,6 +195,10 @@ export interface OrderListItem {
   expected_delivery_date: string | null;
   delivery_status: DeliveryStatus;
   production_status?: "COMPLETED" | "IN_PROGRESS" | "PARTIAL" | "PENDING" | "NOT_REQUIRED" | string | null;
+  // Quantity aggregates for operational tracking
+  total_ordered_quantity?: number;
+  total_dispatched_quantity?: number;
+  total_remaining_quantity?: number;
 }
 
 export interface OrderItemFulfillmentSummary {
@@ -236,6 +248,7 @@ export interface OrderPaymentItem {
 export interface OrderDeliveryItem {
   id: string;
   delivery_number: string;
+  invoice_number?: string | null;
   status: string;
   expected_delivery_date: string | null;
   tracking_number: string | null;
@@ -245,6 +258,34 @@ export interface OrderDeliveryItem {
   delivered_at: string | null;
   notes: string | null;
   created_at: string;
+  total_quantity?: number;
+  unit?: string;
+  linked_returns?: Array<{
+    id: string;
+    return_number: string;
+    returned_quantity: number;
+    status: string;
+    product_condition: string;
+    unit?: string;
+  }>;
+}
+
+export interface OrderGoodsReturnItem {
+  id: string;
+  return_number: string;
+  return_date: string;
+  status: string;
+  product_condition: string;
+  reason: string;
+  adjustment_type: string | null;
+  adjustment_amount: number;
+  returned_quantity: number;
+  delivery_id?: string | null;
+  delivery_number?: string | null;
+  order_item_id?: string | null;
+  product_name?: string;
+  sku?: string | null;
+  unit?: string;
 }
 
 export interface OrderProductionItem {

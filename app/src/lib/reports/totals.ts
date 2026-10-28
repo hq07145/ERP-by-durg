@@ -82,6 +82,13 @@ export function calculateReportTotals(reportType: ReportType, rows: ReportRow[])
       totals["available_stock"] = sumKey("available_stock");
       break;
     case "delivery":
+      totals["ordered_quantity"] = sumKey("ordered_quantity");
+      totals["dispatched_quantity"] = sumKey("dispatched_quantity");
+      totals["remaining_quantity"] = sumKey("remaining_quantity");
+      break;
+    case "returns":
+      totals["returned_quantity"] = sumKey("returned_quantity");
+      totals["adjustment_amount"] = sumKey("adjustment_amount");
       break;
   }
 
