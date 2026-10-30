@@ -1,20 +1,18 @@
-import { redirect } from "next/navigation";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { listDeliveries, getDeliveryStatusCounts } from "@/lib/delivery/actions";
+import { redirect } from "next/navigation";
 import { DeliveryList } from "@/components/delivery/delivery-list";
+import { listDeliveries, getDeliveryStatusCounts } from "@/lib/delivery/actions";
 import type { DeliveryStatus, DeliveryStatusCounts } from "@/types/delivery";
-
-export const dynamic = "force-dynamic";
 
 interface PageProps {
   searchParams: Promise<{
     status?: string;
     page?: string;
     pageSize?: string;
-    q?: string;
     create?: string;
+    q?: string;
   }>;
 }
 
@@ -49,8 +47,21 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
       : Promise.resolve({ data: [] }),
   ]);
 
-  const deliveries = deliveriesRes.status === "fulfilled" ? deliveriesRes.value : [];
-  const totalCount = totalResultRes.status === "fulfilled" ? totalResultRes.value?.count ?? 0 : 0;
+  let deliveriesErrorMessage: string | null = null;
+  let deliveries: any[] = [];
+  if (deliveriesRes.status === "fulfilled") {
+    deliveries = deliveriesRes.value;
+  } else {
+    console.error("DeliveryPage: Failed to load deliveries list:", deliveriesRes.reason);
+    deliveriesErrorMessage = "Unable to load deliveries list from database. Please refresh or try again later.";
+  }
+
+  let totalCount = 0;
+  if (totalResultRes.status === "fulfilled") {
+    totalCount = totalResultRes.value?.count ?? 0;
+  } else {
+    console.error("DeliveryPage: Failed to load total count:", totalResultRes.reason);
+  }
 
   let statusCounts: DeliveryStatusCounts | null = null;
   let countErrorMessage: string | null = null;
@@ -85,8 +96,14 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
         </div>
       </div>
 
-      {countErrorMessage && (
+      {deliveriesErrorMessage && (
         <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-700 text-sm">
+          <p className="font-semibold">{deliveriesErrorMessage}</p>
+        </div>
+      )}
+
+      {countErrorMessage && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-700 text-sm">
           <p className="font-semibold">{countErrorMessage}</p>
         </div>
       )}

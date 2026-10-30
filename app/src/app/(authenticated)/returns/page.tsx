@@ -1,35 +1,37 @@
-import { redirect } from "next/navigation";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { listGoodsReturns, getReturnStatusCounts } from "@/lib/returns/actions";
+import { redirect } from "next/navigation";
 import { ReturnList } from "@/components/returns/return-list";
+import { listGoodsReturns, getReturnStatusCounts } from "@/lib/returns/actions";
 import type { ReturnStatus } from "@/types/returns";
-
-export const dynamic = "force-dynamic";
 
 interface PageProps {
   searchParams: Promise<{
     status?: string;
     page?: string;
     pageSize?: string;
-    q?: string;
     create?: string;
+    q?: string;
   }>;
 }
 
 export const metadata = {
-  title: "Goods Returns",
+  title: "Goods Returns | SANKALP IRRIGATION ERP",
 };
 
-export default async function ReturnsPage({ searchParams }: PageProps) {
+export default async function GoodsReturnsPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
-  if (!hasPermission({ permissions: context.permissions }, "delivery.view") &&
-      !hasPermission({ permissions: context.permissions }, "orders.view")) {
-    redirect("/dashboard?error=forbidden");
-  }
+
+  // Permission check: allow users who can view orders, deliveries, or inventory
+  const canView =
+    hasPermission({ permissions: context.permissions }, "delivery.view") ||
+    hasPermission({ permissions: context.permissions }, "orders.view") ||
+    hasPermission({ permissions: context.permissions }, "inventory.view");
+
+  if (!canView) redirect("/dashboard?error=forbidden");
 
   const status = params.status as ReturnStatus | undefined;
   const page = parseInt(params.page || "1", 10);
@@ -55,13 +57,21 @@ export default async function ReturnsPage({ searchParams }: PageProps) {
       : Promise.resolve({ data: [] }),
   ]);
 
-  const returns = returnsRes.status === "fulfilled" ? returnsRes.value : [];
+  let returnsErrorMessage: string | null = null;
+  let returns: any[] = [];
+  if (returnsRes.status === "fulfilled") {
+    returns = returnsRes.value;
+  } else {
+    console.error("GoodsReturnsPage: Failed to load goods returns list:", returnsRes.reason);
+    returnsErrorMessage = "Unable to load returns list from database. Please refresh or try again later.";
+  }
+
   let statusCounts: Record<string, number> | null = null;
   let countErrorMessage: string | null = null;
   if (statusCountsRes.status === "fulfilled") {
     statusCounts = statusCountsRes.value;
   } else {
-    console.error("ReturnsPage: Failed to load goods return status counts:", statusCountsRes.reason);
+    console.error("GoodsReturnsPage: Failed to load goods return status counts:", statusCountsRes.reason);
     countErrorMessage = "Unable to load return status counts from database.";
   }
 
@@ -109,8 +119,14 @@ export default async function ReturnsPage({ searchParams }: PageProps) {
         </div>
       </div>
 
-      {countErrorMessage && (
+      {returnsErrorMessage && (
         <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-700 text-sm">
+          <p className="font-semibold">{returnsErrorMessage}</p>
+        </div>
+      )}
+
+      {countErrorMessage && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-700 text-sm">
           <p className="font-semibold">{countErrorMessage}</p>
         </div>
       )}
