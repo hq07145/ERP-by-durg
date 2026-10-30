@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -54,17 +54,69 @@ export function ReturnList({
   const router = useRouter();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(initialCreateOpen);
   const [searchTerm, setSearchTerm] = useState(searchQuery);
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const latestQueryRef = useRef(searchQuery);
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
+  // Sync internal searchTerm if searchQuery prop changes externally (e.g. back/forward navigation)
+  useEffect(() => {
+    setSearchTerm(searchQuery);
+    latestQueryRef.current = searchQuery;
+  }, [searchQuery]);
+
+  // Clean up debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, []);
+
+  const triggerSearch = useCallback((query: string) => {
     const params = new URLSearchParams(window.location.search);
-    if (searchTerm.trim()) {
-      params.set("q", searchTerm.trim());
+    const trimmed = query.trim();
+    if (trimmed) {
+      params.set("q", trimmed);
     } else {
       params.delete("q");
     }
     params.delete("page");
     router.push(`/returns?${params.toString()}`);
+  }, [router]);
+
+  const handleSearchChange = (value: string) => {
+    setSearchTerm(value);
+    latestQueryRef.current = value;
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+
+    // Immediate reset when clearing search
+    if (!value.trim()) {
+      if (searchQuery) {
+        triggerSearch("");
+      }
+      return;
+    }
+
+    // Debounce 300ms for non-empty text input
+    debounceTimerRef.current = setTimeout(() => {
+      // Ensure older debounced update cannot override a newer one
+      if (latestQueryRef.current === value) {
+        triggerSearch(value);
+      }
+    }, 300);
+  };
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    triggerSearch(searchTerm);
   };
 
   const handleStatusFilter = (status: string | null) => {
@@ -169,7 +221,7 @@ export function ReturnList({
               type="text"
               placeholder="Search by return #, customer, order #, SKU..."
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => handleSearchChange(e.target.value)}
               className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
             />
           </div>
