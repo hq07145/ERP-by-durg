@@ -1,37 +1,36 @@
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { Suspense } from "react";
+import { redirect } from "next/navigation";
 import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
-import { redirect } from "next/navigation";
-import { ReturnList } from "@/components/returns/return-list";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { listGoodsReturns, getReturnStatusCounts } from "@/lib/returns/actions";
+import { ReturnList } from "@/components/returns/return-list";
 import type { ReturnStatus } from "@/types/returns";
+
+export const dynamic = "force-dynamic";
 
 interface PageProps {
   searchParams: Promise<{
     status?: string;
     page?: string;
     pageSize?: string;
-    create?: string;
     q?: string;
+    create?: string;
   }>;
 }
 
 export const metadata = {
-  title: "Goods Returns | SANKALP IRRIGATION ERP",
+  title: "Goods Returns",
 };
 
-export default async function GoodsReturnsPage({ searchParams }: PageProps) {
+export default async function ReturnsPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
-
-  // Permission check: allow users who can view orders, deliveries, or inventory
-  const canView =
-    hasPermission({ permissions: context.permissions }, "delivery.view") ||
-    hasPermission({ permissions: context.permissions }, "orders.view") ||
-    hasPermission({ permissions: context.permissions }, "inventory.view");
-
-  if (!canView) redirect("/dashboard?error=forbidden");
+  if (!hasPermission({ permissions: context.permissions }, "delivery.view") &&
+      !hasPermission({ permissions: context.permissions }, "orders.view")) {
+    redirect("/dashboard?error=forbidden");
+  }
 
   const status = params.status as ReturnStatus | undefined;
   const page = parseInt(params.page || "1", 10);
@@ -40,7 +39,7 @@ export default async function GoodsReturnsPage({ searchParams }: PageProps) {
   const q = params.q?.trim() || "";
 
   const supabase = await createServerSupabaseClient();
-  const [returns, statusCounts, customersRes] = await Promise.all([
+  const [returnsRes, statusCountsRes, customersRes] = await Promise.allSettled([
     listGoodsReturns({
       status,
       limit: pageSize,
@@ -57,7 +56,27 @@ export default async function GoodsReturnsPage({ searchParams }: PageProps) {
       : Promise.resolve({ data: [] }),
   ]);
 
-  const customers = (customersRes?.data ?? []) as any[];
+  const returns = returnsRes.status === "fulfilled" ? returnsRes.value : [];
+  let statusCounts: Record<string, number> = {
+    ALL: 0,
+    PENDING_INSPECTION: 0,
+    APPROVED: 0,
+    REJECTED: 0,
+    POSTED: 0,
+    CANCELLED: 0,
+  };
+  let countErrorMessage: string | null = null;
+  if (statusCountsRes.status === "fulfilled") {
+    statusCounts = statusCountsRes.value;
+  } else {
+    console.error("ReturnsPage: Failed to load goods return status counts:", statusCountsRes.reason);
+    countErrorMessage = "Unable to load return status counts from database.";
+  }
+
+  const customers =
+    customersRes.status === "fulfilled" && customersRes.value?.data
+      ? (customersRes.value.data as any[])
+      : [];
 
   // Filter returns client-side for quick search query if specified
   const filteredReturns = q
@@ -97,6 +116,12 @@ export default async function GoodsReturnsPage({ searchParams }: PageProps) {
           </p>
         </div>
       </div>
+
+      {countErrorMessage && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-700 text-sm">
+          <p className="font-semibold">{countErrorMessage}</p>
+        </div>
+      )}
 
       <ReturnList
         returns={filteredReturns}

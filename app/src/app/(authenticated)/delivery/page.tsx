@@ -1,18 +1,21 @@
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { Suspense } from "react";
+import { redirect } from "next/navigation";
 import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
-import { redirect } from "next/navigation";
-import { DeliveryList } from "@/components/delivery/delivery-list";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { listDeliveries, getDeliveryStatusCounts } from "@/lib/delivery/actions";
-import type { DeliveryStatus } from "@/types/delivery";
+import { DeliveryList } from "@/components/delivery/delivery-list";
+import type { DeliveryStatus, DeliveryStatusCounts } from "@/types/delivery";
+
+export const dynamic = "force-dynamic";
 
 interface PageProps {
   searchParams: Promise<{
     status?: string;
     page?: string;
     pageSize?: string;
-    create?: string;
     q?: string;
+    create?: string;
   }>;
 }
 
@@ -33,7 +36,7 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
   const q = params.q?.trim() || "";
 
   const supabase = await createServerSupabaseClient();
-  const [deliveries, totalResult, statusCounts, customersRes] = await Promise.all([
+  const [deliveriesRes, totalResultRes, statusCountsRes, customersRes] = await Promise.allSettled([
     listDeliveries(status, undefined, pageSize, offset, q),
     getTotalCount(status, q),
     getDeliveryStatusCounts(),
@@ -47,8 +50,31 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
       : Promise.resolve({ data: [] }),
   ]);
 
-  const totalCount = totalResult?.count ?? 0;
-  const customers = (customersRes?.data ?? []) as any[];
+  const deliveries = deliveriesRes.status === "fulfilled" ? deliveriesRes.value : [];
+  const totalCount = totalResultRes.status === "fulfilled" ? totalResultRes.value?.count ?? 0 : 0;
+
+  let statusCounts: DeliveryStatusCounts = {
+    ALL: 0,
+    READY: 0,
+    PACKED: 0,
+    DISPATCHED: 0,
+    IN_TRANSIT: 0,
+    DELIVERED: 0,
+    CANCELLED: 0,
+    NOT_READY: 0,
+  };
+  let countErrorMessage: string | null = null;
+  if (statusCountsRes.status === "fulfilled") {
+    statusCounts = statusCountsRes.value;
+  } else {
+    console.error("DeliveryPage: Failed to load delivery status counts:", statusCountsRes.reason);
+    countErrorMessage = "Unable to load status metric counts from database.";
+  }
+
+  const customers =
+    customersRes.status === "fulfilled" && customersRes.value?.data
+      ? (customersRes.value.data as any[])
+      : [];
 
   const canCreate = hasPermission({ permissions: context.permissions }, "delivery.create");
   const canView = hasPermission({ permissions: context.permissions }, "delivery.view");
@@ -68,6 +94,12 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
           <p className="text-gray-500 mt-1">Manage delivery workflow and tracking</p>
         </div>
       </div>
+
+      {countErrorMessage && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-700 text-sm">
+          <p className="font-semibold">{countErrorMessage}</p>
+        </div>
+      )}
 
       <DeliveryList
         deliveries={deliveries}
