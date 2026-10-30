@@ -169,12 +169,22 @@ export function OrderForm({
   const [priority, setPriority] = useState<"LOW" | "NORMAL" | "HIGH" | "URGENT">(
     initialValues?.priority ?? "NORMAL"
   );
-  const [district, setDistrict] = useState<string>(
-    initialValues?.district ?? ""
-  );
-  const [placeOfSupply, setPlaceOfSupply] = useState<string>(
-    initialValues?.place_of_supply ?? ""
-  );
+  const [district, setDistrict] = useState<string>(() => {
+    if (initialValues?.district) return initialValues.district;
+    if (initialValues?.customer_id) {
+      const initCust = customers.find((c) => c.id === initialValues.customer_id);
+      return initCust?.district ?? "";
+    }
+    return "";
+  });
+  const [placeOfSupply, setPlaceOfSupply] = useState<string>(() => {
+    if (initialValues?.place_of_supply) return initialValues.place_of_supply;
+    if (initialValues?.customer_id) {
+      const initCust = customers.find((c) => c.id === initialValues.customer_id);
+      return initCust?.state ?? "";
+    }
+    return "";
+  });
   const [notes, setNotes] = useState<string>(initialValues?.notes ?? "");
 
   // Customer advance visibility and adjustment state
@@ -225,16 +235,20 @@ export function OrderForm({
     [customers, customerId]
   );
 
-  useEffect(() => {
-    if (customerId && selectedCustomer) {
-      if (selectedCustomer.district && !initialValues?.district) {
-        setDistrict(selectedCustomer.district);
-      }
-      if (selectedCustomer.state && !initialValues?.place_of_supply) {
-        setPlaceOfSupply(selectedCustomer.state);
+  const handleCustomerChange = (newCustomerId: string) => {
+    setCustomerId(newCustomerId);
+    if (newCustomerId) {
+      const cust = customers.find((c) => c.id === newCustomerId);
+      if (cust) {
+        if (cust.district && !initialValues?.district) {
+          setDistrict(cust.district);
+        }
+        if (cust.state && !initialValues?.place_of_supply) {
+          setPlaceOfSupply(cust.state);
+        }
       }
     }
-  }, [customerId, selectedCustomer, initialValues]);
+  };
 
   const handleDistrictChange = (selectedDistrict: string, selectedState: string) => {
     setDistrict(selectedDistrict);
@@ -962,7 +976,7 @@ export function OrderForm({
               name="customer_id"
               required
               value={customerId}
-              onChange={(e) => setCustomerId(e.target.value)}
+              onChange={(e) => handleCustomerChange(e.target.value)}
               className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm shadow-2xs focus:border-[#0F766E] focus:outline-none focus:ring-1 focus:ring-[#0F766E] min-h-[44px]"
             >
               <option value="">Select Customer</option>
