@@ -105,7 +105,9 @@ export default async function OrdersPage({
 
   // Fetch KPI Counts, dependencies, and paginated orders in ONE parallel batch
   const [
-    statusRowsRes,
+    totalOrdersRes,
+    confirmedOrdersRes,
+    draftOrdersRes,
     customersRes,
     productsRes,
     inventoryRowsRes,
@@ -115,8 +117,18 @@ export default async function OrdersPage({
   ] = await Promise.all([
     supabase
       .from("orders")
-      .select("status")
+      .select("id", { count: "exact", head: true })
       .eq("business_id", context.user.business_id),
+    supabase
+      .from("orders")
+      .select("id", { count: "exact", head: true })
+      .eq("business_id", context.user.business_id)
+      .eq("status", "CONFIRMED"),
+    supabase
+      .from("orders")
+      .select("id", { count: "exact", head: true })
+      .eq("business_id", context.user.business_id)
+      .eq("status", "DRAFT"),
     supabase
       .from("customers")
       .select("id, name, company_name, gst_number, customer_addresses(district, state, address_type)")
@@ -146,14 +158,9 @@ export default async function OrdersPage({
     query.range(from, to),
   ]);
 
-  let totalOrdersCount = 0;
-  let confirmedOrdersCount = 0;
-  let draftOrdersCount = 0;
-  (statusRowsRes.data ?? []).forEach((row: any) => {
-    totalOrdersCount++;
-    if (row.status === "CONFIRMED") confirmedOrdersCount++;
-    else if (row.status === "DRAFT") draftOrdersCount++;
-  });
+  const totalOrdersCount = totalOrdersRes.count ?? 0;
+  const confirmedOrdersCount = confirmedOrdersRes.count ?? 0;
+  const draftOrdersCount = draftOrdersRes.count ?? 0;
 
   const stockMap = new Map<string, number>();
   (inventoryRowsRes.data ?? []).forEach((row: any) => {

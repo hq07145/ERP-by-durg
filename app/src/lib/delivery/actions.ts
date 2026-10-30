@@ -396,30 +396,40 @@ export async function getDeliveryStatusCounts(): Promise<DeliveryStatusCounts> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) throw new Error("Supabase client not available");
 
-  const { data, error } = await supabase
-    .from("deliveries")
-    .select("status")
-    .eq("business_id", context.user.business_id);
+  const statuses: Array<keyof Omit<DeliveryStatusCounts, "ALL">> = [
+    "READY",
+    "PACKED",
+    "DISPATCHED",
+    "IN_TRANSIT",
+    "DELIVERED",
+    "CANCELLED",
+    "NOT_READY",
+  ];
+
+  const [allRes, ...statusResults] = await Promise.all([
+    supabase
+      .from("deliveries")
+      .select("id", { count: "exact", head: true })
+      .eq("business_id", context.user.business_id),
+    ...statuses.map((status) =>
+      supabase
+        .from("deliveries")
+        .select("id", { count: "exact", head: true })
+        .eq("business_id", context.user.business_id)
+        .eq("status", status)
+    ),
+  ]);
 
   const counts: DeliveryStatusCounts = {
-    ALL: data?.length ?? 0,
-    READY: 0,
-    PACKED: 0,
-    DISPATCHED: 0,
-    IN_TRANSIT: 0,
-    DELIVERED: 0,
-    CANCELLED: 0,
-    NOT_READY: 0,
+    ALL: allRes.count ?? 0,
+    READY: statusResults[0].count ?? 0,
+    PACKED: statusResults[1].count ?? 0,
+    DISPATCHED: statusResults[2].count ?? 0,
+    IN_TRANSIT: statusResults[3].count ?? 0,
+    DELIVERED: statusResults[4].count ?? 0,
+    CANCELLED: statusResults[5].count ?? 0,
+    NOT_READY: statusResults[6].count ?? 0,
   };
-
-  if (!error && data) {
-    for (const row of data) {
-      const st = row.status as keyof DeliveryStatusCounts;
-      if (counts[st] !== undefined) {
-        counts[st]++;
-      }
-    }
-  }
 
   return counts;
 }
@@ -468,32 +478,64 @@ export async function getEligibleOrdersForDelivery(): Promise<EligibleDeliveryOr
 
   const activeOrderIds = new Set((activeDeliveries ?? []).map((d) => d.order_id));
 
-  // 3. For eligible orders, check if all items are production-complete
+  // 3. For eligible orders, batch fetch items and production orders
+  const candidateOrders = orders.filter((o) => !activeOrderIds.has(o.id));
+  if (candidateOrders.length === 0) return [];
+
+  const candidateOrderIds = candidateOrders.map((o) => o.id);
+  const CHUNK_SIZE = 200;
+
+  // Batch fetch order items and production orders in chunks
+  const allItems: any[] = [];
+  const allPos: any[] = [];
+
+  for (let i = 0; i < candidateOrderIds.length; i += CHUNK_SIZE) {
+    const chunkIds = candidateOrderIds.slice(i, i + CHUNK_SIZE);
+    const [itemsRes, posRes] = await Promise.all([
+      supabase
+        .from("order_items")
+        .select("id, order_id, product_id, quantity, products(name, sku, unit)")
+        .in("order_id", chunkIds)
+        .eq("business_id", businessId),
+      supabase
+        .from("production_orders")
+        .select("id, order_id, order_item_id, product_id, status, quantity, completed_quantity")
+        .in("order_id", chunkIds)
+        .eq("business_id", businessId),
+    ]);
+
+    if (itemsRes.data) allItems.push(...itemsRes.data);
+    if (posRes.data) allPos.push(...posRes.data);
+  }
+
+  const itemsByOrderId = new Map<string, any[]>();
+  for (const item of allItems) {
+    if (item.order_id) {
+      if (!itemsByOrderId.has(item.order_id)) itemsByOrderId.set(item.order_id, []);
+      itemsByOrderId.get(item.order_id)!.push(item);
+    }
+  }
+
+  const posByOrderId = new Map<string, any[]>();
+  for (const po of allPos) {
+    if (po.order_id) {
+      if (!posByOrderId.has(po.order_id)) posByOrderId.set(po.order_id, []);
+      posByOrderId.get(po.order_id)!.push(po);
+    }
+  }
+
   const eligibleOrders: EligibleDeliveryOrder[] = [];
 
-  for (const order of orders) {
-    if (activeOrderIds.has(order.id)) continue;
+  for (const order of candidateOrders) {
+    const items = itemsByOrderId.get(order.id) || [];
+    if (items.length === 0) continue;
 
-    // Fetch order items
-    const { data: items } = await supabase
-      .from("order_items")
-      .select("id, product_id, quantity, products(name, sku, unit)")
-      .eq("order_id", order.id)
-      .eq("business_id", businessId);
-
-    if (!items || items.length === 0) continue;
-
-    // Fetch production orders
-    const { data: pos } = await supabase
-      .from("production_orders")
-      .select("id, order_item_id, product_id, status, quantity, completed_quantity")
-      .eq("order_id", order.id)
-      .eq("business_id", businessId);
+    const pos = posByOrderId.get(order.id) || [];
 
     // Verify all items are completed
     let allItemsComplete = true;
     for (const item of items) {
-      const matchingPOs = (pos ?? []).filter(
+      const matchingPOs = pos.filter(
         (po) => po.order_item_id === item.id || (!po.order_item_id && po.product_id === item.product_id)
       );
 

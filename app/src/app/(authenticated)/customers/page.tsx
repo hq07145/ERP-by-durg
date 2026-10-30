@@ -128,19 +128,23 @@ export default async function CustomersPage({
     query = query.eq("status", status);
   }
 
-  // Fetch KPI status summary and paginated data in parallel (1 roundtrip instead of 4)
-  const [statusRes, dataRes] = await Promise.all([
+  // Fetch KPI status summary with head:true counts and paginated data in parallel
+  const [totalRes, activeRes, dataRes] = await Promise.all([
     supabase
       .from("customers")
-      .select("status")
+      .select("id", { count: "exact", head: true })
       .eq("business_id", context.user.business_id),
+    supabase
+      .from("customers")
+      .select("id", { count: "exact", head: true })
+      .eq("business_id", context.user.business_id)
+      .eq("status", "ACTIVE"),
     query,
   ]);
 
-  const statusRows = (statusRes.data ?? []) as { status: string }[];
-  const totalCustomers = statusRows.length;
-  const activeCustomers = statusRows.filter((r) => r.status === "ACTIVE").length;
-  const inactiveCustomers = totalCustomers - activeCustomers;
+  const totalCustomers = totalRes.count ?? 0;
+  const activeCustomers = activeRes.count ?? 0;
+  const inactiveCustomers = Math.max(0, totalCustomers - activeCustomers);
 
   const { data, error, count } = dataRes;
   if (error) {
