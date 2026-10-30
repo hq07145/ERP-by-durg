@@ -58,7 +58,7 @@ interface DeliveryListProps {
   canComplete: boolean;
   canCancel: boolean;
   currentStatus?: DeliveryStatus;
-  statusCounts?: DeliveryStatusCounts;
+  statusCounts?: DeliveryStatusCounts | null;
   searchQuery?: string;
   totalCount: number;
   currentPage: number;
@@ -125,7 +125,7 @@ export function DeliveryList({
     setItemsList(deliveries);
   }, [deliveries]);
 
-  const [localCounts, setLocalCounts] = useState<DeliveryStatusCounts | undefined>(statusCounts);
+  const [localCounts, setLocalCounts] = useState<DeliveryStatusCounts | null | undefined>(statusCounts);
   useEffect(() => {
     setLocalCounts(statusCounts);
   }, [statusCounts]);
@@ -661,7 +661,7 @@ export function DeliveryList({
                 : "bg-slate-100 text-slate-700 hover:bg-slate-200"
             }`}
           >
-            All ({localCounts?.ALL ?? totalCount})
+            All ({localCounts ? (localCounts.ALL ?? totalCount) : "—"})
           </button>
           {STATUS_FILTER_ORDER.map((st) => (
             <button
@@ -673,7 +673,7 @@ export function DeliveryList({
                   : "bg-slate-100 text-slate-700 hover:bg-slate-200"
               }`}
             >
-              {DELIVERY_STATUS_LABELS[st]} ({localCounts?.[st] ?? 0})
+              {DELIVERY_STATUS_LABELS[st]} ({localCounts ? (localCounts[st] ?? 0) : "—"})
             </button>
           ))}
         </div>

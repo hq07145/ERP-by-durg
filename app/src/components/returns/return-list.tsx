@@ -31,7 +31,7 @@ import {
 interface ReturnListProps {
   returns: any[];
   customers: any[];
-  statusCounts: Record<string, number>;
+  statusCounts?: Record<string, number> | null;
   currentStatus?: string;
   searchQuery?: string;
   canCreate: boolean;
@@ -146,7 +146,7 @@ export function ReturnList({
             <span className="text-xs font-semibold opacity-80">All Returns</span>
             <RotateCcw className="w-4 h-4 opacity-75" />
           </div>
-          <div className="text-2xl font-bold mt-2">{statusCounts.ALL || 0}</div>
+          <div className="text-2xl font-bold mt-2">{statusCounts ? (statusCounts.ALL ?? 0) : "—"}</div>
         </button>
 
         <button
@@ -162,7 +162,7 @@ export function ReturnList({
             <Clock className="w-4 h-4 text-amber-500" />
           </div>
           <div className="text-2xl font-bold mt-2 text-amber-600">
-            {statusCounts.PENDING_INSPECTION || 0}
+            {statusCounts ? (statusCounts.PENDING_INSPECTION ?? 0) : "—"}
           </div>
         </button>
 
@@ -178,7 +178,7 @@ export function ReturnList({
             <span className="text-xs font-semibold opacity-80">Approved</span>
             <ShieldCheck className="w-4 h-4 text-blue-500" />
           </div>
-          <div className="text-2xl font-bold mt-2 text-blue-600">{statusCounts.APPROVED || 0}</div>
+          <div className="text-2xl font-bold mt-2 text-blue-600">{statusCounts ? (statusCounts.APPROVED ?? 0) : "—"}</div>
         </button>
 
         <button
@@ -193,7 +193,7 @@ export function ReturnList({
             <span className="text-xs font-semibold opacity-80">Posted (Adjusted)</span>
             <CheckCircle2 className="w-4 h-4 text-emerald-500" />
           </div>
-          <div className="text-2xl font-bold mt-2 text-emerald-600">{statusCounts.POSTED || 0}</div>
+          <div className="text-2xl font-bold mt-2 text-emerald-600">{statusCounts ? (statusCounts.POSTED ?? 0) : "—"}</div>
         </button>
 
         <button
@@ -208,7 +208,7 @@ export function ReturnList({
             <span className="text-xs font-semibold opacity-80">Rejected</span>
             <XCircle className="w-4 h-4 text-rose-500" />
           </div>
-          <div className="text-2xl font-bold mt-2 text-rose-600">{statusCounts.REJECTED || 0}</div>
+          <div className="text-2xl font-bold mt-2 text-rose-600">{statusCounts ? (statusCounts.REJECTED ?? 0) : "—"}</div>
         </button>
       </div>
 

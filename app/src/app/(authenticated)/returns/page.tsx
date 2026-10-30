@@ -1,4 +1,3 @@
-import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
@@ -57,14 +56,7 @@ export default async function ReturnsPage({ searchParams }: PageProps) {
   ]);
 
   const returns = returnsRes.status === "fulfilled" ? returnsRes.value : [];
-  let statusCounts: Record<string, number> = {
-    ALL: 0,
-    PENDING_INSPECTION: 0,
-    APPROVED: 0,
-    REJECTED: 0,
-    POSTED: 0,
-    CANCELLED: 0,
-  };
+  let statusCounts: Record<string, number> | null = null;
   let countErrorMessage: string | null = null;
   if (statusCountsRes.status === "fulfilled") {
     statusCounts = statusCountsRes.value;

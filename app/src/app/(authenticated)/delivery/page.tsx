@@ -1,4 +1,3 @@
-import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { getAuthContext } from "@/lib/auth/context";
 import { hasPermission } from "@/lib/permissions/authorization";
@@ -53,16 +52,7 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
   const deliveries = deliveriesRes.status === "fulfilled" ? deliveriesRes.value : [];
   const totalCount = totalResultRes.status === "fulfilled" ? totalResultRes.value?.count ?? 0 : 0;
 
-  let statusCounts: DeliveryStatusCounts = {
-    ALL: 0,
-    READY: 0,
-    PACKED: 0,
-    DISPATCHED: 0,
-    IN_TRANSIT: 0,
-    DELIVERED: 0,
-    CANCELLED: 0,
-    NOT_READY: 0,
-  };
+  let statusCounts: DeliveryStatusCounts | null = null;
   let countErrorMessage: string | null = null;
   if (statusCountsRes.status === "fulfilled") {
     statusCounts = statusCountsRes.value;
