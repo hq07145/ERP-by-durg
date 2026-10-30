@@ -55,12 +55,16 @@ export function ReturnList({
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(initialCreateOpen);
   const [searchTerm, setSearchTerm] = useState(searchQuery);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const latestQueryRef = useRef(searchQuery);
+  const lastPushedRef = useRef(searchQuery);
 
-  // Sync internal searchTerm if searchQuery prop changes externally (e.g. back/forward navigation)
+  // Sync internal searchTerm on genuine external navigation (back/forward),
+  // but do not overwrite while typing or if the prop matches the last pushed query.
   useEffect(() => {
+    if (debounceTimerRef.current !== null || searchQuery === lastPushedRef.current) {
+      return;
+    }
     setSearchTerm(searchQuery);
-    latestQueryRef.current = searchQuery;
+    lastPushedRef.current = searchQuery;
   }, [searchQuery]);
 
   // Clean up debounce timer on unmount
@@ -72,7 +76,7 @@ export function ReturnList({
     };
   }, []);
 
-  const triggerSearch = useCallback((query: string) => {
+  const triggerSearch = useCallback((query: string, isSubmit = false) => {
     const params = new URLSearchParams(window.location.search);
     const trimmed = query.trim();
     if (trimmed) {
@@ -81,12 +85,17 @@ export function ReturnList({
       params.delete("q");
     }
     params.delete("page");
-    router.push(`/returns?${params.toString()}`);
+    lastPushedRef.current = trimmed;
+    const url = `/returns?${params.toString()}`;
+    if (isSubmit) {
+      router.push(url);
+    } else {
+      router.replace(url);
+    }
   }, [router]);
 
   const handleSearchChange = (value: string) => {
     setSearchTerm(value);
-    latestQueryRef.current = value;
 
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
@@ -96,17 +105,15 @@ export function ReturnList({
     // Immediate reset when clearing search
     if (!value.trim()) {
       if (searchQuery) {
-        triggerSearch("");
+        triggerSearch("", false);
       }
       return;
     }
 
-    // Debounce 300ms for non-empty text input
+    // Debounce 300ms using router.replace
     debounceTimerRef.current = setTimeout(() => {
-      // Ensure older debounced update cannot override a newer one
-      if (latestQueryRef.current === value) {
-        triggerSearch(value);
-      }
+      debounceTimerRef.current = null;
+      triggerSearch(value, false);
     }, 300);
   };
 
@@ -116,7 +123,7 @@ export function ReturnList({
       clearTimeout(debounceTimerRef.current);
       debounceTimerRef.current = null;
     }
-    triggerSearch(searchTerm);
+    triggerSearch(searchTerm, true);
   };
 
   const handleStatusFilter = (status: string | null) => {
