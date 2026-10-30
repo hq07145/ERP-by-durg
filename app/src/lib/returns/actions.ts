@@ -361,6 +361,21 @@ export async function getReturnStatusCounts(): Promise<Record<string, number>> {
     ),
   ]);
 
+  if (allRes.error) {
+    console.error("getReturnStatusCounts: Failed to query total returns count:", allRes.error);
+    throw allRes.error;
+  }
+
+  for (let i = 0; i < statusResults.length; i++) {
+    if (statusResults[i].error) {
+      console.error(
+        `getReturnStatusCounts: Failed to query count for status ${statuses[i]}:`,
+        statusResults[i].error
+      );
+      throw statusResults[i].error;
+    }
+  }
+
   const counts: Record<string, number> = {
     ALL: allRes.count ?? 0,
     PENDING_INSPECTION: statusResults[0].count ?? 0,

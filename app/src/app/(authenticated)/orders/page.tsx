@@ -158,6 +158,16 @@ export default async function OrdersPage({
     query.range(from, to),
   ]);
 
+  if (totalOrdersRes.error) {
+    console.error("OrdersPage: failed to fetch total orders count:", totalOrdersRes.error);
+  }
+  if (confirmedOrdersRes.error) {
+    console.error("OrdersPage: failed to fetch confirmed orders count:", confirmedOrdersRes.error);
+  }
+  if (draftOrdersRes.error) {
+    console.error("OrdersPage: failed to fetch draft orders count:", draftOrdersRes.error);
+  }
+
   const totalOrdersCount = totalOrdersRes.count ?? 0;
   const confirmedOrdersCount = confirmedOrdersRes.count ?? 0;
   const draftOrdersCount = draftOrdersRes.count ?? 0;
@@ -337,8 +347,8 @@ export default async function OrdersPage({
           ? "You do not have permission to perform this action."
           : params.error
           ? `Operation failed (${params.error}).`
-          : error
-          ? "Unable to load orders list from database."
+          : error || totalOrdersRes.error || confirmedOrdersRes.error || draftOrdersRes.error
+          ? "Unable to load orders list or KPI counts from database."
           : null
       }
       notice={params.notice}

@@ -420,6 +420,21 @@ export async function getDeliveryStatusCounts(): Promise<DeliveryStatusCounts> {
     ),
   ]);
 
+  if (allRes.error) {
+    console.error("getDeliveryStatusCounts: Failed to query total deliveries count:", allRes.error);
+    throw allRes.error;
+  }
+
+  for (let i = 0; i < statusResults.length; i++) {
+    if (statusResults[i].error) {
+      console.error(
+        `getDeliveryStatusCounts: Failed to query count for status ${statuses[i]}:`,
+        statusResults[i].error
+      );
+      throw statusResults[i].error;
+    }
+  }
+
   const counts: DeliveryStatusCounts = {
     ALL: allRes.count ?? 0,
     READY: statusResults[0].count ?? 0,
@@ -503,6 +518,15 @@ export async function getEligibleOrdersForDelivery(): Promise<EligibleDeliveryOr
         .in("order_id", chunkIds)
         .eq("business_id", businessId),
     ]);
+
+    if (itemsRes.error) {
+      console.error("getEligibleOrdersForDelivery: Failed to fetch order items chunk:", itemsRes.error);
+      throw itemsRes.error;
+    }
+    if (posRes.error) {
+      console.error("getEligibleOrdersForDelivery: Failed to fetch production orders chunk:", posRes.error);
+      throw posRes.error;
+    }
 
     if (itemsRes.data) allItems.push(...itemsRes.data);
     if (posRes.data) allPos.push(...posRes.data);

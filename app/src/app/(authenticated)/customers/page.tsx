@@ -142,16 +142,22 @@ export default async function CustomersPage({
     query,
   ]);
 
+  const countError = totalRes.error || activeRes.error;
+  if (countError) {
+    console.error("CustomersPage: Failed to fetch customer status counts:", countError);
+  }
+
   const totalCustomers = totalRes.count ?? 0;
   const activeCustomers = activeRes.count ?? 0;
   const inactiveCustomers = Math.max(0, totalCustomers - activeCustomers);
 
   const { data, error, count } = dataRes;
-  if (error) {
+  const combinedError = error || countError;
+  if (combinedError) {
     return (
       <div className="rounded-xl border border-rose-200 bg-rose-50 p-6 text-rose-700">
         <p className="font-semibold text-sm">Failed to load customers.</p>
-        <p className="text-xs mt-1 text-rose-600">{error.message}</p>
+        <p className="text-xs mt-1 text-rose-600">{combinedError.message}</p>
       </div>
     );
   }
