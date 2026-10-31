@@ -120,6 +120,8 @@ export interface CreatePaymentResult {
   payment_number?: string;
   already_processed?: boolean;
   message: string;
+  success?: boolean;
+  error?: string;
 }
 
 export interface UpdatePaymentFormValues {
