@@ -56,11 +56,13 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
     deliveriesErrorMessage = "Unable to load deliveries list from database. Please refresh or try again later.";
   }
 
+  let totalCountErrorMessage: string | null = null;
   let totalCount = 0;
   if (totalResultRes.status === "fulfilled") {
     totalCount = totalResultRes.value?.count ?? 0;
   } else {
     console.error("DeliveryPage: Failed to load total count:", totalResultRes.reason);
+    totalCountErrorMessage = "Unable to load total delivery count from database.";
   }
 
   let statusCounts: DeliveryStatusCounts | null = null;
@@ -99,6 +101,12 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
       {deliveriesErrorMessage && (
         <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-700 text-sm">
           <p className="font-semibold">{deliveriesErrorMessage}</p>
+        </div>
+      )}
+
+      {totalCountErrorMessage && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-700 text-sm">
+          <p className="font-semibold">{totalCountErrorMessage}</p>
         </div>
       )}
 
