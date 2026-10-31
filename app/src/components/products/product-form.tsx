@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 import { saveProductAction } from "@/lib/products/actions";
 import { PRODUCT_UNITS, type ProductCategory, type ProductFormValues } from "@/types/product";
+import { Loader2 } from "lucide-react";
 
 const inputClass = "min-h-10 w-full rounded-sm border border-[var(--line)] bg-white px-3 text-sm outline-none focus:border-[var(--accent)]";
 const selectClass = `${inputClass} py-2`;
@@ -135,9 +136,9 @@ export default function ProductForm({
         setErrorMessage("Failed to save product. Please try again.");
         setIsSubmitting(false);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[ProductForm] Save error:", err);
-      setErrorMessage(err?.message || "An unexpected error occurred while saving.");
+      setErrorMessage(err instanceof Error ? err.message : "An unexpected error occurred while saving.");
       setIsSubmitting(false);
     }
   }
@@ -426,8 +427,15 @@ export default function ProductForm({
       </fieldset>
 
       <div className="flex flex-wrap items-center gap-3 border-t border-[var(--line)] pt-5">
-        <button className="min-h-10 rounded-sm bg-[var(--accent)] px-5 text-sm font-semibold text-white hover:bg-[var(--accent-strong)] disabled:cursor-wait disabled:opacity-60" disabled={isSubmitting} type="submit">
-          {isSubmitting ? "Saving..." : productId ? "Save changes" : "Create product"}
+        <button className="min-h-10 rounded-sm bg-[var(--accent)] px-5 text-sm font-semibold text-white hover:bg-[var(--accent-strong)] disabled:cursor-wait disabled:opacity-60 inline-flex items-center justify-center" disabled={isSubmitting} type="submit">
+          {isSubmitting ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin mr-2" />
+              <span>Saving...</span>
+            </>
+          ) : (
+            productId ? "Save changes" : "Create product"
+          )}
         </button>
         <Link className="rounded-sm px-4 py-2.5 text-sm font-medium text-[var(--muted)] hover:bg-[#eaf0eb]" href={productId ? `/products/${productId}` : "/products"}>
           Cancel
