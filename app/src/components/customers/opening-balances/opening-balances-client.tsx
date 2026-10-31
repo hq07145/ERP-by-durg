@@ -357,6 +357,15 @@ export function CustomerOpeningBalancesClient({
     }
   };
 
+  const handleDownloadTemplate = async () => {
+    try {
+      await downloadModuleTemplate("customer_opening_balances", "xlsx");
+    } catch (err) {
+      console.error("Failed to download template:", err);
+      alert("Failed to download template. Please check your network connection and try again.");
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto space-y-6 p-4 sm:p-6 lg:p-8">
       {/* Breadcrumb & Navigation */}
@@ -391,7 +400,7 @@ export function CustomerOpeningBalancesClient({
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
           <button
-            onClick={() => downloadModuleTemplate("customer_opening_balances", "xlsx")}
+            onClick={handleDownloadTemplate}
             className="px-3.5 py-2 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
             title="Download Customer Opening Balances Excel template"
           >

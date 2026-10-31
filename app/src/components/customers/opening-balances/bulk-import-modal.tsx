@@ -362,9 +362,23 @@ export function BulkImportModal({
     }
   };
 
-  const handleDownloadErrors = () => {
+  const handleDownloadErrors = async () => {
     if (!importResult || !importResult.errors || importResult.errors.length === 0) return;
-    downloadErrorReportFile(selectedFile?.name || "opening_balances_errors.xlsx", importResult.errors);
+    try {
+      await downloadErrorReportFile(selectedFile?.name || "opening_balances_errors.xlsx", importResult.errors);
+    } catch (err) {
+      console.error("Failed to download error report:", err);
+      alert("Failed to download error report. Please check your network connection and try again.");
+    }
+  };
+
+  const handleDownloadTemplate = async () => {
+    try {
+      await downloadModuleTemplate("customer_opening_balances", "xlsx");
+    } catch (err) {
+      console.error("Failed to download template:", err);
+      alert("Failed to download template. Please check your network connection and try again.");
+    }
   };
 
   return (
@@ -388,7 +402,7 @@ export function BulkImportModal({
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => downloadModuleTemplate("customer_opening_balances", "xlsx")}
+              onClick={handleDownloadTemplate}
               className="px-3 py-1.5 rounded-lg border border-teal-200 bg-teal-50/60 hover:bg-teal-100/60 text-teal-800 text-xs font-semibold flex items-center gap-1.5 transition-colors"
               title="Download pre-formatted Excel template"
             >

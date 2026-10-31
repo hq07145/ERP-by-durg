@@ -16,14 +16,9 @@ export async function computeFileHash(buffer: ArrayBuffer): Promise<string> {
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
   }
-  // Fallback if Web Crypto Subtle is unavailable
-  let hash = 0;
-  const bytes = new Uint8Array(buffer);
-  for (let i = 0; i < bytes.length; i++) {
-    hash = (hash << 5) - hash + bytes[i];
-    hash |= 0;
-  }
-  return `hash-${Math.abs(hash)}`;
+  throw new Error(
+    "Secure Web Crypto context is unavailable. Calculating SHA-256 requires a secure context (HTTPS or localhost)."
+  );
 }
 
 /**
@@ -376,33 +371,38 @@ export async function downloadModuleTemplate(
   module: ImportModule,
   format: "xlsx" | "csv" = "xlsx"
 ) {
-  const schema = IMPORT_MODULE_SCHEMAS[module];
-  if (!schema) return;
+  try {
+    const schema = IMPORT_MODULE_SCHEMAS[module];
+    if (!schema) return;
 
-  const XLSX = await import("xlsx");
+    const XLSX = await import("xlsx");
 
-  // Build headers from schema field labels
-  const headers = schema.fields.map((f) => f.label);
-  const rows = schema.sampleData.map((sample) =>
-    schema.fields.map((f) => sample[f.key] ?? "")
-  );
+    // Build headers from schema field labels
+    const headers = schema.fields.map((f) => f.label);
+    const rows = schema.sampleData.map((sample) =>
+      schema.fields.map((f) => sample[f.key] ?? "")
+    );
 
-  const aoa = [headers, ...rows];
-  const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+    const aoa = [headers, ...rows];
+    const worksheet = XLSX.utils.aoa_to_sheet(aoa);
 
-  // Set column widths
-  worksheet["!cols"] = schema.fields.map((f) => ({
-    wch: Math.max(f.label.length + 4, 15),
-  }));
+    // Set column widths
+    worksheet["!cols"] = schema.fields.map((f) => ({
+      wch: Math.max(f.label.length + 4, 15),
+    }));
 
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, schema.title.slice(0, 31));
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, schema.title.slice(0, 31));
 
-  const filename = `${schema.id}_import_template.${format}`;
-  if (format === "csv") {
-    XLSX.writeFile(workbook, filename, { bookType: "csv" });
-  } else {
-    XLSX.writeFile(workbook, filename, { bookType: "xlsx" });
+    const filename = `${schema.id}_import_template.${format}`;
+    if (format === "csv") {
+      XLSX.writeFile(workbook, filename, { bookType: "csv" });
+    } else {
+      XLSX.writeFile(workbook, filename, { bookType: "xlsx" });
+    }
+  } catch (err) {
+    console.error("downloadModuleTemplate failed:", err);
+    throw err;
   }
 }
 
@@ -413,36 +413,41 @@ export async function downloadErrorReportFile(
   filename: string,
   errors: RowValidationError[]
 ) {
-  if (!errors || errors.length === 0) return;
+  try {
+    if (!errors || errors.length === 0) return;
 
-  const XLSX = await import("xlsx");
+    const XLSX = await import("xlsx");
 
-  // Extract all unique headers from rawData
-  const allHeadersSet = new Set<string>();
-  errors.forEach((e) => {
-    Object.keys(e.rawData || {}).forEach((h) => allHeadersSet.add(h));
-  });
-  const headers = Array.from(allHeadersSet);
+    // Extract all unique headers from rawData
+    const allHeadersSet = new Set<string>();
+    errors.forEach((e) => {
+      Object.keys(e.rawData || {}).forEach((h) => allHeadersSet.add(h));
+    });
+    const headers = Array.from(allHeadersSet);
 
-  const aoa = [
-    ["Row #", "Validation Errors", ...headers],
-    ...errors.map((e) => [
-      e.rowNumber,
-      e.errors.join("; "),
-      ...headers.map((h) => e.rawData[h] ?? ""),
-    ]),
-  ];
+    const aoa = [
+      ["Row #", "Validation Errors", ...headers],
+      ...errors.map((e) => [
+        e.rowNumber,
+        e.errors.join("; "),
+        ...headers.map((h) => e.rawData[h] ?? ""),
+      ]),
+    ];
 
-  const worksheet = XLSX.utils.aoa_to_sheet(aoa);
-  worksheet["!cols"] = [
-    { wch: 8 },
-    { wch: 45 },
-    ...headers.map((h) => ({ wch: Math.max(h.length + 3, 14) })),
-  ];
+    const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+    worksheet["!cols"] = [
+      { wch: 8 },
+      { wch: 45 },
+      ...headers.map((h) => ({ wch: Math.max(h.length + 3, 14) })),
+    ];
 
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, "Import Errors");
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Import Errors");
 
-  const baseName = filename.replace(/\.[^/.]+$/, "");
-  XLSX.writeFile(workbook, `${baseName}_errors.xlsx`, { bookType: "xlsx" });
+    const baseName = filename.replace(/\.[^/.]+$/, "");
+    XLSX.writeFile(workbook, `${baseName}_errors.xlsx`, { bookType: "xlsx" });
+  } catch (err) {
+    console.error("downloadErrorReportFile failed:", err);
+    throw err;
+  }
 }

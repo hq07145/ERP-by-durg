@@ -323,6 +323,35 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
 
   const filteredRows = getFilteredRows();
 
+  const handleDownloadTemplate = async (format: "xlsx" | "csv") => {
+    try {
+      await downloadModuleTemplate(selectedModule, format);
+    } catch (err) {
+      console.error("Failed to download template:", err);
+      alert(`Failed to download ${format.toUpperCase()} template. Please check your network connection and try again.`);
+    }
+  };
+
+  const handleDownloadValidationErrors = async () => {
+    if (!parsedFile) return;
+    try {
+      await downloadErrorReportFile(parsedFile.filename, validationResult.invalidRows);
+    } catch (err) {
+      console.error("Failed to download validation error report:", err);
+      alert("Failed to download error report. Please check your network connection and try again.");
+    }
+  };
+
+  const handleDownloadExecutionErrors = async () => {
+    if (!executionResult || !executionResult.errors || executionResult.errors.length === 0) return;
+    try {
+      await downloadErrorReportFile(parsedFile?.filename || "import_errors", executionResult.errors);
+    } catch (err) {
+      console.error("Failed to download execution error report:", err);
+      alert("Failed to download error report. Please check your network connection and try again.");
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Step Indicator */}
@@ -460,7 +489,7 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
             <div className="flex items-center gap-2 flex-wrap">
               <button
                 type="button"
-                onClick={() => downloadModuleTemplate(selectedModule, "xlsx")}
+                onClick={() => handleDownloadTemplate("xlsx")}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition shadow-2xs"
               >
                 <Download className="h-4 w-4 text-emerald-600" />
@@ -468,7 +497,7 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
               </button>
               <button
                 type="button"
-                onClick={() => downloadModuleTemplate(selectedModule, "csv")}
+                onClick={() => handleDownloadTemplate("csv")}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition shadow-2xs"
               >
                 <Download className="h-4 w-4 text-slate-400" />
@@ -695,7 +724,7 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
                 {validationResult.invalidRows.length > 0 && (
                   <button
                     type="button"
-                    onClick={() => downloadErrorReportFile(parsedFile.filename, validationResult.invalidRows)}
+                    onClick={handleDownloadValidationErrors}
                     className="text-[11px] font-bold text-red-700 hover:underline flex items-center gap-1"
                   >
                     <Download className="h-3 w-3" />
@@ -982,9 +1011,7 @@ export function ImportWizard({ onImportComplete }: ImportWizardProps) {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() =>
-                      downloadErrorReportFile(parsedFile?.filename || "import_errors", executionResult.errors)
-                    }
+                    onClick={handleDownloadExecutionErrors}
                     className="inline-flex items-center gap-1.5 rounded-md border border-red-300 bg-white px-2.5 py-1 text-xs font-bold text-red-700 hover:bg-red-50 transition shadow-2xs"
                   >
                     <Download className="h-3.5 w-3.5" />
