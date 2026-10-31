@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -31,7 +31,7 @@ import {
 interface ReturnListProps {
   returns: any[];
   customers: any[];
-  statusCounts: Record<string, number>;
+  statusCounts?: Record<string, number> | null;
   currentStatus?: string;
   searchQuery?: string;
   canCreate: boolean;
@@ -54,17 +54,76 @@ export function ReturnList({
   const router = useRouter();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(initialCreateOpen);
   const [searchTerm, setSearchTerm] = useState(searchQuery);
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastPushedRef = useRef(searchQuery);
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
+  // Sync internal searchTerm on genuine external navigation (back/forward),
+  // but do not overwrite while typing or if the prop matches the last pushed query.
+  useEffect(() => {
+    if (debounceTimerRef.current !== null || searchQuery === lastPushedRef.current) {
+      return;
+    }
+    setSearchTerm(searchQuery);
+    lastPushedRef.current = searchQuery;
+  }, [searchQuery]);
+
+  // Clean up debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, []);
+
+  const triggerSearch = useCallback((query: string, isSubmit = false) => {
     const params = new URLSearchParams(window.location.search);
-    if (searchTerm.trim()) {
-      params.set("q", searchTerm.trim());
+    const trimmed = query.trim();
+    if (trimmed) {
+      params.set("q", trimmed);
     } else {
       params.delete("q");
     }
     params.delete("page");
-    router.push(`/returns?${params.toString()}`);
+    lastPushedRef.current = trimmed;
+    const url = `/returns?${params.toString()}`;
+    if (isSubmit) {
+      router.push(url);
+    } else {
+      router.replace(url);
+    }
+  }, [router]);
+
+  const handleSearchChange = (value: string) => {
+    setSearchTerm(value);
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+
+    // Immediate reset when clearing search
+    if (!value.trim()) {
+      if (searchQuery) {
+        triggerSearch("", false);
+      }
+      return;
+    }
+
+    // Debounce 300ms using router.replace
+    debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = null;
+      triggerSearch(value, false);
+    }, 300);
+  };
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    triggerSearch(searchTerm, true);
   };
 
   const handleStatusFilter = (status: string | null) => {
@@ -94,7 +153,7 @@ export function ReturnList({
             <span className="text-xs font-semibold opacity-80">All Returns</span>
             <RotateCcw className="w-4 h-4 opacity-75" />
           </div>
-          <div className="text-2xl font-bold mt-2">{statusCounts.ALL || 0}</div>
+          <div className="text-2xl font-bold mt-2">{statusCounts ? (statusCounts.ALL ?? 0) : "—"}</div>
         </button>
 
         <button
@@ -110,7 +169,7 @@ export function ReturnList({
             <Clock className="w-4 h-4 text-amber-500" />
           </div>
           <div className="text-2xl font-bold mt-2 text-amber-600">
-            {statusCounts.PENDING_INSPECTION || 0}
+            {statusCounts ? (statusCounts.PENDING_INSPECTION ?? 0) : "—"}
           </div>
         </button>
 
@@ -126,7 +185,7 @@ export function ReturnList({
             <span className="text-xs font-semibold opacity-80">Approved</span>
             <ShieldCheck className="w-4 h-4 text-blue-500" />
           </div>
-          <div className="text-2xl font-bold mt-2 text-blue-600">{statusCounts.APPROVED || 0}</div>
+          <div className="text-2xl font-bold mt-2 text-blue-600">{statusCounts ? (statusCounts.APPROVED ?? 0) : "—"}</div>
         </button>
 
         <button
@@ -141,7 +200,7 @@ export function ReturnList({
             <span className="text-xs font-semibold opacity-80">Posted (Adjusted)</span>
             <CheckCircle2 className="w-4 h-4 text-emerald-500" />
           </div>
-          <div className="text-2xl font-bold mt-2 text-emerald-600">{statusCounts.POSTED || 0}</div>
+          <div className="text-2xl font-bold mt-2 text-emerald-600">{statusCounts ? (statusCounts.POSTED ?? 0) : "—"}</div>
         </button>
 
         <button
@@ -156,7 +215,7 @@ export function ReturnList({
             <span className="text-xs font-semibold opacity-80">Rejected</span>
             <XCircle className="w-4 h-4 text-rose-500" />
           </div>
-          <div className="text-2xl font-bold mt-2 text-rose-600">{statusCounts.REJECTED || 0}</div>
+          <div className="text-2xl font-bold mt-2 text-rose-600">{statusCounts ? (statusCounts.REJECTED ?? 0) : "—"}</div>
         </button>
       </div>
 
@@ -169,7 +228,7 @@ export function ReturnList({
               type="text"
               placeholder="Search by return #, customer, order #, SKU..."
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => handleSearchChange(e.target.value)}
               className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
             />
           </div>

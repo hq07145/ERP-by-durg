@@ -634,7 +634,12 @@ export async function updateOrderAction(
   const customerState = customerAddressRes.data?.state || null;
   const customerGstin = customer.gst_number || null;
 
-  // 6. Verify products
+  // 6. Verify products using chunked .in() batch query
+  const rawProductIds = Array.from(new Set(values.items.map((it) => it.product_id).filter(Boolean)));
+  if (rawProductIds.length === 0) {
+    return { error: "invalid_product" };
+  }
+
   const productMap = new Map<
     string,
     {
@@ -649,16 +654,30 @@ export async function updateOrderAction(
       qty_is_12785?: number | null;
     }
   >();
-  for (const item of values.items) {
-    const { data: prod } = await supabase
+
+  const CHUNK_SIZE = 200;
+  for (let i = 0; i < rawProductIds.length; i += CHUNK_SIZE) {
+    const chunk = rawProductIds.slice(i, i + CHUNK_SIZE);
+    const { data: prodsChunk, error: prodErr } = await supabase
       .from("products")
       .select("id, name, quality_grade, quality_standard, qty_is_4985, qty_is_12786, qty_is_13487, qty_is_13488, qty_is_12785")
-      .eq("id", item.product_id)
+      .in("id", chunk)
       .eq("business_id", context.user.business_id)
-      .eq("active", true)
-      .maybeSingle();
-    if (!prod) return { error: "invalid_product" };
-    productMap.set(prod.id, prod);
+      .eq("active", true);
+
+    if (prodErr || !prodsChunk) {
+      return { error: "invalid_product" };
+    }
+    for (const prod of prodsChunk) {
+      productMap.set(prod.id, prod);
+    }
+  }
+
+  // Ensure every item references a valid active product
+  for (const item of values.items) {
+    if (!productMap.has(item.product_id)) {
+      return { error: "invalid_product" };
+    }
   }
 
   // 7. Calculate server-side totals and GST breakdown authoritatively

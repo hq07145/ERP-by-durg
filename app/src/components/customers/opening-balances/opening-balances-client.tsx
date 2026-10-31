@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition, useMemo } from "react";
+import { useState, useTransition, useMemo, useRef, useEffect } from "react";
 import Link from "next/link";
 import {
   Wallet,
@@ -63,14 +63,65 @@ export function CustomerOpeningBalancesClient({
   const [isRefreshing, startRefreshTransition] = useTransition();
 
   // Search & Filter state
+  const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<"ALL" | "RECEIVABLE" | "PAYABLE">("ALL");
+  const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Form Modal state
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
+  const [customerSearchInput, setCustomerSearchInput] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
+  const custSearchTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Clean up timers on unmount
+  useEffect(() => {
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+      if (custSearchTimerRef.current) clearTimeout(custSearchTimerRef.current);
+    };
+  }, []);
+
+  const handleSearchInputChange = (val: string) => {
+    setSearchInput(val);
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    if (!val.trim()) {
+      setSearchQuery("");
+      return;
+    }
+    searchTimerRef.current = setTimeout(() => {
+      setSearchQuery(val.trim());
+    }, 300);
+  };
+
+  const handleClearSearch = () => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    setSearchInput("");
+    setSearchQuery("");
+  };
+
+  const handleCustSearchChange = (val: string) => {
+    setCustomerSearchInput(val);
+    if (custSearchTimerRef.current) {
+      clearTimeout(custSearchTimerRef.current);
+      custSearchTimerRef.current = null;
+    }
+    if (!val.trim()) {
+      setCustomerSearch("");
+      return;
+    }
+    custSearchTimerRef.current = setTimeout(() => {
+      setCustomerSearch(val.trim());
+    }, 300);
+  };
   const [amountInput, setAmountInput] = useState("");
   const [balanceType, setBalanceType] = useState<CustomerBalanceType>("RECEIVABLE");
   const [asOnDate, setAsOnDate] = useState(() => {
@@ -306,6 +357,15 @@ export function CustomerOpeningBalancesClient({
     }
   };
 
+  const handleDownloadTemplate = async () => {
+    try {
+      await downloadModuleTemplate("customer_opening_balances", "xlsx");
+    } catch (err) {
+      console.error("Failed to download template:", err);
+      alert("Failed to download template. Please check your network connection and try again.");
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto space-y-6 p-4 sm:p-6 lg:p-8">
       {/* Breadcrumb & Navigation */}
@@ -340,7 +400,7 @@ export function CustomerOpeningBalancesClient({
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
           <button
-            onClick={() => downloadModuleTemplate("customer_opening_balances", "xlsx")}
+            onClick={handleDownloadTemplate}
             className="px-3.5 py-2 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
             title="Download Customer Opening Balances Excel template"
           >
@@ -452,13 +512,13 @@ export function CustomerOpeningBalancesClient({
           <input
             type="text"
             placeholder="Search by customer name, company, notes..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            value={searchInput}
+            onChange={(e) => handleSearchInputChange(e.target.value)}
             className="w-full pl-9 pr-4 py-2 rounded-xl border border-gray-200 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-teal-600/20 focus:border-teal-600"
           />
-          {searchQuery && (
+          {searchInput && (
             <button
-              onClick={() => setSearchQuery("")}
+              onClick={handleClearSearch}
               className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
             >
               <X className="w-3.5 h-3.5" />
@@ -687,8 +747,8 @@ export function CustomerOpeningBalancesClient({
                       <input
                         type="text"
                         placeholder="Search customer name or company..."
-                        value={customerSearch}
-                        onChange={(e) => setCustomerSearch(e.target.value)}
+                        value={customerSearchInput}
+                        onChange={(e) => handleCustSearchChange(e.target.value)}
                         className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-gray-200 text-xs focus:outline-none focus:ring-1 focus:ring-teal-600"
                       />
                     </div>

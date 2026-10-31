@@ -1,4 +1,3 @@
-import * as XLSX from "xlsx";
 import type {
   ModuleSchema,
   ColumnMapping,
@@ -12,25 +11,14 @@ import { IMPORT_MODULE_SCHEMAS } from "./module-schemas";
  * Computes a SHA-256 hash of an ArrayBuffer in the browser or Node.js
  */
 export async function computeFileHash(buffer: ArrayBuffer): Promise<string> {
-  if (typeof window !== "undefined" && window.crypto && window.crypto.subtle) {
-    const hashBuffer = await window.crypto.subtle.digest("SHA-256", buffer);
+  if (typeof globalThis !== "undefined" && globalThis.crypto?.subtle) {
+    const hashBuffer = await globalThis.crypto.subtle.digest("SHA-256", buffer);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
   }
-  // Node.js fallback
-  try {
-    const crypto = await import("crypto");
-    return crypto.createHash("sha256").update(Buffer.from(buffer)).digest("hex");
-  } catch {
-    // Basic fallback if crypto unavailable
-    let hash = 0;
-    const bytes = new Uint8Array(buffer);
-    for (let i = 0; i < bytes.length; i++) {
-      hash = (hash << 5) - hash + bytes[i];
-      hash |= 0;
-    }
-    return `hash-${Math.abs(hash)}`;
-  }
+  throw new Error(
+    "Secure Web Crypto context is unavailable. Calculating SHA-256 requires a secure context (HTTPS or localhost)."
+  );
 }
 
 /**
@@ -101,7 +89,8 @@ export async function parseUploadedFile(
   const buffer = await file.arrayBuffer();
   const fileHash = await computeFileHash(buffer);
 
-  // Read workbook using SheetJS
+  // Read workbook using dynamically loaded SheetJS
+  const XLSX = await import("xlsx");
   const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) {
@@ -378,73 +367,87 @@ export function validateMappedRows(
 /**
  * Generates and triggers download of a pre-filled Excel or CSV template
  */
-export function downloadModuleTemplate(
+export async function downloadModuleTemplate(
   module: ImportModule,
   format: "xlsx" | "csv" = "xlsx"
 ) {
-  const schema = IMPORT_MODULE_SCHEMAS[module];
-  if (!schema) return;
+  try {
+    const schema = IMPORT_MODULE_SCHEMAS[module];
+    if (!schema) return;
 
-  // Build headers from schema field labels
-  const headers = schema.fields.map((f) => f.label);
-  const rows = schema.sampleData.map((sample) =>
-    schema.fields.map((f) => sample[f.key] ?? "")
-  );
+    const XLSX = await import("xlsx");
 
-  const aoa = [headers, ...rows];
-  const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+    // Build headers from schema field labels
+    const headers = schema.fields.map((f) => f.label);
+    const rows = schema.sampleData.map((sample) =>
+      schema.fields.map((f) => sample[f.key] ?? "")
+    );
 
-  // Set column widths
-  worksheet["!cols"] = schema.fields.map((f) => ({
-    wch: Math.max(f.label.length + 4, 15),
-  }));
+    const aoa = [headers, ...rows];
+    const worksheet = XLSX.utils.aoa_to_sheet(aoa);
 
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, schema.title.slice(0, 31));
+    // Set column widths
+    worksheet["!cols"] = schema.fields.map((f) => ({
+      wch: Math.max(f.label.length + 4, 15),
+    }));
 
-  const filename = `${schema.id}_import_template.${format}`;
-  if (format === "csv") {
-    XLSX.writeFile(workbook, filename, { bookType: "csv" });
-  } else {
-    XLSX.writeFile(workbook, filename, { bookType: "xlsx" });
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, schema.title.slice(0, 31));
+
+    const filename = `${schema.id}_import_template.${format}`;
+    if (format === "csv") {
+      XLSX.writeFile(workbook, filename, { bookType: "csv" });
+    } else {
+      XLSX.writeFile(workbook, filename, { bookType: "xlsx" });
+    }
+  } catch (err) {
+    console.error("downloadModuleTemplate failed:", err);
+    throw err;
   }
 }
 
 /**
  * Generates and downloads an error report spreadsheet containing the original row data plus validation error details
  */
-export function downloadErrorReportFile(
+export async function downloadErrorReportFile(
   filename: string,
   errors: RowValidationError[]
 ) {
-  if (!errors || errors.length === 0) return;
+  try {
+    if (!errors || errors.length === 0) return;
 
-  // Extract all unique headers from rawData
-  const allHeadersSet = new Set<string>();
-  errors.forEach((e) => {
-    Object.keys(e.rawData || {}).forEach((h) => allHeadersSet.add(h));
-  });
-  const headers = Array.from(allHeadersSet);
+    const XLSX = await import("xlsx");
 
-  const aoa = [
-    ["Row #", "Validation Errors", ...headers],
-    ...errors.map((e) => [
-      e.rowNumber,
-      e.errors.join("; "),
-      ...headers.map((h) => e.rawData[h] ?? ""),
-    ]),
-  ];
+    // Extract all unique headers from rawData
+    const allHeadersSet = new Set<string>();
+    errors.forEach((e) => {
+      Object.keys(e.rawData || {}).forEach((h) => allHeadersSet.add(h));
+    });
+    const headers = Array.from(allHeadersSet);
 
-  const worksheet = XLSX.utils.aoa_to_sheet(aoa);
-  worksheet["!cols"] = [
-    { wch: 8 },
-    { wch: 45 },
-    ...headers.map((h) => ({ wch: Math.max(h.length + 3, 14) })),
-  ];
+    const aoa = [
+      ["Row #", "Validation Errors", ...headers],
+      ...errors.map((e) => [
+        e.rowNumber,
+        e.errors.join("; "),
+        ...headers.map((h) => e.rawData[h] ?? ""),
+      ]),
+    ];
 
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, "Import Errors");
+    const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+    worksheet["!cols"] = [
+      { wch: 8 },
+      { wch: 45 },
+      ...headers.map((h) => ({ wch: Math.max(h.length + 3, 14) })),
+    ];
 
-  const baseName = filename.replace(/\.[^/.]+$/, "");
-  XLSX.writeFile(workbook, `${baseName}_errors.xlsx`, { bookType: "xlsx" });
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Import Errors");
+
+    const baseName = filename.replace(/\.[^/.]+$/, "");
+    XLSX.writeFile(workbook, `${baseName}_errors.xlsx`, { bookType: "xlsx" });
+  } catch (err) {
+    console.error("downloadErrorReportFile failed:", err);
+    throw err;
+  }
 }

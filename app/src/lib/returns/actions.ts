@@ -345,27 +345,45 @@ export async function getReturnStatusCounts(): Promise<Record<string, number>> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) throw new Error("Supabase client not available");
 
-  const { data, error } = await supabase
-    .from("goods_returns")
-    .select("status")
-    .eq("business_id", context.user.business_id);
+  const statuses = ["PENDING_INSPECTION", "APPROVED", "REJECTED", "POSTED", "CANCELLED"] as const;
 
-  const counts: Record<string, number> = {
-    ALL: data?.length ?? 0,
-    PENDING_INSPECTION: 0,
-    APPROVED: 0,
-    REJECTED: 0,
-    POSTED: 0,
-    CANCELLED: 0,
-  };
+  const [allRes, ...statusResults] = await Promise.all([
+    supabase
+      .from("goods_returns")
+      .select("id", { count: "exact", head: true })
+      .eq("business_id", context.user.business_id),
+    ...statuses.map((status) =>
+      supabase
+        .from("goods_returns")
+        .select("id", { count: "exact", head: true })
+        .eq("business_id", context.user.business_id)
+        .eq("status", status)
+    ),
+  ]);
 
-  if (!error && data) {
-    for (const row of data) {
-      if (counts[row.status] !== undefined) {
-        counts[row.status]++;
-      }
+  if (allRes.error) {
+    console.error("getReturnStatusCounts: Failed to query total returns count:", allRes.error);
+    throw allRes.error;
+  }
+
+  for (let i = 0; i < statusResults.length; i++) {
+    if (statusResults[i].error) {
+      console.error(
+        `getReturnStatusCounts: Failed to query count for status ${statuses[i]}:`,
+        statusResults[i].error
+      );
+      throw statusResults[i].error;
     }
   }
+
+  const counts: Record<string, number> = {
+    ALL: allRes.count ?? 0,
+    PENDING_INSPECTION: statusResults[0].count ?? 0,
+    APPROVED: statusResults[1].count ?? 0,
+    REJECTED: statusResults[2].count ?? 0,
+    POSTED: statusResults[3].count ?? 0,
+    CANCELLED: statusResults[4].count ?? 0,
+  };
 
   return counts;
 }

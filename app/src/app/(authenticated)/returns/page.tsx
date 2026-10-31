@@ -40,7 +40,7 @@ export default async function GoodsReturnsPage({ searchParams }: PageProps) {
   const q = params.q?.trim() || "";
 
   const supabase = await createServerSupabaseClient();
-  const [returns, statusCounts, customersRes] = await Promise.all([
+  const [returnsRes, statusCountsRes, customersRes] = await Promise.allSettled([
     listGoodsReturns({
       status,
       limit: pageSize,
@@ -57,7 +57,28 @@ export default async function GoodsReturnsPage({ searchParams }: PageProps) {
       : Promise.resolve({ data: [] }),
   ]);
 
-  const customers = (customersRes?.data ?? []) as any[];
+  let returnsErrorMessage: string | null = null;
+  let returns: any[] = [];
+  if (returnsRes.status === "fulfilled") {
+    returns = returnsRes.value;
+  } else {
+    console.error("GoodsReturnsPage: Failed to load goods returns list:", returnsRes.reason);
+    returnsErrorMessage = "Unable to load returns list from database. Please refresh or try again later.";
+  }
+
+  let statusCounts: Record<string, number> | null = null;
+  let countErrorMessage: string | null = null;
+  if (statusCountsRes.status === "fulfilled") {
+    statusCounts = statusCountsRes.value;
+  } else {
+    console.error("GoodsReturnsPage: Failed to load goods return status counts:", statusCountsRes.reason);
+    countErrorMessage = "Unable to load return status counts from database.";
+  }
+
+  const customers =
+    customersRes.status === "fulfilled" && customersRes.value?.data
+      ? (customersRes.value.data as any[])
+      : [];
 
   // Filter returns client-side for quick search query if specified
   const filteredReturns = q
@@ -97,6 +118,18 @@ export default async function GoodsReturnsPage({ searchParams }: PageProps) {
           </p>
         </div>
       </div>
+
+      {returnsErrorMessage && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-700 text-sm">
+          <p className="font-semibold">{returnsErrorMessage}</p>
+        </div>
+      )}
+
+      {countErrorMessage && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-700 text-sm">
+          <p className="font-semibold">{countErrorMessage}</p>
+        </div>
+      )}
 
       <ReturnList
         returns={filteredReturns}

@@ -26,6 +26,15 @@ export function ImportHistoryTable({ jobs }: ImportHistoryTableProps) {
     return true;
   });
 
+  const handleDownloadErrors = async (filename: string, errors: any[]) => {
+    try {
+      await downloadErrorReportFile(filename, errors);
+    } catch (err) {
+      console.error("Failed to download error report:", err);
+      alert("Failed to download error report. Please check your network connection and try again.");
+    }
+  };
+
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
@@ -136,7 +145,7 @@ export function ImportHistoryTable({ jobs }: ImportHistoryTableProps) {
                       {job.errors && job.errors.length > 0 ? (
                         <button
                           type="button"
-                          onClick={() => downloadErrorReportFile(job.filename, job.errors)}
+                          onClick={() => handleDownloadErrors(job.filename, job.errors)}
                           className="inline-flex items-center gap-1 rounded border border-red-200 bg-red-50 px-2.5 py-1 text-[11px] font-bold text-red-700 hover:bg-red-100 transition"
                           title="Download spreadsheet with failed rows and error reasons"
                         >

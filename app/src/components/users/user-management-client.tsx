@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition, useMemo } from "react";
+import { useState, useTransition, useMemo, useRef, useEffect } from "react";
 import {
   Shield,
   UserPlus,
@@ -105,7 +105,9 @@ export function UserManagementClient({
 
   // Permission state map: permission_id -> boolean (allowed)
   const [permissionDraft, setPermissionDraft] = useState<Record<string, boolean>>({});
+  const [permissionInput, setPermissionInput] = useState("");
   const [permissionSearch, setPermissionSearch] = useState("");
+  const permSearchTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>("ALL");
   const [savePermsPending, startSavePermsTransition] = useTransition();
 
@@ -125,8 +127,48 @@ export function UserManagementClient({
   const [accessSummaryUser, setAccessSummaryUser] = useState<UserRecord | null>(null);
 
   // Search and filter for user list
+  const [userInput, setUserInput] = useState("");
   const [userQuery, setUserQuery] = useState("");
+  const userSearchTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [statusFilter, setStatusFilter] = useState("ALL");
+
+  // Clean up search debounce timers on unmount
+  useEffect(() => {
+    return () => {
+      if (userSearchTimerRef.current) clearTimeout(userSearchTimerRef.current);
+      if (permSearchTimerRef.current) clearTimeout(permSearchTimerRef.current);
+    };
+  }, []);
+
+  const handleUserInputChange = (val: string) => {
+    setUserInput(val);
+    if (userSearchTimerRef.current) {
+      clearTimeout(userSearchTimerRef.current);
+      userSearchTimerRef.current = null;
+    }
+    if (!val.trim()) {
+      setUserQuery("");
+      return;
+    }
+    userSearchTimerRef.current = setTimeout(() => {
+      setUserQuery(val.trim());
+    }, 300);
+  };
+
+  const handlePermInputChange = (val: string) => {
+    setPermissionInput(val);
+    if (permSearchTimerRef.current) {
+      clearTimeout(permSearchTimerRef.current);
+      permSearchTimerRef.current = null;
+    }
+    if (!val.trim()) {
+      setPermissionSearch("");
+      return;
+    }
+    permSearchTimerRef.current = setTimeout(() => {
+      setPermissionSearch(val.trim());
+    }, 300);
+  };
   const [activeTab, setActiveTab] = useState<"create_manager" | "invite_user">("create_manager");
 
   // Map user to their assigned role
@@ -585,8 +627,8 @@ export function UserManagementClient({
               <input
                 type="text"
                 placeholder="Search by name or email..."
-                value={userQuery}
-                onChange={(e) => setUserQuery(e.target.value)}
+                value={userInput}
+                onChange={(e) => handleUserInputChange(e.target.value)}
                 className="min-h-9 w-full rounded-lg border border-[var(--line)] bg-white pl-9 pr-3 text-xs outline-none focus:border-[var(--accent)]"
               />
             </div>
@@ -1025,8 +1067,8 @@ export function UserManagementClient({
                   <input
                     type="text"
                     placeholder="Filter permissions..."
-                    value={permissionSearch}
-                    onChange={(e) => setPermissionSearch(e.target.value)}
+                    value={permissionInput}
+                    onChange={(e) => handlePermInputChange(e.target.value)}
                     className="min-h-8 w-full rounded-md border border-[var(--line)] bg-white pl-8 pr-2.5 text-xs outline-none focus:border-[var(--accent)]"
                   />
                 </div>

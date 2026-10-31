@@ -4,7 +4,7 @@ import { hasPermission } from "@/lib/permissions/authorization";
 import { redirect } from "next/navigation";
 import { DeliveryList } from "@/components/delivery/delivery-list";
 import { listDeliveries, getDeliveryStatusCounts } from "@/lib/delivery/actions";
-import type { DeliveryStatus } from "@/types/delivery";
+import type { DeliveryStatus, DeliveryStatusCounts } from "@/types/delivery";
 
 interface PageProps {
   searchParams: Promise<{
@@ -33,7 +33,7 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
   const q = params.q?.trim() || "";
 
   const supabase = await createServerSupabaseClient();
-  const [deliveries, totalResult, statusCounts, customersRes] = await Promise.all([
+  const [deliveriesRes, totalResultRes, statusCountsRes, customersRes] = await Promise.allSettled([
     listDeliveries(status, undefined, pageSize, offset, q),
     getTotalCount(status, q),
     getDeliveryStatusCounts(),
@@ -47,8 +47,37 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
       : Promise.resolve({ data: [] }),
   ]);
 
-  const totalCount = totalResult?.count ?? 0;
-  const customers = (customersRes?.data ?? []) as any[];
+  let deliveriesErrorMessage: string | null = null;
+  let deliveries: any[] = [];
+  if (deliveriesRes.status === "fulfilled") {
+    deliveries = deliveriesRes.value;
+  } else {
+    console.error("DeliveryPage: Failed to load deliveries list:", deliveriesRes.reason);
+    deliveriesErrorMessage = "Unable to load deliveries list from database. Please refresh or try again later.";
+  }
+
+  let totalCountErrorMessage: string | null = null;
+  let totalCount = 0;
+  if (totalResultRes.status === "fulfilled") {
+    totalCount = totalResultRes.value?.count ?? 0;
+  } else {
+    console.error("DeliveryPage: Failed to load total count:", totalResultRes.reason);
+    totalCountErrorMessage = "Unable to load total delivery count from database.";
+  }
+
+  let statusCounts: DeliveryStatusCounts | null = null;
+  let countErrorMessage: string | null = null;
+  if (statusCountsRes.status === "fulfilled") {
+    statusCounts = statusCountsRes.value;
+  } else {
+    console.error("DeliveryPage: Failed to load delivery status counts:", statusCountsRes.reason);
+    countErrorMessage = "Unable to load status metric counts from database.";
+  }
+
+  const customers =
+    customersRes.status === "fulfilled" && customersRes.value?.data
+      ? (customersRes.value.data as any[])
+      : [];
 
   const canCreate = hasPermission({ permissions: context.permissions }, "delivery.create");
   const canView = hasPermission({ permissions: context.permissions }, "delivery.view");
@@ -68,6 +97,24 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
           <p className="text-gray-500 mt-1">Manage delivery workflow and tracking</p>
         </div>
       </div>
+
+      {deliveriesErrorMessage && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-700 text-sm">
+          <p className="font-semibold">{deliveriesErrorMessage}</p>
+        </div>
+      )}
+
+      {totalCountErrorMessage && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-700 text-sm">
+          <p className="font-semibold">{totalCountErrorMessage}</p>
+        </div>
+      )}
+
+      {countErrorMessage && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-700 text-sm">
+          <p className="font-semibold">{countErrorMessage}</p>
+        </div>
+      )}
 
       <DeliveryList
         deliveries={deliveries}
