@@ -18,6 +18,10 @@ import {
 import { notifyOrderEvent } from "@/lib/notifications/actions";
 import { generateNextOrderNumber } from "@/lib/orders/order-number";
 import { calculateOrderGst, validateItemTaxRates } from "@/lib/financials/gst";
+import {
+  calculateSingleProductTargetInvoice,
+  calculateMultiProductTargetInvoice,
+} from "@/lib/financials/target-pricing";
 import { getCustomerAdvanceBalance } from "@/lib/payments/actions";
 
 export type OrderActionState = {
@@ -38,6 +42,16 @@ function orderValues(formData: FormData): OrderFormValues {
   } catch {
     items = [];
   }
+  const targetAdjJson = formData.get("target_adjustment");
+  let target_adjustment: OrderFormValues["target_adjustment"] = undefined;
+  if (targetAdjJson && typeof targetAdjJson === "string") {
+    try {
+      target_adjustment = JSON.parse(targetAdjJson);
+    } catch {
+      target_adjustment = undefined;
+    }
+  }
+
   return {
     customer_id: String(formData.get("customer_id") ?? ""),
     order_number: String(formData.get("order_number") ?? "").trim().toUpperCase(),
@@ -47,6 +61,7 @@ function orderValues(formData: FormData): OrderFormValues {
     place_of_supply: String(formData.get("place_of_supply") ?? "").trim(),
     notes: String(formData.get("notes") ?? "").trim(),
     items,
+    target_adjustment,
   };
 }
 
@@ -58,7 +73,7 @@ function validateOrder(values: OrderFormValues): string | null {
   for (const item of values.items) {
     if (!item.product_id) return "invalid_product";
     if (!validAmount(item.quantity, 11, 3) || Number(item.quantity) <= 0) return "invalid_quantity";
-    if (!validAmount(item.unit_price, 12, 2) || Number(item.unit_price) < 0) return "invalid_unit_price";
+    if (!validAmount(item.unit_price, 12, 10) || Number(item.unit_price) < 0) return "invalid_unit_price";
     if (!validAmount(item.discount_rate, 5, 2) || Number(item.discount_rate) < 0 || Number(item.discount_rate) > 100) return "invalid_discount_rate";
     if (!validAmount(item.tax_rate, 5, 2) || Number(item.tax_rate) < 0 || Number(item.tax_rate) > 100) return "invalid_tax_rate";
 
@@ -119,6 +134,96 @@ async function verifyOrderActionAuthorization(permission: string): Promise<
     };
   }
   return { success: true, context, supabase };
+}
+
+
+function validateTargetAdjustmentOnServer(params: {
+  targetAdjustment: NonNullable<OrderFormValues["target_adjustment"]>;
+  items: OrderItemFormValues[];
+  taxType: "INTRA_STATE" | "INTER_STATE" | "EXEMPT";
+  calculatedTotal: number;
+}): { isValid: boolean; error?: string } {
+  const { targetAdjustment, items, taxType, calculatedTotal } = params;
+  const targetTotalNum = Number(targetAdjustment.targetTotal);
+  if (!targetTotalNum || targetTotalNum <= 0) {
+    return { isValid: false, error: "Target invoice total must be a positive amount." };
+  }
+
+  try {
+    const isSingle =
+      targetAdjustment.strategy === "SINGLE_PRODUCT" ||
+      targetAdjustment.lines.filter((l) => l.isAdjusted).length === 1;
+
+    if (isSingle) {
+      const adjLine = targetAdjustment.lines.find((l) => l.isAdjusted) || targetAdjustment.lines[0];
+      const rawItem = items[adjLine?.index ?? 0];
+      if (!rawItem) {
+        return { isValid: false, error: "Adjusted line item was not found in items list." };
+      }
+
+      const serverCalc = calculateSingleProductTargetInvoice({
+        quantity: rawItem.quantity,
+        targetTotal: targetAdjustment.targetTotal,
+        gstRate: rawItem.tax_rate,
+        discountRate: rawItem.discount_rate || "0",
+        taxType: taxType === "EXEMPT" ? "INTRA_STATE" : taxType,
+      });
+
+      const diff = Math.abs(Number(serverCalc.calculatedGrandTotalStr) - calculatedTotal);
+      if (diff > 0.05) {
+        return {
+          isValid: false,
+          error: `Server recalculated statutory invoice total (₹${serverCalc.calculatedGrandTotalStr}) does not match order total (₹${calculatedTotal.toFixed(2)}).`,
+        };
+      }
+
+      if (!serverCalc.isExactMatch && !targetAdjustment.confirmed) {
+        return {
+          isValid: false,
+          error: `Target has a statutory rounding residual of ₹${serverCalc.residualDifferenceStr}. User confirmation is required before saving.`,
+        };
+      }
+    } else {
+      const engineItems = items.map((it, idx) => ({
+        id: it.product_id,
+        name: `Item #${idx + 1}`,
+        quantity: it.quantity,
+        currentPrice: targetAdjustment.lines[idx]?.originalUnitPrice || it.unit_price,
+        discountRate: it.discount_rate || "0",
+        gstRate: it.tax_rate || "0",
+        participatesInAdjustment: targetAdjustment.lines[idx]?.isAdjusted ?? true,
+      }));
+
+      const serverCalc = calculateMultiProductTargetInvoice({
+        items: engineItems,
+        targetTotal: targetAdjustment.targetTotal,
+        taxType: taxType === "EXEMPT" ? "INTRA_STATE" : taxType,
+        strategy: "PROPORTIONAL",
+      });
+
+      const diff = Math.abs(Number(serverCalc.calculatedGrandTotalStr) - calculatedTotal);
+      if (diff > 0.05) {
+        return {
+          isValid: false,
+          error: `Server recalculated multi-product total (₹${serverCalc.calculatedGrandTotalStr}) does not match order total (₹${calculatedTotal.toFixed(2)}).`,
+        };
+      }
+
+      if (!serverCalc.isExactMatch && !targetAdjustment.confirmed) {
+        return {
+          isValid: false,
+          error: `Target has a statutory rounding residual of ₹${serverCalc.residualDifferenceStr}. User confirmation is required before saving.`,
+        };
+      }
+    }
+
+    return { isValid: true };
+  } catch (err: any) {
+    return {
+      isValid: false,
+      error: err?.message || "Failed to validate target rate adjustment on server.",
+    };
+  }
 }
 
 export async function createOrderAction(
@@ -251,6 +356,22 @@ export async function createOrderAction(
     placeOfSupply: values.place_of_supply,
   });
 
+  // Step 7: Server-Side Validation for Target Invoice Adjustment
+  if (values.target_adjustment) {
+    const valResult = validateTargetAdjustmentOnServer({
+      targetAdjustment: values.target_adjustment,
+      items: values.items,
+      taxType: gstCalc.taxType,
+      calculatedTotal: gstCalc.totalAmount,
+    });
+    if (!valResult.isValid) {
+      return {
+        error: "target_adjustment_validation_failed",
+        message: valResult.error || "Server validation failed for target rate adjustment.",
+      };
+    }
+  }
+
   // Verify tax rates consistency against transaction tax type
   for (let i = 0; i < values.items.length; i++) {
     const it = values.items[i];
@@ -293,6 +414,9 @@ export async function createOrderAction(
       qty_is_13488: (rawItem as any)?.qty_is_13488 != null ? Number((rawItem as any).qty_is_13488) : Number(prod?.qty_is_13488 || 0),
       qty_is_12785: (rawItem as any)?.qty_is_12785 != null ? Number((rawItem as any).qty_is_12785) : Number(prod?.qty_is_12785 || 0),
       unit_price: it.unitPrice,
+      original_unit_price: (rawItem as any)?.original_unit_price != null ? Number((rawItem as any).original_unit_price) : it.unitPrice,
+      adjusted_rate_inclusive: (rawItem as any)?.adjusted_rate_inclusive != null ? Number((rawItem as any).adjusted_rate_inclusive) : null,
+      is_rate_adjusted: Boolean((rawItem as any)?.is_rate_adjusted),
       discount_rate: it.discountRate,
       tax_rate: it.taxRate,
       taxable_amount: it.taxableAmount,
@@ -342,6 +466,8 @@ export async function createOrderAction(
     paid_amount: 0,
     due_amount: gstCalc.totalAmount,
     advance_applied: 0,
+    is_legacy_ledger_posted: false,
+    intended_advance_amount: advanceToApply,
     tax_type: gstCalc.taxType,
     place_of_supply: gstCalc.placeOfSupply,
     district: values.district || null,
@@ -350,6 +476,14 @@ export async function createOrderAction(
     cgst_amount: gstCalc.cgstAmount,
     sgst_amount: gstCalc.sgstAmount,
     igst_amount: gstCalc.igstAmount,
+    is_target_adjusted: Boolean(values.target_adjustment),
+    target_total_amount: values.target_adjustment ? Number(values.target_adjustment.targetTotal) : null,
+    original_total_amount: values.target_adjustment ? Number(values.target_adjustment.originalTotal) : null,
+    adjustment_strategy: values.target_adjustment ? values.target_adjustment.strategy : null,
+    rounding_residual: values.target_adjustment ? Number(values.target_adjustment.residualDifference || 0) : 0,
+    adjustment_confirmed: values.target_adjustment ? values.target_adjustment.confirmed : false,
+    adjusted_by: values.target_adjustment ? context.user.id : null,
+    adjusted_at: values.target_adjustment ? new Date().toISOString() : null,
     notes: values.notes || null,
   });
 
@@ -454,29 +588,86 @@ export async function createOrderAction(
     return { error: "create_failed" };
   }
 
-  // 7. Atomically allocate customer advance if selected
+  // 7. Step 2 Delivery-Based Customer Ledger Accounting:
+  // Creating or confirming an order must NOT consume customer advance.
+  // The customer's available advance remains intact until goods are physically dispatched.
+  // intended_advance_amount is saved on the order record for fulfillment reference.
   if (advanceToApply > 0) {
-    const admin = createAdminSupabaseClient();
-    const dbClient = admin || supabase;
-    const { error: allocErr } = await dbClient.rpc("allocate_customer_advance_to_order", {
-      p_business_id: context.user.business_id,
-      p_customer_id: values.customer_id,
-      p_order_id: orderId,
-      p_amount: advanceToApply,
-      p_user_id: context.user.id,
-      p_notes: `Advance applied on order creation (${values.order_number})`,
-    });
+    console.log(
+      `[createOrderAction] Customer advance preference recorded: ₹${advanceToApply.toFixed(2)} for ${values.order_number}. Will be adjusted upon dispatch confirmation.`
+    );
+  }
 
-    if (allocErr) {
-      console.error("[createOrderAction] Error allocating advance, rolling back order:", allocErr);
-      if (admin) {
-        await admin.from("order_items").delete().eq("order_id", orderId);
-        await admin.from("orders").delete().eq("id", orderId);
-      }
-      return {
-        error: "advance_allocation_failed",
-        message: `Failed to adjust customer advance: ${allocErr.message || "Insufficient balance or concurrent update"}. Order creation was rolled back.`,
+  // Step 7: Record Immutable Target Rate Adjustment Audit Trail (INVOICE_CREATE)
+  if (values.target_adjustment) {
+    try {
+      const auditClient = createAdminSupabaseClient() || supabase;
+      const auditPayload = {
+        business_id: context.user.business_id,
+        order_id: orderId,
+        order_number: values.order_number,
+        adjustment_event_type: "INVOICE_CREATE" as const,
+        adjustment_strategy: values.target_adjustment.strategy,
+        original_invoice_total: Number(values.target_adjustment.originalTotal || gstCalc.totalAmount),
+        target_invoice_total: Number(values.target_adjustment.targetTotal),
+        final_invoice_total: gstCalc.totalAmount,
+        taxable_amount: gstCalc.taxableSubtotal,
+        cgst_amount: gstCalc.cgstAmount,
+        sgst_amount: gstCalc.sgstAmount,
+        igst_amount: gstCalc.igstAmount,
+        rounding_residual: Number(values.target_adjustment.residualDifference || 0),
+        is_exact_match: values.target_adjustment.isExactMatch,
+        confirmation_status: values.target_adjustment.confirmed,
+        adjusted_items_count: values.target_adjustment.lines.filter((l) => l.isAdjusted).length,
+        items_snapshot: values.target_adjustment.lines,
+        created_by: context.user.id,
       };
+
+      const { data: auditData, error: auditErr } = await auditClient
+        .from("order_target_adjustment_audit")
+        .insert(auditPayload)
+        .select("id")
+        .single();
+
+      if (auditErr) {
+        console.error("[createOrderAction] Error creating target adjustment audit:", auditErr);
+      } else if (auditData?.id) {
+        const itemAuditRows = values.target_adjustment.lines
+          .filter((l) => l.isAdjusted)
+          .map((l) => {
+            const rawItem = values.items[l.index];
+            const prod = productMap.get(l.productId);
+            const lineGst = gstCalc.items[l.index];
+            return {
+              business_id: context.user.business_id,
+              audit_id: auditData.id,
+              order_id: orderId,
+              order_number: values.order_number,
+              product_id: l.productId,
+              product_name: prod?.name || null,
+              quantity: Number(rawItem?.quantity || 0),
+              old_unit_price: Number(l.originalUnitPrice || 0),
+              adjusted_unit_price: Number(l.adjustedUnitPrice || 0),
+              adjusted_inclusive_rate: l.adjustedInclusiveRate ? Number(l.adjustedInclusiveRate) : null,
+              gst_rate: Number(rawItem?.tax_rate || 0),
+              discount_rate: Number(rawItem?.discount_rate || 0),
+              taxable_amount: lineGst?.taxableAmount || 0,
+              line_total: lineGst?.lineTotal || 0,
+              created_by: context.user.id,
+            };
+          });
+
+        if (itemAuditRows.length > 0) {
+          const { error: itemAuditErr } = await auditClient
+            .from("order_item_target_adjustment_audit")
+            .insert(itemAuditRows);
+          if (itemAuditErr) {
+            console.error("[createOrderAction] Error creating item target adjustment audit:", itemAuditErr);
+          }
+        }
+      }
+    } catch (auditException) {
+      console.error("[createOrderAction] Target adjustment audit recording exception:", auditException);
     }
   }
 
@@ -699,6 +890,22 @@ export async function updateOrderAction(
     placeOfSupply: values.place_of_supply,
   });
 
+  // Step 7: Server-Side Validation for Target Invoice Adjustment
+  if (values.target_adjustment) {
+    const valResult = validateTargetAdjustmentOnServer({
+      targetAdjustment: values.target_adjustment,
+      items: values.items,
+      taxType: gstCalc.taxType,
+      calculatedTotal: gstCalc.totalAmount,
+    });
+    if (!valResult.isValid) {
+      return {
+        error: "target_adjustment_validation_failed",
+        message: valResult.error || "Server validation failed for target rate adjustment.",
+      };
+    }
+  }
+
   // Verify tax rates consistency against transaction tax type
   for (let i = 0; i < values.items.length; i++) {
     const it = values.items[i];
@@ -743,6 +950,9 @@ export async function updateOrderAction(
       qty_is_13488: (rawItem as any)?.qty_is_13488 != null ? Number((rawItem as any).qty_is_13488) : Number(prod?.qty_is_13488 || 0),
       qty_is_12785: (rawItem as any)?.qty_is_12785 != null ? Number((rawItem as any).qty_is_12785) : Number(prod?.qty_is_12785 || 0),
       unit_price: it.unitPrice,
+      original_unit_price: (rawItem as any)?.original_unit_price != null ? Number((rawItem as any).original_unit_price) : it.unitPrice,
+      adjusted_rate_inclusive: (rawItem as any)?.adjusted_rate_inclusive != null ? Number((rawItem as any).adjusted_rate_inclusive) : null,
+      is_rate_adjusted: Boolean((rawItem as any)?.is_rate_adjusted),
       discount_rate: it.discountRate,
       tax_rate: it.taxRate,
       taxable_amount: it.taxableAmount,
@@ -798,6 +1008,14 @@ export async function updateOrderAction(
       cgst_amount: gstCalc.cgstAmount,
       sgst_amount: gstCalc.sgstAmount,
       igst_amount: gstCalc.igstAmount,
+      is_target_adjusted: Boolean(values.target_adjustment),
+      target_total_amount: values.target_adjustment ? Number(values.target_adjustment.targetTotal) : null,
+      original_total_amount: values.target_adjustment ? Number(values.target_adjustment.originalTotal) : null,
+      adjustment_strategy: values.target_adjustment ? values.target_adjustment.strategy : null,
+      rounding_residual: values.target_adjustment ? Number(values.target_adjustment.residualDifference || 0) : 0,
+      adjustment_confirmed: values.target_adjustment ? values.target_adjustment.confirmed : false,
+      adjusted_by: values.target_adjustment ? context.user.id : null,
+      adjusted_at: values.target_adjustment ? new Date().toISOString() : null,
       updated_at: new Date().toISOString(),
     })
     .eq("id", orderId)
@@ -858,6 +1076,79 @@ export async function updateOrderAction(
       await estimateAndSaveOrderDelivery(supabase, context.user.business_id, orderId);
     } catch {
       // Non-fatal
+    }
+  }
+
+  // Step 7: Record Immutable Target Rate Adjustment Audit Trail (INVOICE_UPDATE)
+  if (values.target_adjustment) {
+    try {
+      const auditClient = createAdminSupabaseClient() || supabase;
+      const auditPayload = {
+        business_id: context.user.business_id,
+        order_id: orderId,
+        order_number: values.order_number,
+        adjustment_event_type: "INVOICE_UPDATE" as const,
+        adjustment_strategy: values.target_adjustment.strategy,
+        original_invoice_total: Number(values.target_adjustment.originalTotal || gstCalc.totalAmount),
+        target_invoice_total: Number(values.target_adjustment.targetTotal),
+        final_invoice_total: gstCalc.totalAmount,
+        taxable_amount: gstCalc.taxableSubtotal,
+        cgst_amount: gstCalc.cgstAmount,
+        sgst_amount: gstCalc.sgstAmount,
+        igst_amount: gstCalc.igstAmount,
+        rounding_residual: Number(values.target_adjustment.residualDifference || 0),
+        is_exact_match: values.target_adjustment.isExactMatch,
+        confirmation_status: values.target_adjustment.confirmed,
+        adjusted_items_count: values.target_adjustment.lines.filter((l) => l.isAdjusted).length,
+        items_snapshot: values.target_adjustment.lines,
+        created_by: context.user.id,
+      };
+
+      const { data: auditData, error: auditErr } = await auditClient
+        .from("order_target_adjustment_audit")
+        .insert(auditPayload)
+        .select("id")
+        .single();
+
+      if (auditErr) {
+        console.error("[updateOrderAction] Error creating target adjustment audit:", auditErr);
+      } else if (auditData?.id) {
+        const itemAuditRows = values.target_adjustment.lines
+          .filter((l) => l.isAdjusted)
+          .map((l) => {
+            const rawItem = values.items[l.index];
+            const prod = productMap.get(l.productId);
+            const lineGst = gstCalc.items[l.index];
+            return {
+              business_id: context.user.business_id,
+              audit_id: auditData.id,
+              order_id: orderId,
+              order_number: values.order_number,
+              product_id: l.productId,
+              product_name: prod?.name || null,
+              quantity: Number(rawItem?.quantity || 0),
+              old_unit_price: Number(l.originalUnitPrice || 0),
+              adjusted_unit_price: Number(l.adjustedUnitPrice || 0),
+              adjusted_inclusive_rate: l.adjustedInclusiveRate ? Number(l.adjustedInclusiveRate) : null,
+              gst_rate: Number(rawItem?.tax_rate || 0),
+              discount_rate: Number(rawItem?.discount_rate || 0),
+              taxable_amount: lineGst?.taxableAmount || 0,
+              line_total: lineGst?.lineTotal || 0,
+              created_by: context.user.id,
+            };
+          });
+
+        if (itemAuditRows.length > 0) {
+          const { error: itemAuditErr } = await auditClient
+            .from("order_item_target_adjustment_audit")
+            .insert(itemAuditRows);
+          if (itemAuditErr) {
+            console.error("[updateOrderAction] Error creating item target adjustment audit:", itemAuditErr);
+          }
+        }
+      }
+    } catch (auditException) {
+      console.error("[updateOrderAction] Target adjustment audit recording exception:", auditException);
     }
   }
 

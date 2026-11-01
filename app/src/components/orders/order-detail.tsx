@@ -18,6 +18,7 @@ import type {
   OrderProductionItem,
   CustomerAdvanceAllocation,
   OrderGoodsReturnItem,
+  OrderTargetAdjustmentAudit,
 } from "@/types/order";
 import {
   getOrderPaymentStatus,
@@ -59,6 +60,7 @@ import {
   Eye,
   Download,
   RotateCcw,
+  Sparkles,
 } from "lucide-react";
 
 interface DeliveryInfo {
@@ -113,6 +115,20 @@ interface OrderDetailProps {
     phone?: string;
     email?: string;
   };
+  targetAdjustmentAudit?: OrderTargetAdjustmentAudit[];
+}
+
+function formatUnitPrice(amount: number | string | null | undefined): string {
+  if (amount == null) return "₹0.00";
+  const num = typeof amount === "string" ? Number(amount) : amount;
+  if (Number.isNaN(num)) return "₹0.00";
+  const hasSubPaise = Math.abs(num * 100 - Math.round(num * 100)) > 0.0001;
+  return new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: hasSubPaise ? 4 : 2,
+  }).format(num);
 }
 
 function formatCurrency(amount: number | string | null | undefined): string {
@@ -168,6 +184,7 @@ export function OrderDetail({
   isProductionComplete = false,
   deliveryInfo,
   businessDetails,
+  targetAdjustmentAudit,
 }: OrderDetailProps) {
   const router = useRouter();
   const [showTaxInvoiceModal, setShowTaxInvoiceModal] = useState(false);
@@ -636,7 +653,12 @@ export function OrderDetail({
                         {remainingToDeliver.toFixed(2)} <span className="text-xs text-slate-500">{item.product_unit}</span>
                       </td>
                       <td className="px-3 py-3 text-slate-700 text-right font-mono">
-                        {formatCurrency(item.unit_price)}
+                        <div>{formatUnitPrice(item.unit_price)}</div>
+                        {item.is_rate_adjusted && (
+                          <span className="inline-block text-[10px] px-1 py-0.2 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 font-sans font-semibold mt-0.5">
+                            Target Adjusted
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-3 text-slate-700 text-right">
                         {discRate > 0 ? `${discRate}%` : "—"}
@@ -804,6 +826,38 @@ export function OrderDetail({
               <span>Total GST:</span>
               <span className="font-semibold text-slate-900">{formatCurrency(order.tax_amount)}</span>
             </div>
+
+            {order.is_target_adjusted && (
+              <div className="rounded-lg bg-teal-50/90 border border-teal-200/80 p-2.5 space-y-1 text-xs">
+                <div className="flex justify-between items-center font-semibold text-teal-950">
+                  <span className="flex items-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5 text-[#0F766E]" />
+                    Target Adjusted
+                  </span>
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300">
+                    {Number(order.rounding_residual) === 0 ? "Exact Match (₹0.00)" : `Residual: ₹${order.rounding_residual}`}
+                  </span>
+                </div>
+                {order.target_total_amount && (
+                  <div className="flex justify-between text-slate-600">
+                    <span>Target Total:</span>
+                    <span className="font-mono font-semibold text-[#0F766E]">{formatCurrency(order.target_total_amount)}</span>
+                  </div>
+                )}
+                {order.original_total_amount && (
+                  <div className="flex justify-between text-slate-500">
+                    <span>Original Total:</span>
+                    <span className="font-mono">{formatCurrency(order.original_total_amount)}</span>
+                  </div>
+                )}
+                {order.adjustment_strategy && (
+                  <div className="flex justify-between text-slate-500 text-[11px]">
+                    <span>Strategy:</span>
+                    <span className="capitalize">{order.adjustment_strategy === "PROPORTIONAL" ? "Proportional Multi-Product" : "Single Product"}</span>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="flex justify-between text-sm font-bold text-slate-900 border-t border-slate-200 pt-2">
               <span>Final Order Total:</span>
@@ -1059,6 +1113,8 @@ export function OrderDetail({
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Date</th>
                   <th className="px-4 py-3 text-right">Quantity</th>
+                  <th className="px-4 py-3 text-right">Delivered Value</th>
+                  <th className="px-4 py-3 text-right">Advance Adj</th>
                   <th className="px-4 py-3">Transport / Driver</th>
                   <th className="px-4 py-3">Invoice Ref</th>
                   <th className="px-4 py-3 text-right">Actions</th>
@@ -1097,6 +1153,18 @@ export function OrderDetail({
                       </td>
                       <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">
                         {del.total_quantity !== undefined ? `${del.total_quantity.toLocaleString()} ${del.unit || ""}` : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">
+                        {del.total_amount ? `₹${Number(del.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                        {del.is_ledger_posted && (
+                          <span className="block text-[10px] text-emerald-600 font-sans font-medium">Ledger Posted</span>
+                        )}
+                        {del.is_ledger_reversed && (
+                          <span className="block text-[10px] text-rose-600 font-sans font-medium">Reversed</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono text-indigo-700 font-medium">
+                        {Number(del.advance_adjusted || 0) > 0 ? `₹${Number(del.advance_adjusted).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
                       </td>
                       <td className="px-4 py-3 text-slate-700">
                         {del.vehicle || del.driver ? (
@@ -1337,6 +1405,79 @@ export function OrderDetail({
           </div>
         )}
       </div>
+
+
+      {/* Target Rate Adjustment Audit Trail (Step 7) */}
+      {targetAdjustmentAudit && targetAdjustmentAudit.length > 0 && (
+        <div className="rounded-xl border border-teal-200 bg-white shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-teal-100 bg-teal-50/50 flex items-center justify-between">
+            <h2 className="text-base font-bold text-teal-950 flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-[#0F766E]" />
+              <span>Target Rate Adjustment Audit Trail ({targetAdjustmentAudit.length})</span>
+            </h2>
+            <span className="text-xs text-teal-700 font-medium">Immutable Historical Records</span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-teal-100 text-left text-xs" role="table">
+              <thead className="bg-slate-50 text-slate-700">
+                <tr>
+                  <th className="px-4 py-3 font-semibold uppercase tracking-wider">Timestamp</th>
+                  <th className="px-4 py-3 font-semibold uppercase tracking-wider">Event</th>
+                  <th className="px-4 py-3 font-semibold uppercase tracking-wider">Strategy</th>
+                  <th className="px-4 py-3 text-right font-semibold uppercase tracking-wider">Original Total</th>
+                  <th className="px-4 py-3 text-right font-semibold uppercase tracking-wider">Target Total</th>
+                  <th className="px-4 py-3 text-right font-semibold uppercase tracking-wider">Final Total</th>
+                  <th className="px-4 py-3 text-center font-semibold uppercase tracking-wider">Residual / Match</th>
+                  <th className="px-4 py-3 font-semibold uppercase tracking-wider">Adjusted By</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 bg-white text-xs">
+                {targetAdjustmentAudit.map((aud) => (
+                  <tr key={aud.id} className="hover:bg-teal-50/30 transition font-mono">
+                    <td className="px-4 py-3 font-sans text-slate-600 whitespace-nowrap">
+                      {formatDateTime(aud.created_at)}
+                    </td>
+                    <td className="px-4 py-3 font-sans">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-slate-100 text-slate-800 border border-slate-200">
+                        {aud.adjustment_event_type}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 font-sans">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-teal-50 text-teal-800 border border-teal-200">
+                        {aud.adjustment_strategy === "PROPORTIONAL" ? "Proportional Multi-Product" : "Single Product"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right text-slate-500">
+                      {formatCurrency(aud.original_invoice_total)}
+                    </td>
+                    <td className="px-4 py-3 text-right font-bold text-[#0F766E]">
+                      {formatCurrency(aud.target_invoice_total)}
+                    </td>
+                    <td className="px-4 py-3 text-right font-bold text-slate-900">
+                      {formatCurrency(aud.final_invoice_total)}
+                    </td>
+                    <td className="px-4 py-3 text-center font-sans">
+                      {aud.is_exact_match ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                          Exact Match (₹0.00)
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                          Residual: ₹{Number(aud.rounding_residual).toFixed(2)}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 font-sans font-medium text-slate-800">
+                      {aud.users?.name || "Authorized User"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
 
       {/* Partial Delivery Creation Modal (Step 3) */}
@@ -1628,7 +1769,7 @@ export function OrderDetail({
                             )}
                           </td>
                           <td className="p-2.5 text-right font-medium">{qty.toFixed(2)} {it.product_unit}</td>
-                          <td className="p-2.5 text-right font-mono">{formatCurrency(price)}</td>
+                          <td className="p-2.5 text-right font-mono">{formatUnitPrice(price)}</td>
                           <td className="p-2.5 text-right">{discRate > 0 ? `${discRate}%` : "—"}</td>
                           <td className="p-2.5 text-right font-mono font-medium">{formatCurrency(taxable)}</td>
                           {order.tax_type === "INTRA_STATE" ? (

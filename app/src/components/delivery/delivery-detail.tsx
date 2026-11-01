@@ -19,6 +19,8 @@ import {
   ExternalLink,
   Printer,
   RotateCcw,
+  Receipt,
+  DollarSign,
 } from "lucide-react";
 import type {
   DeliveryWithDetails,
@@ -434,6 +436,78 @@ export function DeliveryDetail({
           </div>
         )}
 
+        {/* Delivery Financial & Ledger Accounting Status */}
+        <div className="rounded-xl border border-teal-100 bg-teal-50/40 p-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-teal-100 pb-3">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 bg-teal-100 rounded-lg text-teal-800">
+                <Receipt className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                  Delivery Financial Snapshot & Ledger Status
+                </h4>
+                <p className="text-[11px] text-slate-500">
+                  Accounting debit and advance adjustment trigger only upon dispatch confirmation.
+                </p>
+              </div>
+            </div>
+            <div>
+              {delivery.is_ledger_reversed ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-100 text-rose-800 border border-rose-200">
+                  <XCircle className="w-3.5 h-3.5" />
+                  <span>Ledger Reversed ({delivery.ledger_reversed_at ? format(new Date(delivery.ledger_reversed_at), "MMM d, HH:mm") : "Reversed"})</span>
+                </span>
+              ) : delivery.is_ledger_posted ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Posted to Ledger ({delivery.ledger_posted_at ? format(new Date(delivery.ledger_posted_at), "MMM d, HH:mm") : "Posted"})</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                  <Clock className="w-3.5 h-3.5" />
+                  <span>Pending Dispatch (Not Posted to Ledger)</span>
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 text-xs">
+            <div className="bg-white p-3 rounded-lg border border-teal-100">
+              <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
+                Delivered Taxable Value
+              </span>
+              <span className="font-mono font-bold text-slate-900 text-sm mt-0.5 block">
+                ₹{Number(delivery.subtotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+            <div className="bg-white p-3 rounded-lg border border-teal-100">
+              <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
+                Delivered GST / Taxes
+              </span>
+              <span className="font-mono font-bold text-slate-900 text-sm mt-0.5 block">
+                ₹{Number(delivery.tax_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+            <div className="bg-white p-3 rounded-lg border border-teal-100">
+              <span className="text-[10px] uppercase font-bold text-teal-700 block tracking-wider">
+                Delivered Total Value
+              </span>
+              <span className="font-mono font-bold text-teal-800 text-base mt-0.5 block">
+                ₹{Number(delivery.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+            <div className="bg-white p-3 rounded-lg border border-teal-100">
+              <span className="text-[10px] uppercase font-bold text-indigo-700 block tracking-wider">
+                Advance Adjusted
+              </span>
+              <span className="font-mono font-bold text-indigo-800 text-base mt-0.5 block">
+                ₹{Number(delivery.advance_adjusted || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+          </div>
+        </div>
+
         {/* Permitted Action Buttons */}
         {validTransitions.length > 0 && (
           <div className="pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
@@ -580,11 +654,12 @@ export function DeliveryDetail({
                 <th className="px-3 py-3 font-semibold">SKU</th>
                 <th className="px-3 py-3 font-semibold text-right">Ordered</th>
                 <th className="px-3 py-3 font-semibold text-right">This Delivery</th>
+                <th className="px-3 py-3 font-semibold text-right">Rate (₹)</th>
+                <th className="px-3 py-3 font-semibold text-right">Taxable (₹)</th>
+                <th className="px-3 py-3 font-semibold text-right">Tax</th>
+                <th className="px-3 py-3 font-semibold text-right">Line Total (₹)</th>
                 <th className="px-3 py-3 font-semibold text-right">Total Delivered</th>
-                <th className="px-3 py-3 font-semibold text-right">Total Returned</th>
-                <th className="px-3 py-3 font-semibold text-right">Net Retained</th>
-                <th className="px-3 py-3 font-semibold text-right">Remaining to Deliver</th>
-                <th className="px-3 py-3 font-semibold">Unit</th>
+                <th className="px-3 py-3 font-semibold text-right">Remaining</th>
                 <th className="px-3 py-3 font-semibold">Status</th>
               </tr>
             </thead>
@@ -603,16 +678,23 @@ export function DeliveryDetail({
                     <td className="px-4 py-3 font-medium text-slate-900">{item.product_name}</td>
                     <td className="px-3 py-3 font-mono text-slate-500">{item.product_sku ?? "—"}</td>
                     <td className="px-3 py-3 text-right font-mono font-medium">{ordered.toLocaleString()}</td>
-                    <td className="px-3 py-3 text-right font-mono font-bold text-teal-700">{deliveredThisChallan.toLocaleString()}</td>
-                    <td className="px-3 py-3 text-right font-mono font-semibold text-slate-900">{totalDelivered.toLocaleString()}</td>
-                    <td className={`px-3 py-3 text-right font-mono font-semibold ${totalReturned > 0 ? "text-rose-600" : "text-slate-400"}`}>
-                      {totalReturned.toLocaleString()}
+                    <td className="px-3 py-3 text-right font-mono font-bold text-teal-700">{deliveredThisChallan.toLocaleString()} {item.unit}</td>
+                    <td className="px-3 py-3 text-right font-mono text-slate-700">
+                      {item.unit_price ? `₹${Number(item.unit_price).toFixed(2)}` : "—"}
                     </td>
-                    <td className="px-3 py-3 text-right font-mono font-bold text-emerald-700">{netRetained.toLocaleString()}</td>
+                    <td className="px-3 py-3 text-right font-mono text-slate-700">
+                      {item.taxable_amount ? `₹${Number(item.taxable_amount).toFixed(2)}` : "—"}
+                    </td>
+                    <td className="px-3 py-3 text-right font-mono text-slate-600 text-[11px]">
+                      {item.tax_rate !== undefined && item.tax_rate !== null ? `${item.tax_rate}%` : "—"}
+                    </td>
+                    <td className="px-3 py-3 text-right font-mono font-bold text-teal-800">
+                      {item.line_total ? `₹${Number(item.line_total).toFixed(2)}` : "—"}
+                    </td>
+                    <td className="px-3 py-3 text-right font-mono font-semibold text-slate-900">{totalDelivered.toLocaleString()}</td>
                     <td className={`px-3 py-3 text-right font-mono font-semibold ${remaining > 0 ? "text-amber-600" : "text-emerald-700"}`}>
                       {remaining.toLocaleString()}
                     </td>
-                    <td className="px-3 py-3 text-slate-600 font-medium">{item.unit}</td>
                     <td className="px-3 py-3">
                       <span
                         className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold ${

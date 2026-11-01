@@ -33,17 +33,18 @@ export default async function OrderPage({ params, searchParams }: PageProps) {
     { data: returns },
     { data: productionOrders },
     { data: businessDetails },
-    { data: advanceAllocations }
+    { data: advanceAllocations },
+    { data: targetAdjustmentAudit }
   ] = await Promise.all([
     supabase
       .from("orders")
-      .select("id, business_id, customer_id, order_number, order_date, priority, status, subtotal, discount_amount, tax_amount, total_amount, paid_amount, due_amount, advance_applied, notes, created_at, updated_at, earliest_delivery_date, latest_delivery_date, expected_delivery_date, delivery_status, delivery_calculated_at, delivery_calculation_version, tax_type, place_of_supply, business_gstin, customer_gstin, cgst_amount, sgst_amount, igst_amount, customers(id, name, company_name, phone, email, gst_number)")
+      .select("id, business_id, customer_id, order_number, order_date, priority, status, subtotal, discount_amount, tax_amount, total_amount, paid_amount, due_amount, advance_applied, notes, created_at, updated_at, earliest_delivery_date, latest_delivery_date, expected_delivery_date, delivery_status, delivery_calculated_at, delivery_calculation_version, tax_type, place_of_supply, business_gstin, customer_gstin, cgst_amount, sgst_amount, igst_amount, is_target_adjusted, target_total_amount, original_total_amount, adjustment_strategy, rounding_residual, adjustment_confirmed, adjusted_at, customers(id, name, company_name, phone, email, gst_number)")
       .eq("business_id", context.user.business_id)
       .eq("id", id)
       .single(),
     supabase
       .from("order_items")
-      .select("id, business_id, order_id, product_id, product_name, quality_grade, variant_id, quantity, unit_price, discount_rate, tax_rate, line_total, taxable_amount, cgst_rate, cgst_amount, sgst_rate, sgst_amount, igst_rate, igst_amount, dispatched_quantity, delivered_quantity, created_at, updated_at, products(name, sku, unit, quality_grade)")
+      .select("id, business_id, order_id, product_id, product_name, quality_grade, variant_id, quantity, unit_price, original_unit_price, adjusted_rate_inclusive, is_rate_adjusted, discount_rate, tax_rate, line_total, taxable_amount, cgst_rate, cgst_amount, sgst_rate, sgst_amount, igst_rate, igst_amount, dispatched_quantity, delivered_quantity, created_at, updated_at, products(name, sku, unit, quality_grade)")
       .eq("business_id", context.user.business_id)
       .eq("order_id", id)
       .order("created_at"),
@@ -113,6 +114,12 @@ export default async function OrderPage({ params, searchParams }: PageProps) {
       .eq("order_id", id)
       .eq("status", "ACTIVE")
       .order("allocation_date"),
+    supabase
+      .from("order_target_adjustment_audit")
+      .select("id, business_id, order_id, order_number, adjustment_event_type, adjustment_strategy, original_invoice_total, target_invoice_total, final_invoice_total, taxable_amount, cgst_amount, sgst_amount, igst_amount, rounding_residual, is_exact_match, confirmation_status, adjusted_items_count, items_snapshot, created_by, created_at, users(name)")
+      .eq("business_id", context.user.business_id)
+      .eq("order_id", id)
+      .order("created_at", { ascending: false }),
   ]);
 
   if (!order) redirect("/orders?error=not_found");
@@ -441,6 +448,7 @@ export default async function OrderPage({ params, searchParams }: PageProps) {
           itemsSummary: explanationData?.items,
         }}
         businessDetails={businessDetails?.value as any}
+        targetAdjustmentAudit={(targetAdjustmentAudit ?? []) as any}
       />
     </div>
   );

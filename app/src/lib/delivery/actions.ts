@@ -162,6 +162,14 @@ export async function getDeliveryWithItems(deliveryId: string): Promise<Delivery
       notes,
       created_at,
       updated_at,
+      subtotal,
+      tax_amount,
+      total_amount,
+      advance_adjusted,
+      is_ledger_posted,
+      ledger_posted_at,
+      is_ledger_reversed,
+      ledger_reversed_at,
       orders (
         id,
         order_number,
@@ -180,6 +188,14 @@ export async function getDeliveryWithItems(deliveryId: string): Promise<Delivery
         product_id,
         ordered_quantity,
         delivered_quantity,
+        unit_price,
+        tax_rate,
+        discount_rate,
+        taxable_amount,
+        cgst_amount,
+        sgst_amount,
+        igst_amount,
+        line_total,
         products (
           id,
           name,
@@ -311,6 +327,14 @@ export async function getDeliveryWithItems(deliveryId: string): Promise<Delivery
       net_retained_quantity: netRetained,
       remaining_to_deliver: remainingToDeliver,
       unit: prod?.unit || "units",
+      unit_price: di.unit_price != null ? Number(di.unit_price) : undefined,
+      tax_rate: di.tax_rate != null ? Number(di.tax_rate) : undefined,
+      discount_rate: di.discount_rate != null ? Number(di.discount_rate) : undefined,
+      taxable_amount: di.taxable_amount != null ? Number(di.taxable_amount) : undefined,
+      cgst_amount: di.cgst_amount != null ? Number(di.cgst_amount) : undefined,
+      sgst_amount: di.sgst_amount != null ? Number(di.sgst_amount) : undefined,
+      igst_amount: di.igst_amount != null ? Number(di.igst_amount) : undefined,
+      line_total: di.line_total != null ? Number(di.line_total) : undefined,
     };
   });
 
@@ -358,6 +382,14 @@ export async function getDeliveryWithItems(deliveryId: string): Promise<Delivery
     notes: d.notes,
     created_at: d.created_at,
     updated_at: d.updated_at,
+    subtotal: Number(d.subtotal) || 0,
+    tax_amount: Number(d.tax_amount) || 0,
+    total_amount: Number(d.total_amount) || 0,
+    advance_adjusted: Number(d.advance_adjusted) || 0,
+    is_ledger_posted: Boolean(d.is_ledger_posted),
+    ledger_posted_at: d.ledger_posted_at || null,
+    is_ledger_reversed: Boolean(d.is_ledger_reversed),
+    ledger_reversed_at: d.ledger_reversed_at || null,
     order_number: orderObj?.order_number || "—",
     customer_name: customerName,
     items,
@@ -1092,6 +1124,17 @@ export async function dispatchDelivery(
     .eq("id", values.delivery_id)
     .eq("business_id", businessId);
 
+  // Step 2: Post delivery to customer ledger and adjust available advance atomically
+  try {
+    await clientToUse.rpc("post_delivery_to_customer_ledger", {
+      p_business_id: businessId,
+      p_delivery_id: values.delivery_id,
+      p_operator_id: context.user.id,
+    });
+  } catch (postErr) {
+    console.warn("[dispatchDelivery] Notice posting delivery to customer ledger:", postErr);
+  }
+
   // 8. Recalculate order delivery status and schedules
   try {
     await updateOrderDeliveryDatesFromSchedules(supabase, businessId, delivery.order_id);
@@ -1248,6 +1291,19 @@ export async function cancelDelivery(
 
   if (delivery.status === "CANCELLED") {
     throw new Error("Delivery is already CANCELLED.");
+  }
+
+  // Step 2: Reverse delivery customer ledger debit and restore advance if posted
+  try {
+    const adminClient = createAdminSupabaseClient() || supabase;
+    await adminClient.rpc("reverse_delivery_ledger_posting", {
+      p_business_id: businessId,
+      p_delivery_id: values.delivery_id,
+      p_reason: values.reason.trim(),
+      p_operator_id: context.user.id,
+    });
+  } catch (revErr) {
+    console.warn("[cancelDelivery] Notice reversing delivery ledger posting:", revErr);
   }
 
   const { error: rpcErr } = await supabase.rpc("cancel_delivery", {

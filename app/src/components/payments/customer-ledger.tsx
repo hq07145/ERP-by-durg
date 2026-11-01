@@ -15,6 +15,7 @@ import {
   Wallet,
   ShieldCheck,
   AlertTriangle,
+  Truck,
 } from "lucide-react";
 import type { CustomerLedgerEntryWithDetails, CustomerSummary } from "@/types/payment";
 import { LEDGER_ENTRY_TYPE_COLORS, LEDGER_ENTRY_TYPE_LABELS } from "@/types/payment";
@@ -238,6 +239,7 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
       totalDebit += d;
       totalCredit += c;
       if (e.entry_type === "INVOICE") periodSales += d;
+      if (e.entry_type === "ADJUSTMENT" && (e.order_id || e.delivery_id)) periodSales -= c;
       if (e.entry_type === "PAYMENT") periodPayments += c;
 
       running = Math.round((running + d - c) * 100) / 100;
@@ -650,8 +652,20 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
                           {LEDGER_ENTRY_TYPE_LABELS[entry.entry_type] || entry.entry_type}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-xs text-gray-900 max-w-sm truncate" title={entry.description}>
-                        {entry.description}
+                      <td className="px-4 py-3 text-xs text-gray-900 max-w-sm" title={entry.description}>
+                        <div className="font-medium text-gray-900 leading-snug">{entry.description}</div>
+                        {entry.order_number && (
+                          <div className="text-[11px] text-gray-500 mt-0.5">
+                            Order:{" "}
+                            <a
+                              href={`/orders/${entry.order_id}`}
+                              className="text-slate-700 hover:text-blue-600 hover:underline font-mono"
+                              title={`View Order ${entry.order_number}`}
+                            >
+                              {entry.order_number}
+                            </a>
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-right font-mono text-xs text-blue-900 font-medium">
                         {Number(entry.debit) > 0
@@ -672,17 +686,20 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
                         </span>
                       </td>
                       <td className="px-4 py-3 text-xs font-mono">
-                        {entry.order_number ? (
+                        {entry.delivery_number ? (
                           <a
-                            href={`/orders/${entry.order_id}`}
-                            className="text-slate-900 hover:text-blue-600 hover:underline"
+                            href={`/delivery/${entry.delivery_id}`}
+                            className="inline-flex items-center gap-1.5 text-xs font-mono font-semibold text-teal-700 hover:text-teal-900 hover:underline"
+                            title={`View Delivery Challan ${entry.delivery_number}`}
                           >
-                            {entry.order_number}
+                            <Truck className="w-3.5 h-3.5 text-teal-600 shrink-0 inline" />
+                            <span>{entry.delivery_number}</span>
                           </a>
                         ) : entry.payment_number ? (
                           <a
                             href={`/payments/${entry.payment_id}`}
-                            className="text-slate-900 hover:text-emerald-600 hover:underline"
+                            className="text-slate-900 hover:text-emerald-600 hover:underline font-semibold"
+                            title={`View Payment ${entry.payment_number}`}
                           >
                             {entry.payment_number}
                           </a>
@@ -699,6 +716,13 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
                             title="Legitimate legacy invoice record preserved in ledger"
                           >
                             LEGACY-INV
+                          </span>
+                        ) : entry.entry_type === "ADJUSTMENT" ? (
+                          <span
+                            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-blue-50 text-blue-800 border border-blue-200"
+                            title="Auditable compensating adjustment"
+                          >
+                            ADJ-REV
                           </span>
                         ) : (
                           <span className="text-gray-400">—</span>

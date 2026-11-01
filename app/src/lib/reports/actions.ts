@@ -2954,7 +2954,8 @@ export async function exportSalesReport(
             id, order_number, status, district, place_of_supply,
             items:order_items(product_id)
           ),
-          payment:payments(id, payment_number, payment_method, reference)
+          payment:payments(id, payment_number, payment_method, reference),
+          delivery:deliveries(id, delivery_number)
         `)
         .eq("business_id", context.user.business_id);
 
@@ -3014,7 +3015,17 @@ export async function exportSalesReport(
         const compName = cust?.company_name;
         const partyDisplayName = compName && compName !== custName ? `${compName} (${custName})` : custName;
 
-        const vchNo = ord?.order_number || pay?.payment_number || "—";
+        const del = (Array.isArray(e.delivery) ? e.delivery[0] : e.delivery) as any;
+        let vchNo = "—";
+        if (del?.delivery_number) {
+          vchNo = del.delivery_number;
+        } else if (pay?.payment_number) {
+          vchNo = pay.payment_number;
+        } else if (e.entry_type === "INVOICE") {
+          vchNo = "LEGACY-INV";
+        } else if (e.entry_type === "ADJUSTMENT") {
+          vchNo = "ADJ-REV";
+        }
 
         let vchType = "Journal";
         if (e.entry_type === "INVOICE") vchType = "Sales";

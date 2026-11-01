@@ -115,14 +115,43 @@ BEGIN
     VALUES (p_business_id, v_year, 'PAY-', v_num + 1, v_padding, NOW())
     ON CONFLICT (business_id, year) DO UPDATE
       SET next_val = GREATEST(payment_sequences.next_val, EXCLUDED.next_val),
-          updated_at = NOW();
+          updated_at = NOW()
+    RETURNING * INTO v_seq;
 
-    v_result := 'PAY-' || v_year::TEXT || '-' || LPAD(v_num::TEXT, v_padding, '0');
+    -- Collision avoidance loop
+    LOOP
+      v_result := 'PAY-' || v_year::TEXT || '-' || LPAD(v_num::TEXT, v_padding, '0');
+      IF NOT EXISTS (
+        SELECT 1 FROM public.payments
+        WHERE business_id = p_business_id AND payment_number = v_result
+      ) THEN
+        EXIT;
+      END IF;
+      v_num := v_num + 1;
+    END LOOP;
+
+    UPDATE public.payment_sequences
+    SET next_val = v_num + 1,
+        updated_at = NOW()
+    WHERE business_id = p_business_id AND year = v_year;
+
     RETURN v_result;
   END IF;
 
   v_num := v_seq.next_val;
-  v_padding := v_seq.padding;
+  v_padding := COALESCE(v_seq.padding, 6);
+
+  -- Collision avoidance loop
+  LOOP
+    v_result := 'PAY-' || v_year::TEXT || '-' || LPAD(v_num::TEXT, v_padding, '0');
+    IF NOT EXISTS (
+      SELECT 1 FROM public.payments
+      WHERE business_id = p_business_id AND payment_number = v_result
+    ) THEN
+      EXIT;
+    END IF;
+    v_num := v_num + 1;
+  END LOOP;
 
   UPDATE public.payment_sequences
   SET next_val = v_num + 1,

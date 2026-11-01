@@ -4,8 +4,14 @@ import { useState, useTransition, useMemo, useEffect, useRef } from "react";
 import { useActionState } from "react";
 import Link from "next/link";
 import { createOrderAction, updateOrderAction, checkOrderExistsAction } from "@/lib/orders/actions";
-import { Loader2, AlertCircle, Plus, Trash2, Truck, Clock, CheckCircle2, AlertTriangle, ShieldCheck, MapPin, Wallet } from "lucide-react";
+import { Loader2, AlertCircle, Plus, Trash2, Truck, Clock, CheckCircle2, AlertTriangle, ShieldCheck, MapPin, Wallet, Calculator, Sparkles, Check, X, Info, RotateCcw } from "lucide-react";
 import { INDIAN_STATES, determineGstTaxType, calculateItemGst, calculateOrderGst, type TaxType } from "@/lib/financials/gst";
+import {
+  calculateSingleProductTargetInvoice,
+  calculateMultiProductTargetInvoice,
+  type TargetInvoiceCalculationResult,
+  type MultiProductAdjustmentStrategy,
+} from "@/lib/financials/target-pricing";
 import { OrderDistrictSelect } from "./order-district-select";
 import { getStateForDistrict, getBaseDistrictName } from "@/lib/reports/indian-districts";
 import { getCustomerAdvanceBalance, type CustomerAdvanceBalance } from "@/lib/payments/actions";
@@ -327,6 +333,46 @@ export function OrderForm({
   const [isClientPending, startTransition] = useTransition();
   const [clientError, setClientError] = useState<string | null>(null);
 
+  // Target Invoice Total & High-Precision Reconciler State
+  const [targetTotalInput, setTargetTotalInput] = useState<string>("");
+  const [targetAdjustmentStrategy, setTargetAdjustmentStrategy] = useState<MultiProductAdjustmentStrategy>("PROPORTIONAL");
+  const [selectedTargetItemId, setSelectedTargetItemId] = useState<string>("");
+  const [targetCalcResult, setTargetCalcResult] = useState<TargetInvoiceCalculationResult | null>(null);
+  const [targetCalcError, setTargetCalcError] = useState<string | null>(null);
+  const [isCalculatingTarget, setIsCalculatingTarget] = useState<boolean>(false);
+  const [appliedTargetNotice, setAppliedTargetNotice] = useState<string | null>(null);
+  const [confirmResidualNotice, setConfirmResidualNotice] = useState<boolean>(false);
+
+  // Step 4 & 5: Persistent Applied Adjustment State for Comparison & Reset
+  interface AppliedTargetAdjustmentLine {
+    index: number;
+    productId: string;
+    productName: string;
+    originalUnitPrice: string;
+    adjustedExclusiveRateStr: string;
+    displayExclusiveRateStr: string;
+    adjustedInclusiveRateStr: string;
+    displayInclusiveRateStr: string;
+    isAdjusted: boolean;
+  }
+
+  interface AppliedTargetAdjustment {
+    lines: AppliedTargetAdjustmentLine[];
+    adjustedItemsCount: number;
+    unadjustedItemsCount: number;
+    targetTotalStr: string;
+    originalTotalStr: string;
+    strategy: "SINGLE_PRODUCT" | "PROPORTIONAL";
+    isExactMatch: boolean;
+    residualDifferenceStr: string;
+    taxableAmountStr: string;
+    totalGstAmountStr: string;
+    reconciledTotalStr: string;
+    appliedAt: string;
+  }
+  const [appliedAdjustment, setAppliedAdjustment] = useState<AppliedTargetAdjustment | null>(null);
+  const [deselectedLineIndices, setDeselectedLineIndices] = useState<Set<number>>(() => new Set());
+
   const isPending = isServerPending || isClientPending;
   const isSubmittingRef = useRef(false);
   const timeoutIdRef = useRef<NodeJS.Timeout | null>(null);
@@ -571,6 +617,202 @@ export function OrderForm({
   };
   const handleLgstChange = handleIgstChange;
 
+  const handleAutoAdjustRate = () => {
+    setTargetCalcError(null);
+    setAppliedTargetNotice(null);
+
+    if (items.length === 0) {
+      setTargetCalcError("Please add at least one line item before adjusting rates.");
+      return;
+    }
+
+    const trimmedInput = targetTotalInput.trim();
+    if (!trimmedInput) {
+      setTargetCalcError("Please enter a Target Invoice Total (Including GST).");
+      return;
+    }
+
+    const targetNum = Number(trimmedInput);
+    if (!Number.isFinite(targetNum) || targetNum <= 0) {
+      setTargetCalcError("Target Invoice Total must be a valid number greater than zero.");
+      return;
+    }
+
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (!it.product_id) {
+        setTargetCalcError(`Please select a product for line item #${i + 1}.`);
+        return;
+      }
+      const q = parseFloat(it.quantity);
+      if (!Number.isFinite(q) || q <= 0) {
+        setTargetCalcError(`Line item #${i + 1} has an invalid or zero quantity. Quantity must be greater than zero.`);
+        return;
+      }
+    }
+
+    setIsCalculatingTarget(true);
+
+    try {
+      if (items.length === 1) {
+        const item = items[0];
+        const prod = products.find((p) => p.id === item.product_id);
+        const gstRate = parseFloat(item.tax_rate) || (prod?.tax_rate != null ? Number(prod.tax_rate) : 0);
+        const res = calculateSingleProductTargetInvoice({
+          quantity: item.quantity,
+          targetTotal: trimmedInput,
+          gstRate: String(gstRate),
+          taxType: currentTaxType,
+          discountRate: item.discount_rate || "0",
+          productName: prod?.name || "Item 1",
+        });
+
+        if (!res.success) {
+          setTargetCalcError(res.error || "Failed to calculate adjusted rates.");
+          setTargetCalcResult(null);
+        } else {
+          setTargetCalcResult(res);
+          setTargetCalcError(null);
+        }
+      } else {
+        const res = calculateMultiProductTargetInvoice({
+          items: items.map((it, idx) => {
+            const prod = products.find((p) => p.id === it.product_id);
+            const gstRate = parseFloat(it.tax_rate) || (prod?.tax_rate != null ? Number(prod.tax_rate) : 0);
+            const isParticipating = !deselectedLineIndices.has(idx);
+            return {
+              id: it.product_id || `item-${idx + 1}`,
+              productName: prod?.name || `Item #${idx + 1}`,
+              quantity: it.quantity,
+              currentPrice: it.unit_price || "0",
+              currentPriceIsInclusive: false,
+              discountRate: it.discount_rate || "0",
+              gstRate: String(gstRate),
+              participatesInAdjustment: isParticipating,
+              isAdjustmentTarget: selectedTargetItemId
+                ? selectedTargetItemId === it.product_id
+                : idx === items.length - 1,
+            };
+          }),
+          targetTotal: trimmedInput,
+          taxType: currentTaxType,
+          strategy: targetAdjustmentStrategy,
+        });
+
+        if (!res.success) {
+          setTargetCalcError(res.error || "Failed to calculate adjusted rates.");
+          setTargetCalcResult(null);
+        } else {
+          setTargetCalcResult(res);
+          setTargetCalcError(null);
+        }
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setTargetCalcError(`Calculation failed: ${msg}`);
+      setTargetCalcResult(null);
+    } finally {
+      setIsCalculatingTarget(false);
+    }
+  };
+
+  const handleApplyAdjustedRate = () => {
+    if (!targetCalcResult || !targetCalcResult.success || targetCalcResult.items.length === 0) return;
+
+    // Requirement 4: If exact match is impossible due to statutory 2-decimal rounding, require explicit user confirmation
+    if (!targetCalcResult.isExactMatch && !confirmResidualNotice) {
+      setTargetCalcError(
+        `Confirmation required: Target ₹${targetCalcResult.targetInvoiceTotalStr} has a statutory rounding residual of ₹${targetCalcResult.residualDifferenceStr}. Please review and check the confirmation box below to accept before applying.`
+      );
+      return;
+    }
+
+    const linesDetail: AppliedTargetAdjustmentLine[] = targetCalcResult.items.map((calcLine, idx) => {
+      const currentItem = items[idx];
+      const prod = products.find((p) => p.id === currentItem?.product_id);
+      const origRate = currentItem?.unit_price || (prod?.selling_price != null ? String(prod.selling_price) : "0");
+      return {
+        index: idx,
+        productId: currentItem?.product_id || "",
+        productName: prod?.name || `Item #${idx + 1}`,
+        originalUnitPrice: origRate,
+        adjustedExclusiveRateStr: calcLine.adjustedExclusiveRateStr,
+        displayExclusiveRateStr: calcLine.displayExclusiveRateStr,
+        adjustedInclusiveRateStr: calcLine.adjustedInclusiveRateStr,
+        displayInclusiveRateStr: calcLine.displayInclusiveRateStr,
+        isAdjusted: calcLine.isAdjusted,
+      };
+    });
+
+    setAppliedAdjustment({
+      lines: linesDetail,
+      adjustedItemsCount: targetCalcResult.participatingItemsCount,
+      unadjustedItemsCount: targetCalcResult.unadjustedItemsCount,
+      targetTotalStr: targetCalcResult.targetInvoiceTotalStr,
+      originalTotalStr: targetCalcResult.originalInvoiceTotalStr,
+      strategy: (targetAdjustmentStrategy || "PROPORTIONAL") as "SINGLE_PRODUCT" | "PROPORTIONAL",
+      isExactMatch: targetCalcResult.isExactMatch,
+      residualDifferenceStr: targetCalcResult.residualDifferenceStr,
+      taxableAmountStr: targetCalcResult.totalTaxableAmountStr,
+      totalGstAmountStr: targetCalcResult.totalGstAmountStr,
+      reconciledTotalStr: targetCalcResult.calculatedGrandTotalStr,
+      appliedAt: new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+    });
+
+    // Update ONLY line rates that participate and were adjusted (unselected lines remain completely untouched)
+    setItems((prev) =>
+      prev.map((item, idx) => {
+        const calculatedLine = targetCalcResult.items[idx];
+        if (!calculatedLine || !calculatedLine.isAdjusted) return item;
+        return {
+          ...item,
+          unit_price: calculatedLine.adjustedExclusiveRateStr,
+        };
+      })
+    );
+
+    const adjCount = targetCalcResult.participatingItemsCount;
+    const unadjCount = targetCalcResult.unadjustedItemsCount;
+    setAppliedTargetNotice(
+      `Adjusted rates applied successfully to ${adjCount} product line${adjCount === 1 ? "" : "s"}${
+        unadjCount > 0 ? ` (${unadjCount} line${unadjCount === 1 ? "" : "s"} kept unchanged)` : ""
+      }. Target ₹${targetCalcResult.targetInvoiceTotalStr} ${
+        targetCalcResult.isExactMatch ? "(Exact Match)" : `(Residual: ₹${targetCalcResult.residualDifferenceStr})`
+      }.`
+    );
+    setTargetCalcResult(null);
+    setConfirmResidualNotice(false);
+    setTargetCalcError(null);
+  };
+
+  const handleResetAdjustedRate = () => {
+    if (!appliedAdjustment) return;
+    setItems((prev) =>
+      prev.map((item, idx) => {
+        const match = appliedAdjustment.lines.find((l) => l.index === idx && l.isAdjusted);
+        if (match) {
+          return {
+            ...item,
+            unit_price: match.originalUnitPrice,
+          };
+        }
+        return item;
+      })
+    );
+    setAppliedTargetNotice(
+      `Reverted ${appliedAdjustment.adjustedItemsCount} adjusted line rate${
+        appliedAdjustment.adjustedItemsCount === 1 ? "" : "s"
+      } to original rates.`
+    );
+    setAppliedAdjustment(null);
+  };
+
+  const handleCancelAdjustedRate = () => {
+    setTargetCalcResult(null);
+    setTargetCalcError(null);
+    setConfirmResidualNotice(false);
+  };
+
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (isPending || isSubmittingRef.current) return;
@@ -659,20 +901,61 @@ export function OrderForm({
       }
     }
 
-    const sanitizedItems = items.map((it) => ({
-      ...it,
-      variant_id: it.variant_id?.trim() || undefined,
-      quality_grade: it.quality_grade?.trim() || undefined,
-      quantity: it.quantity.trim(),
-      unit_price: it.unit_price.trim(),
-      discount_rate: it.discount_rate.trim() === "" ? "0" : it.discount_rate.trim(),
-      tax_rate: it.tax_rate.trim() === "" ? "0" : it.tax_rate.trim(),
-      sgst_rate: it.sgst_rate.trim() === "" ? "0" : it.sgst_rate.trim(),
-      cgst_rate: it.cgst_rate.trim() === "" ? "0" : it.cgst_rate.trim(),
-      igst_rate: it.igst_rate.trim() === "" ? "0" : it.igst_rate.trim(),
-      lgst_rate: it.igst_rate.trim() === "" ? "0" : it.igst_rate.trim(),
-    }));
+    // Step 6: Reconciliation Guard - Invoice must not be finalized while an unexplained difference exists
+    if (targetCalcResult && !appliedAdjustment) {
+      setClientError("You have an unconfirmed Target Rate Adjustment preview. Please apply or cancel the adjustment before finalizing the invoice.");
+      return;
+    }
+
+    if (appliedAdjustment && !appliedAdjustment.isExactMatch && !confirmResidualNotice) {
+      setClientError(
+        `Confirmation required: Target ₹${appliedAdjustment.targetTotalStr} has a statutory rounding residual of ₹${appliedAdjustment.residualDifferenceStr}. Please review and check the confirmation box to accept the residual before finalizing the invoice.`
+      );
+      return;
+    }
+
+    const sanitizedItems = items.map((it, idx) => {
+      const lineAdj = appliedAdjustment?.lines.find((l) => l.index === idx && l.isAdjusted);
+      return {
+        ...it,
+        variant_id: it.variant_id?.trim() || undefined,
+        quality_grade: it.quality_grade?.trim() || undefined,
+        quantity: it.quantity.trim(),
+        unit_price: it.unit_price.trim(),
+        discount_rate: it.discount_rate.trim() === "" ? "0" : it.discount_rate.trim(),
+        tax_rate: it.tax_rate.trim() === "" ? "0" : it.tax_rate.trim(),
+        sgst_rate: it.sgst_rate.trim() === "" ? "0" : it.sgst_rate.trim(),
+        cgst_rate: it.cgst_rate.trim() === "" ? "0" : it.cgst_rate.trim(),
+        igst_rate: it.igst_rate.trim() === "" ? "0" : it.igst_rate.trim(),
+        lgst_rate: it.igst_rate.trim() === "" ? "0" : it.igst_rate.trim(),
+        original_unit_price: lineAdj ? lineAdj.originalUnitPrice : it.unit_price.trim(),
+        adjusted_rate_inclusive: lineAdj ? lineAdj.adjustedInclusiveRateStr : undefined,
+        is_rate_adjusted: Boolean(lineAdj),
+      };
+    });
     formData.set("items", JSON.stringify(sanitizedItems));
+
+    if (appliedAdjustment) {
+      formData.set(
+        "target_adjustment",
+        JSON.stringify({
+          targetTotal: appliedAdjustment.targetTotalStr,
+          originalTotal: appliedAdjustment.originalTotalStr,
+          strategy: appliedAdjustment.strategy,
+          isExactMatch: appliedAdjustment.isExactMatch,
+          residualDifference: appliedAdjustment.residualDifferenceStr,
+          confirmed: appliedAdjustment.isExactMatch ? true : confirmResidualNotice,
+          lines: appliedAdjustment.lines.map((l) => ({
+            index: l.index,
+            productId: l.productId,
+            originalUnitPrice: l.originalUnitPrice,
+            adjustedUnitPrice: l.adjustedExclusiveRateStr,
+            adjustedInclusiveRate: l.adjustedInclusiveRateStr,
+            isAdjusted: l.isAdjusted,
+          })),
+        })
+      );
+    }
     formData.set("district", district ? getBaseDistrictName(district) : "");
     formData.set("place_of_supply", effectivePos);
     formData.set("use_advance", useAdvance ? "true" : "false");
@@ -1090,6 +1373,9 @@ export function OrderForm({
                         {/* Interactive Amount Adjustment if Yes */}
                         {useAdvance && (
                           <div className="rounded-xl bg-white border border-teal-200 p-3.5 space-y-3 shadow-2xs">
+                            <div className="p-2 rounded-lg bg-teal-50 border border-teal-200/60 text-[11px] text-teal-800 font-medium">
+                              ℹ️ <strong>Delivery-Based Adjustment:</strong> Advance balance remains available in the customer account until goods are dispatched. Financial adjustment will apply automatically upon dispatch confirmation.
+                            </div>
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                               <div>
                                 <label htmlFor="advance_amount_input" className="block text-xs font-bold text-slate-800">
@@ -1479,11 +1765,21 @@ export function OrderForm({
                       value={item.unit_price}
                       onChange={(e) => updateItem(index, "unit_price", e.target.value)}
                       required
-                      step="0.01"
+                      step="any"
                       min="0"
                       placeholder="0.00"
                       className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm shadow-2xs focus:border-[#0F766E] focus:outline-none focus:ring-1 focus:ring-[#0F766E] min-h-[44px]"
                     />
+                    {(() => {
+                      const lineAdj = appliedAdjustment?.lines.find((l) => l.index === index && l.isAdjusted);
+                      if (!lineAdj) return null;
+                      return (
+                        <div className="mt-1 flex flex-wrap items-center justify-between gap-1 text-[11px] text-teal-800 bg-teal-50 border border-teal-200 rounded px-2 py-1 font-medium">
+                          <span>Adjusted (Orig: ₹{Number(lineAdj.originalUnitPrice).toFixed(2)})</span>
+                          <span>Incl: ₹{lineAdj.displayInclusiveRateStr}</span>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -1784,11 +2080,26 @@ export function OrderForm({
                         value={item.unit_price}
                         onChange={(e) => updateItem(index, "unit_price", e.target.value)}
                         required
-                        step="0.01"
+                        step="any"
                         min="0"
                         placeholder="0.00"
                         className="w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-sm shadow-2xs focus:border-[#0F766E] focus:outline-none focus:ring-1 focus:ring-[#0F766E] min-h-[44px]"
                       />
+                      {(() => {
+                        const lineAdj = appliedAdjustment?.lines.find((l) => l.index === index && l.isAdjusted);
+                        if (!lineAdj) return null;
+                        return (
+                          <div className="mt-1 space-y-0.5">
+                            <div className="flex items-center gap-1 text-[10px] text-teal-800 bg-teal-50 border border-teal-200 rounded px-1.5 py-0.5 font-medium">
+                              <Sparkles className="w-2.5 h-2.5 text-[#0F766E] shrink-0" />
+                              <span>Orig: ₹{Number(lineAdj.originalUnitPrice).toFixed(2)}</span>
+                            </div>
+                            <div className="text-[10px] text-slate-500 font-sans">
+                              Incl: <strong className="text-slate-700">₹{lineAdj.displayInclusiveRateStr}</strong>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td className="px-2 py-2.5">
                       <input
@@ -1899,6 +2210,548 @@ export function OrderForm({
           <p className="text-center text-slate-500 py-8">No items added yet. Click &ldquo;Add Item&rdquo; to start.</p>
         )}
 
+        {/* TARGET INVOICE PRICING (HIGH-PRECISION RECONCILIATION) */}
+        {items.length > 0 && (
+          <div className="rounded-xl border border-teal-200/90 bg-linear-to-br from-teal-50/70 via-white to-slate-50/90 p-4 sm:p-5 shadow-2xs space-y-4 my-6">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-[#0F766E]/10 text-[#0F766E]">
+                  <Calculator className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-slate-900">Target Invoice Pricing</h4>
+                  <p className="text-[11px] text-slate-500">Auto-calculate exact inclusive &amp; exclusive unit rates to match customer target total</p>
+                </div>
+              </div>
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0F766E] bg-teal-50 px-2.5 py-0.5 rounded-full border border-teal-200">
+                <Sparkles className="w-3 h-3" />
+                High-Precision Decimal Engine
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+              <div className="sm:col-span-8 lg:col-span-9">
+                <label htmlFor="target_invoice_total" className="block text-xs font-semibold text-slate-700 mb-1">
+                  Target Invoice Total (Including GST) <span className="text-rose-500">*</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500 font-semibold sm:text-sm">
+                    ₹
+                  </span>
+                  <input
+                    type="number"
+                    id="target_invoice_total"
+                    step="0.01"
+                    min="0"
+                    value={targetTotalInput}
+                    onChange={(e) => {
+                      setTargetTotalInput(e.target.value);
+                      setTargetCalcError(null);
+                      setAppliedTargetNotice(null);
+                    }}
+                    placeholder="e.g. 150000.00"
+                    className="w-full pl-8 pr-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-mono shadow-2xs focus:border-[#0F766E] focus:outline-none focus:ring-1 focus:ring-[#0F766E] min-h-[44px]"
+                  />
+                </div>
+              </div>
+
+              <div className="sm:col-span-4 lg:col-span-3">
+                <button
+                  type="button"
+                  onClick={handleAutoAdjustRate}
+                  disabled={isCalculatingTarget}
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-[#0F766E] px-4 py-2 text-sm font-semibold text-white shadow-2xs hover:bg-[#0D655E] active:scale-98 transition disabled:opacity-60 cursor-pointer min-h-[44px]"
+                >
+                  {isCalculatingTarget ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Calculating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Calculator className="w-4 h-4" />
+                      <span>Auto Adjust Rate</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Multi-Product Strategy & Line Selector (Shown only when > 1 item) */}
+            {items.length > 1 && (
+              <div className="rounded-lg border border-slate-200 bg-white p-3.5 space-y-3 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                  <span className="font-semibold text-slate-800">Adjustment Strategy:</span>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="target_strategy"
+                        value="PROPORTIONAL"
+                        checked={targetAdjustmentStrategy === "PROPORTIONAL"}
+                        onChange={() => setTargetAdjustmentStrategy("PROPORTIONAL")}
+                        className="text-[#0F766E] focus:ring-[#0F766E]"
+                      />
+                      <span className="font-medium text-slate-800">Proportional (Scale selected lines)</span>
+                    </label>
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="target_strategy"
+                        value="ADJUST_SPECIFIED_ITEM"
+                        checked={targetAdjustmentStrategy === "ADJUST_SPECIFIED_ITEM"}
+                        onChange={() => setTargetAdjustmentStrategy("ADJUST_SPECIFIED_ITEM")}
+                        className="text-[#0F766E] focus:ring-[#0F766E]"
+                      />
+                      <span className="text-slate-800">Adjust Specific Item</span>
+                    </label>
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="target_strategy"
+                        value="EQUAL_SPLIT"
+                        checked={targetAdjustmentStrategy === "EQUAL_SPLIT"}
+                        onChange={() => setTargetAdjustmentStrategy("EQUAL_SPLIT")}
+                        className="text-[#0F766E] focus:ring-[#0F766E]"
+                      />
+                      <span className="text-slate-800">Equal Split</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-slate-500 bg-slate-50 rounded p-2 border border-slate-200/60 leading-relaxed">
+                  <span className="font-semibold text-slate-700">Proportional Strategy:</span> Distributes the required invoice value change proportionally across selected lines based on their current GST-inclusive line values. Unselected product lines remain strictly fixed at their original rates. Product master catalog rates and statutory GST rates are never modified.
+                </div>
+
+                {targetAdjustmentStrategy === "ADJUST_SPECIFIED_ITEM" && (
+                  <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                    <label htmlFor="target_item_select" className="text-slate-600 font-medium">
+                      Select item to absorb adjustment:
+                    </label>
+                    <select
+                      id="target_item_select"
+                      value={selectedTargetItemId || items[items.length - 1]?.product_id || ""}
+                      onChange={(e) => setSelectedTargetItemId(e.target.value)}
+                      className="rounded border border-slate-300 px-2 py-1 text-xs bg-white text-slate-800 focus:border-[#0F766E] focus:outline-none"
+                    >
+                      {items.map((it, i) => {
+                        const prod = products.find((p) => p.id === it.product_id);
+                        return (
+                          <option key={it.product_id || i} value={it.product_id}>
+                            Item #{i + 1}: {prod?.name || "Product"} (Qty: {it.quantity || "0"})
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                )}
+
+                {/* Line Item Selection Checklist */}
+                <div className="space-y-2 pt-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-slate-700">Participating Product Lines:</span>
+                    <div className="flex items-center gap-2 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => setDeselectedLineIndices(new Set())}
+                        className="font-semibold text-[#0F766E] hover:underline cursor-pointer"
+                      >
+                        Select All
+                      </button>
+                      <span className="text-slate-300">|</span>
+                      <button
+                        type="button"
+                        onClick={() => setDeselectedLineIndices(new Set(items.map((_, i) => i)))}
+                        className="font-semibold text-slate-600 hover:underline cursor-pointer"
+                      >
+                        Deselect All
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="divide-y divide-slate-100 max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white">
+                    {items.map((it, idx) => {
+                      const prod = products.find((p) => p.id === it.product_id);
+                      const isParticipating = !deselectedLineIndices.has(idx);
+                      return (
+                        <label
+                          key={it.product_id || idx}
+                          className={`flex items-center justify-between px-3 py-2 text-xs cursor-pointer transition ${
+                            isParticipating
+                              ? "bg-teal-50/25 hover:bg-teal-50/40"
+                              : "bg-slate-50/70 hover:bg-slate-100/60 opacity-80"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <input
+                              type="checkbox"
+                              checked={isParticipating}
+                              onChange={(e) => {
+                                setDeselectedLineIndices((prev) => {
+                                  const next = new Set(prev);
+                                  if (e.target.checked) {
+                                    next.delete(idx);
+                                  } else {
+                                    next.add(idx);
+                                  }
+                                  return next;
+                                });
+                              }}
+                              className="w-4 h-4 text-[#0F766E] rounded border-slate-300 focus:ring-[#0F766E]"
+                            />
+                            <div>
+                              <span className="font-semibold text-slate-800">
+                                Line #{idx + 1}: {prod?.name || "Product"}
+                              </span>
+                              <span className="text-[11px] text-slate-500 ml-1.5 font-mono">
+                                (Qty: {it.quantity || "0"} | Rate: ₹{Number(it.unit_price || 0).toFixed(2)})
+                              </span>
+                            </div>
+                          </div>
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                              isParticipating
+                                ? "bg-teal-100 text-teal-800 border border-teal-200"
+                                : "bg-slate-100 text-slate-600 border border-slate-200"
+                            }`}
+                          >
+                            {isParticipating ? "Participating" : "Fixed (Unchanged)"}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Validation Error Banner */}
+            {targetCalcError && (
+              <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div className="min-w-0 flex-1">
+                  <p className="font-bold">Target Adjustment Error</p>
+                  <p className="mt-0.5 text-rose-700">{targetCalcError}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Applied Notice Banner */}
+            {appliedTargetNotice && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800 flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <div className="min-w-0 flex-1">
+                  <p className="font-bold">Target Rates Applied</p>
+                  <p className="mt-0.5 text-emerald-700">{appliedTargetNotice}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Active Target Rate Adjustment Card with Revert Action */}
+            {appliedAdjustment && (
+              <div className="rounded-xl border border-teal-200 bg-teal-50/70 p-4 text-xs space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-teal-200/80 pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-[#0F766E]" />
+                    <span className="font-bold text-teal-950">Active Target Rate Adjustment</span>
+                    <span
+                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                        appliedAdjustment.isExactMatch
+                          ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                          : "bg-amber-100 text-amber-800 border border-amber-300"
+                      }`}
+                    >
+                      {appliedAdjustment.isExactMatch ? (
+                        <>
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600 mr-1" />
+                          Exact Match (₹0.00 Variance)
+                        </>
+                      ) : (
+                        <>
+                          <Info className="w-3 h-3 text-amber-600 mr-1" />
+                          Residual Variance: ₹{appliedAdjustment.residualDifferenceStr}
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleResetAdjustedRate}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-teal-300 bg-white text-xs font-semibold text-teal-900 hover:bg-teal-50 transition shadow-2xs cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-teal-700" />
+                    <span>Reset / Revert to Original Rates</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-slate-700">
+                  <div>
+                    <span className="text-[10px] text-slate-500 uppercase tracking-wider block">Target Invoice Total</span>
+                    <span className="font-bold text-[#0F766E] font-mono text-sm">
+                      ₹{appliedAdjustment.targetTotalStr}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-semibold">Reconciled Total</span>
+                    <span className="font-bold text-slate-900 font-mono text-sm">
+                      ₹{appliedAdjustment.reconciledTotalStr}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 uppercase tracking-wider block">Adjusted Lines</span>
+                    <span className="font-bold text-teal-900 font-mono text-sm">
+                      {appliedAdjustment.adjustedItemsCount} line{appliedAdjustment.adjustedItemsCount === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 uppercase tracking-wider block">Unchanged Lines</span>
+                    <span className="font-bold text-slate-700 font-mono text-sm">
+                      {appliedAdjustment.unadjustedItemsCount} line{appliedAdjustment.unadjustedItemsCount === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Applied Line Rates Snapshot */}
+                <div className="overflow-x-auto rounded border border-teal-200/70 bg-white">
+                  <table className="min-w-full divide-y divide-teal-100 text-xs">
+                    <thead className="bg-teal-50/50 text-teal-950 font-semibold">
+                      <tr>
+                        <th className="px-3 py-1.5 text-left">Product</th>
+                        <th className="px-3 py-1.5 text-right">Original Rate</th>
+                        <th className="px-3 py-1.5 text-right">Adjusted Rate (Excl.)</th>
+                        <th className="px-3 py-1.5 text-right">Adjusted Rate (Incl.)</th>
+                        <th className="px-3 py-1.5 text-center">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-teal-50 font-mono text-slate-800">
+                      {appliedAdjustment.lines.map((ln) => (
+                        <tr key={ln.index} className={ln.isAdjusted ? "bg-white" : "bg-slate-50/50"}>
+                          <td className="px-3 py-1.5 font-sans font-medium text-slate-900">
+                            {ln.productName}
+                          </td>
+                          <td className="px-3 py-1.5 text-right text-slate-600">
+                            ₹{Number(ln.originalUnitPrice).toFixed(2)}
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-bold text-[#0F766E]">
+                            {ln.isAdjusted ? `₹${ln.displayExclusiveRateStr}` : `₹${Number(ln.originalUnitPrice).toFixed(2)}`}
+                          </td>
+                          <td className="px-3 py-1.5 text-right text-slate-700">
+                            {ln.isAdjusted ? `₹${ln.displayInclusiveRateStr}` : "-"}
+                          </td>
+                          <td className="px-3 py-1.5 text-center">
+                            {ln.isAdjusted ? (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                                Adjusted
+                              </span>
+                            ) : (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600">
+                                Unchanged
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* PROPOSED PREVIEW MODAL / PANEL */}
+            {targetCalcResult && (
+              <div className="rounded-xl border-2 border-[#0F766E]/40 bg-white p-4 sm:p-5 shadow-md space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-[#0F766E]" />
+                    <h5 className="text-sm font-bold text-slate-900">Proposed Target Rate Adjustment Preview</h5>
+                  </div>
+                  <div>
+                    {targetCalcResult.isExactMatch ? (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                        Exact Match (₹0.00 Variance)
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-300">
+                        <Info className="w-3.5 h-3.5 text-amber-600" />
+                        Residual Variance: ₹{targetCalcResult.residualDifferenceStr}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* COMPARISON METRICS GRID */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs">
+                  <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
+                    <span className="block text-slate-500 font-medium text-[11px]">Original Total:</span>
+                    <span className="block font-bold text-slate-900 font-mono text-sm mt-0.5">
+                      ₹{targetCalcResult.originalInvoiceTotalStr}
+                    </span>
+                  </div>
+                  <div className="rounded-lg bg-teal-50/60 border border-teal-200 p-2.5">
+                    <span className="block text-teal-800 font-medium text-[11px]">Target Total:</span>
+                    <span className="block font-bold text-[#0F766E] font-mono text-sm mt-0.5">
+                      ₹{targetCalcResult.targetInvoiceTotalStr}
+                    </span>
+                  </div>
+                  <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
+                    <span className="block text-slate-500 font-medium text-[11px]">Total Difference:</span>
+                    {(() => {
+                      const diff = targetCalcResult.targetInvoiceTotal.minus(targetCalcResult.originalInvoiceTotal).toNumber();
+                      const isPos = diff >= 0;
+                      return (
+                        <span className={`block font-bold font-mono text-sm mt-0.5 ${isPos ? "text-emerald-700" : "text-amber-700"}`}>
+                          {isPos ? "+" : ""}₹{diff.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                  <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
+                    <span className="block text-slate-500 font-medium text-[11px]">Proposed Taxable:</span>
+                    <span className="block font-bold text-slate-900 font-mono text-sm mt-0.5">
+                      ₹{targetCalcResult.totalTaxableAmountStr}
+                    </span>
+                  </div>
+                  <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5">
+                    <span className="block text-slate-500 font-medium text-[11px]">Proposed GST:</span>
+                    <span className="block font-bold text-slate-900 font-mono text-sm mt-0.5">
+                      ₹{targetCalcResult.totalGstAmountStr}
+                    </span>
+                  </div>
+                  <div className="rounded-lg bg-emerald-50/70 border border-emerald-200 p-2.5">
+                    <span className="block text-emerald-900 font-medium text-[11px]">Proposed Invoice Total:</span>
+                    <span className="block font-bold text-emerald-800 font-mono text-sm mt-0.5">
+                      ₹{targetCalcResult.calculatedGrandTotalStr}
+                    </span>
+                  </div>
+                </div>
+
+                {/* ROUNDING EXPLANATION & STATUTORY RESIDUAL CONFIRMATION (IF RESIDUAL) */}
+                {!targetCalcResult.isExactMatch && (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50/90 p-3.5 text-xs text-amber-900 space-y-2.5">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <p className="font-bold">Statutory GST Rounding Residual Variance: ₹{targetCalcResult.residualDifferenceStr}</p>
+                        <p className="text-amber-800 leading-relaxed text-[11px]">
+                          Under Indian statutory GST rules, line item taxes are rounded to 2 decimal places. A target invoice total of ₹{targetCalcResult.targetInvoiceTotalStr} yields an actual calculated total of ₹{targetCalcResult.calculatedGrandTotalStr} with an unavoidable statutory variance of ₹{targetCalcResult.residualDifferenceStr}. Product quantities, tax rates, and discounts have not been artificially altered.
+                        </p>
+                      </div>
+                    </div>
+                    <label className="flex items-start gap-2.5 pt-2 border-t border-amber-200/90 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={confirmResidualNotice}
+                        onChange={(e) => setConfirmResidualNotice(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 text-[#0F766E] rounded border-amber-400 focus:ring-[#0F766E]"
+                      />
+                      <span className="text-xs font-semibold text-amber-950">
+                        I have verified and confirm applying this adjusted rate with the statutory residual difference of ₹{targetCalcResult.residualDifferenceStr}
+                      </span>
+                    </label>
+                  </div>
+                )}
+
+                {/* ITEM-BY-ITEM PROPOSED RATES COMPARISON TABLE (Requirement 3: All 10 columns) */}
+                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                  <table className="min-w-full divide-y divide-slate-200 text-xs">
+                    <thead className="bg-slate-50 text-slate-700">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-semibold">Product / SKU</th>
+                        <th className="px-3 py-2 text-right font-semibold">Fixed Qty</th>
+                        <th className="px-3 py-2 text-right font-semibold">Orig Rate (Excl.)</th>
+                        <th className="px-3 py-2 text-right font-semibold text-[#0F766E]">Proposed Rate (Excl.)</th>
+                        <th className="px-3 py-2 text-right font-semibold text-slate-700">Proposed Rate (Incl.)</th>
+                        <th className="px-3 py-2 text-right font-semibold">Orig Total</th>
+                        <th className="px-3 py-2 text-right font-semibold">Proposed Total</th>
+                        <th className="px-3 py-2 text-right font-semibold">GST %</th>
+                        <th className="px-3 py-2 text-right font-semibold">Taxable Amount</th>
+                        <th className="px-3 py-2 text-right font-semibold">GST Amount</th>
+                        <th className="px-3 py-2 text-center font-semibold">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-slate-100 font-mono">
+                      {targetCalcResult.items.map((line, idx) => (
+                        <tr key={idx} className={line.isAdjusted ? "hover:bg-teal-50/30" : "bg-slate-50/40 hover:bg-slate-50"}>
+                          <td className="px-3 py-2 font-sans font-medium text-slate-900">
+                            {line.productName || `Item #${idx + 1}`}
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-700">
+                            {line.quantity.toString()}
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-500">
+                            ₹{Number(line.originalExclusiveRateStr).toFixed(2)}
+                          </td>
+                          <td className="px-3 py-2 text-right font-bold text-[#0F766E]">
+                            ₹{line.displayExclusiveRateStr}
+                            <span className="block text-[10px] text-slate-400 font-normal">
+                              ({line.adjustedExclusiveRateStr})
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-700">
+                            ₹{line.displayInclusiveRateStr}
+                            <span className="block text-[10px] text-slate-400 font-normal">
+                              ({line.adjustedInclusiveRateStr})
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-600">
+                            ₹{line.originalLineTotalStr}
+                          </td>
+                          <td className="px-3 py-2 text-right font-bold text-slate-900">
+                            ₹{line.lineTotalStr}
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-700">
+                            {line.gstRate.toString()}%
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-800">
+                            ₹{line.taxableAmountStr}
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-800">
+                            ₹{line.totalGstAmountStr}
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            {line.isAdjusted ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                Adjusted
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200">
+                                Unchanged (Fixed)
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* CONFIRMATION & CANCEL ACTIONS */}
+                <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={handleCancelAdjustedRate}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition min-h-[40px] cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Cancel Adjustment</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleApplyAdjustedRate}
+                    disabled={!targetCalcResult.isExactMatch && !confirmResidualNotice}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#0F766E] px-5 py-2 text-xs font-semibold text-white shadow-2xs hover:bg-[#0D655E] active:scale-98 transition disabled:opacity-50 disabled:cursor-not-allowed min-h-[40px] cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Apply Adjusted Rate</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Financial Summary Card with Full GST Breakdown */}
         {items.length > 0 && (
           <div className="flex justify-end pt-4">
@@ -1969,6 +2822,47 @@ export function OrderForm({
                   </span>
                 </div>
               </div>
+
+              {/* Step 6 Target Adjustment Reconciliation Box */}
+              {appliedAdjustment && (
+                <div className="rounded-lg bg-teal-50/80 border border-teal-200/80 p-3 space-y-1.5 text-xs text-teal-950">
+                  <div className="flex items-center justify-between pb-1 border-b border-teal-200/60 font-semibold">
+                    <span className="flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-[#0F766E]" />
+                      Target Reconciliation
+                    </span>
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                        appliedAdjustment.isExactMatch
+                          ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                          : "bg-amber-100 text-amber-800 border border-amber-300"
+                      }`}
+                    >
+                      {appliedAdjustment.isExactMatch
+                        ? "Exact Match (₹0.00)"
+                        : `Residual: ₹${appliedAdjustment.residualDifferenceStr}`}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-slate-700">
+                    <span>Target Total:</span>
+                    <span className="font-mono font-semibold text-[#0F766E]">
+                      ₹{appliedAdjustment.targetTotalStr}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-slate-700">
+                    <span>Reconciled Total:</span>
+                    <span className="font-mono font-semibold text-slate-900">
+                      ₹{appliedAdjustment.reconciledTotalStr}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-slate-700">
+                    <span>Rounding Difference:</span>
+                    <span className="font-mono font-semibold text-slate-900">
+                      {appliedAdjustment.isExactMatch ? "₹0.00" : `₹${appliedAdjustment.residualDifferenceStr}`}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               <div className="flex justify-between text-base font-bold text-slate-900 border-t border-slate-200 pt-2.5">
                 <span>Final Order Total:</span>

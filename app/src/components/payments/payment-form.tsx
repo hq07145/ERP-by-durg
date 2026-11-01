@@ -8,10 +8,6 @@ import type { PaymentMethod, PaymentStatus } from "@/types/payment";
 import { PAYMENT_METHOD_LABELS } from "@/types/payment";
 import {
   CreditCard,
-  DollarSign,
-  Calendar,
-  FileText,
-  User,
   ShoppingBag,
   ArrowLeft,
   Loader2,
@@ -157,6 +153,11 @@ export function PaymentForm({
           status: status,
         });
 
+        if (res.error || res.success === false) {
+          setErrorMessage(res.error || res.message || "Failed to record payment.");
+          return;
+        }
+
         if (res.already_processed) {
           setSuccessMessage(
             `Existing payment verified: ${res.payment_number || "Payment"} was already recorded. (Duplicate request blocked safely).`
@@ -172,7 +173,7 @@ export function PaymentForm({
             router.push(`/customers/${customerId}?notice=payment_recorded`);
           }
         }, 800);
-      } catch (err: any) {
+      } catch (err: unknown) {
         setErrorMessage(err instanceof Error ? err.message : "Failed to record payment.");
       }
     });

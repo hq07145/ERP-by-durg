@@ -28,6 +28,14 @@ export interface Delivery {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  subtotal?: number;
+  tax_amount?: number;
+  total_amount?: number;
+  advance_adjusted?: number;
+  is_ledger_posted?: boolean;
+  ledger_posted_at?: string | null;
+  is_ledger_reversed?: boolean;
+  ledger_reversed_at?: string | null;
 }
 
 export interface LinkedDeliveryReturn {
@@ -86,6 +94,14 @@ export interface DeliveryItem {
   net_retained_quantity?: number;
   remaining_to_deliver?: number;
   unit: string;
+  unit_price?: number;
+  tax_rate?: number;
+  discount_rate?: number;
+  taxable_amount?: number;
+  cgst_amount?: number;
+  sgst_amount?: number;
+  igst_amount?: number;
+  line_total?: number;
 }
 
 export interface DeliveryStatusHistory {
@@ -248,6 +264,14 @@ export interface EligibleDeliveryOrder {
     product_sku: string | null;
     quantity: number;
     unit: string;
+  unit_price?: number;
+  tax_rate?: number;
+  discount_rate?: number;
+  taxable_amount?: number;
+  cgst_amount?: number;
+  sgst_amount?: number;
+  igst_amount?: number;
+  line_total?: number;
   }[];
 }
 
@@ -280,6 +304,14 @@ export interface CustomerOrderForDelivery {
     product_sku: string | null;
     quantity: number;
     unit: string;
+  unit_price?: number;
+  tax_rate?: number;
+  discount_rate?: number;
+  taxable_amount?: number;
+  cgst_amount?: number;
+  sgst_amount?: number;
+  igst_amount?: number;
+  line_total?: number;
     production_status: string;
     completed_quantity: number;
     available_stock: number;

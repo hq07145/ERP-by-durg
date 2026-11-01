@@ -877,215 +877,312 @@ export async function getEligibleOrdersForPayment(customerId?: string) {
 export async function createPayment(
   values: CreatePaymentFormValues
 ): Promise<CreatePaymentResult> {
-  const context = await getAuthContext();
-  if (!context) redirect("/login?error=account_unavailable");
-  if (!hasPermission({ permissions: context.permissions }, "payments.add")) {
-    throw new Error("Forbidden: payments.add");
-  }
+  try {
+    const context = await getAuthContext();
+    if (!context) redirect("/login?error=account_unavailable");
+    if (!hasPermission({ permissions: context.permissions }, "payments.add")) {
+      return {
+        payment_id: "",
+        success: false,
+        error: "Forbidden: You do not have permission to add payments.",
+        message: "Forbidden: payments.add",
+      };
+    }
 
-  // 1. Validate Payment Amount
-  const amountNum = Number(values.amount);
-  if (!Number.isFinite(amountNum) || amountNum <= 0) {
-    throw new Error("Payment amount must be greater than zero.");
-  }
+    // 1. Validate Payment Amount
+    const amountNum = Number(values.amount);
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      return {
+        payment_id: "",
+        success: false,
+        error: "Payment amount must be greater than zero.",
+        message: "Payment amount must be greater than zero.",
+      };
+    }
 
-  // 2. Validate Payment Date
-  if (!values.payment_date || isNaN(Date.parse(values.payment_date))) {
-    throw new Error("Valid payment date is required.");
-  }
+    // 2. Validate Payment Date
+    if (!values.payment_date || isNaN(Date.parse(values.payment_date))) {
+      return {
+        payment_id: "",
+        success: false,
+        error: "Valid payment date is required.",
+        message: "Valid payment date is required.",
+      };
+    }
 
-  // 3. Validate Payment Method
-  if (!VALID_PAYMENT_METHODS.includes(values.payment_method)) {
-    throw new Error(`Invalid payment method: ${values.payment_method}`);
-  }
+    // 3. Validate Payment Method
+    if (!VALID_PAYMENT_METHODS.includes(values.payment_method)) {
+      return {
+        payment_id: "",
+        success: false,
+        error: `Invalid payment method: ${values.payment_method}`,
+        message: `Invalid payment method: ${values.payment_method}`,
+      };
+    }
 
-  // 4. Validate Payment Status
-  const status: PaymentStatus = values.status || "SUCCESS";
-  if (!VALID_PAYMENT_STATUSES.includes(status)) {
-    throw new Error(`Invalid payment status: ${status}`);
-  }
+    // 4. Validate Payment Status
+    const status: PaymentStatus = values.status || "SUCCESS";
+    if (!VALID_PAYMENT_STATUSES.includes(status)) {
+      return {
+        payment_id: "",
+        success: false,
+        error: `Invalid payment status: ${status}`,
+        message: `Invalid payment status: ${status}`,
+      };
+    }
 
-  // 5. Validate Reference, Transaction ID and Notes
-  const cleanRef = values.utr_number?.trim() || values.reference?.trim() || null;
-  const cleanTxn = values.transaction_id?.trim() || null;
-  const idempotencyKey = values.idempotency_key?.trim() || null;
+    // 5. Validate Reference, Transaction ID and Notes
+    const cleanRef = values.utr_number?.trim() || values.reference?.trim() || null;
+    const cleanTxn = values.transaction_id?.trim() || null;
+    const idempotencyKey = values.idempotency_key?.trim() || null;
 
-  if (cleanRef && cleanRef.length > 128) {
-    throw new Error("Payment reference / UTR must not exceed 128 characters.");
-  }
-  if (cleanTxn && cleanTxn.length > 128) {
-    throw new Error("External transaction ID must not exceed 128 characters.");
-  }
-  if (values.notes && values.notes.length > 2000) {
-    throw new Error("Payment notes must not exceed 2000 characters.");
-  }
+    if (cleanRef && cleanRef.length > 128) {
+      return {
+        payment_id: "",
+        success: false,
+        error: "Payment reference / UTR must not exceed 128 characters.",
+        message: "Payment reference / UTR must not exceed 128 characters.",
+      };
+    }
+    if (cleanTxn && cleanTxn.length > 128) {
+      return {
+        payment_id: "",
+        success: false,
+        error: "External transaction ID must not exceed 128 characters.",
+        message: "External transaction ID must not exceed 128 characters.",
+      };
+    }
+    if (values.notes && values.notes.length > 2000) {
+      return {
+        payment_id: "",
+        success: false,
+        error: "Payment notes must not exceed 2000 characters.",
+        message: "Payment notes must not exceed 2000 characters.",
+      };
+    }
 
-  const supabase = await createServerSupabaseClient();
-  if (!supabase) throw new Error("Supabase client not available");
+    const supabase = await createServerSupabaseClient();
+    if (!supabase) {
+      return {
+        payment_id: "",
+        success: false,
+        error: "Supabase client not available",
+        message: "Supabase client not available",
+      };
+    }
 
-  // 6. Idempotency Check (Requirement 2 & 3)
-  // If an idempotency key was supplied and already posted, return original payment immediately
-  if (idempotencyKey) {
-    const { data: existingIdemp } = await supabase
-      .from("payments")
-      .select("id, payment_number, status, amount")
+    // 6. Idempotency Check (Requirement 2 & 3)
+    if (idempotencyKey) {
+      const { data: existingIdemp } = await supabase
+        .from("payments")
+        .select("id, payment_number, status, amount")
+        .eq("business_id", context.user.business_id)
+        .eq("idempotency_key", idempotencyKey)
+        .maybeSingle();
+
+      if (existingIdemp) {
+        return {
+          payment_id: existingIdemp.id,
+          payment_number: existingIdemp.payment_number,
+          already_processed: true,
+          success: true,
+          message: "Payment request already processed",
+        };
+      }
+    }
+
+    // 7. Validate Customer Exists and Belongs to Business
+    const { data: customer, error: custErr } = await supabase
+      .from("customers")
+      .select("id, name, status")
+      .eq("id", values.customer_id)
       .eq("business_id", context.user.business_id)
-      .eq("idempotency_key", idempotencyKey)
       .maybeSingle();
 
-    if (existingIdemp) {
+    if (custErr || !customer) {
       return {
-        payment_id: existingIdemp.id,
-        payment_number: existingIdemp.payment_number,
+        payment_id: "",
+        success: false,
+        error: "Selected customer not found or does not belong to your business.",
+        message: "Selected customer not found or does not belong to your business.",
+      };
+    }
+
+    // 8. Validate Order Details & Prevent Overpayment
+    if (values.order_id) {
+      const { data: order, error: orderErr } = await supabase
+        .from("orders")
+        .select("id, order_number, customer_id, total_amount, paid_amount, due_amount, status")
+        .eq("id", values.order_id)
+        .eq("business_id", context.user.business_id)
+        .maybeSingle();
+
+      if (orderErr || !order) {
+        return {
+          payment_id: "",
+          success: false,
+          error: "Linked order not found in your business records.",
+          message: "Linked order not found in your business records.",
+        };
+      }
+      if (order.customer_id !== values.customer_id) {
+        return {
+          payment_id: "",
+          success: false,
+          error: "Order does not belong to the selected customer.",
+          message: "Order does not belong to the selected customer.",
+        };
+      }
+      if (order.status === "CANCELLED") {
+        return {
+          payment_id: "",
+          success: false,
+          error: "Cannot record payment for a cancelled order.",
+          message: "Cannot record payment for a cancelled order.",
+        };
+      }
+
+      const currentDue = Number(order.due_amount) || 0;
+      if (status === "SUCCESS" && amountNum > currentDue + 0.001) {
+        return {
+          payment_id: "",
+          success: false,
+          error: `OVERPAYMENT_NOT_ALLOWED: Payment amount (₹${amountNum.toFixed(2)}) exceeds the order outstanding balance (₹${currentDue.toFixed(2)}).`,
+          message: `OVERPAYMENT_NOT_ALLOWED: Payment amount (₹${amountNum.toFixed(2)}) exceeds the order outstanding balance (₹${currentDue.toFixed(2)}).`,
+        };
+      }
+    }
+
+    // 9. Duplicate Transaction ID Detection (Requirement 4)
+    if (cleanTxn) {
+      const { data: matchedTxn } = await supabase
+        .from("payments")
+        .select("id, payment_number")
+        .eq("business_id", context.user.business_id)
+        .eq("transaction_id", cleanTxn)
+        .in("status", ["SUCCESS", "PENDING"])
+        .maybeSingle();
+
+      if (matchedTxn) {
+        return {
+          payment_id: "",
+          success: false,
+          error: `DUPLICATE_TRANSACTION: External Transaction ID "${cleanTxn}" has already been recorded for payment ${matchedTxn.payment_number}.`,
+          message: `DUPLICATE_TRANSACTION: External Transaction ID "${cleanTxn}" has already been recorded for payment ${matchedTxn.payment_number}.`,
+        };
+      }
+    }
+
+    // 10. Electronic Bank UTR / Reference Duplicate Detection (Requirement 4 & 5)
+    if (values.payment_method !== "CASH" && cleanRef && !values.allow_duplicate_reference) {
+      const { data: matchedUtr } = await supabase
+        .from("payments")
+        .select("id, payment_number, payment_date")
+        .eq("business_id", context.user.business_id)
+        .or(`utr_number.eq.${cleanRef},reference.eq.${cleanRef}`)
+        .in("status", ["SUCCESS", "PENDING"])
+        .maybeSingle();
+
+      if (matchedUtr) {
+        return {
+          payment_id: "",
+          success: false,
+          error: `DUPLICATE_REFERENCE: Bank UTR/Reference "${cleanRef}" has already been recorded for payment ${matchedUtr.payment_number} on ${matchedUtr.payment_date}.`,
+          message: `DUPLICATE_REFERENCE: Bank UTR/Reference "${cleanRef}" has already been recorded for payment ${matchedUtr.payment_number} on ${matchedUtr.payment_date}.`,
+        };
+      }
+    }
+
+    // 11. Execute Atomic Payment Creation via SQL RPC
+    const { data: rpcData, error: rpcErr } = await supabase.rpc("create_payment", {
+      p_business_id: context.user.business_id,
+      p_customer_id: values.customer_id,
+      p_amount: amountNum,
+      p_payment_date: values.payment_date,
+      p_payment_method: values.payment_method,
+      p_order_id: values.order_id || null,
+      p_reference: cleanRef,
+      p_notes: values.notes?.trim() || null,
+      p_status: status,
+      p_idempotency_key: idempotencyKey,
+      p_transaction_id: cleanTxn,
+      p_utr_number: values.utr_number?.trim() || cleanRef,
+      p_allow_duplicate_reference: values.allow_duplicate_reference || false,
+      p_operator_id: context.user.id,
+    });
+
+    if (rpcErr) {
+      console.error("create_payment RPC error:", rpcErr);
+      return {
+        payment_id: "",
+        success: false,
+        error: rpcErr.message || "Failed to create payment via database RPC.",
+        message: rpcErr.message || "Failed to create payment via database RPC.",
+      };
+    }
+
+    const result = typeof rpcData === "object" && rpcData !== null ? rpcData : { payment_id: rpcData };
+    const paymentId: string = result.payment_id;
+    const paymentNumber: string = result.payment_number;
+    const alreadyProcessed: boolean = Boolean(result.already_processed);
+
+    if (alreadyProcessed) {
+      return {
+        payment_id: paymentId,
+        payment_number: paymentNumber,
         already_processed: true,
+        success: true,
         message: "Payment request already processed",
       };
     }
-  }
 
-  // 7. Validate Customer Exists and Belongs to Business
-  const { data: customer, error: custErr } = await supabase
-    .from("customers")
-    .select("id, name, status")
-    .eq("id", values.customer_id)
-    .eq("business_id", context.user.business_id)
-    .maybeSingle();
-
-  if (custErr || !customer) {
-    throw new Error("Selected customer not found or does not belong to your business.");
-  }
-
-  // 8. Validate Order Details & Prevent Overpayment
-  if (values.order_id) {
-    const { data: order, error: orderErr } = await supabase
-      .from("orders")
-      .select("id, order_number, customer_id, total_amount, paid_amount, due_amount, status")
-      .eq("id", values.order_id)
-      .eq("business_id", context.user.business_id)
-      .maybeSingle();
-
-    if (orderErr || !order) {
-      throw new Error("Linked order not found in your business records.");
-    }
-    if (order.customer_id !== values.customer_id) {
-      throw new Error("Order does not belong to the selected customer.");
-    }
-    if (order.status === "CANCELLED") {
-      throw new Error("Cannot record payment for a cancelled order.");
+    // 12. Guarantee Authoritative Totals Sync
+    if (values.order_id) {
+      await syncAuthoritativeOrderTotals(supabase, context.user.business_id, values.order_id);
     }
 
-    const currentDue = Number(order.due_amount) || 0;
-    if (status === "SUCCESS" && amountNum > currentDue + 0.001) {
-      throw new Error(
-        `OVERPAYMENT_NOT_ALLOWED: Payment amount (₹${amountNum.toFixed(2)}) exceeds the order outstanding balance (₹${currentDue.toFixed(2)}).`
+    // Recalculate customer ledger running balances to ensure 100% mathematical consistency
+    try {
+      await supabase.rpc("recalculate_customer_ledger", {
+        p_business_id: context.user.business_id,
+        p_customer_id: values.customer_id,
+      });
+    } catch (recalcErr) {
+      console.error("Non-fatal: recalculate_customer_ledger notice", recalcErr);
+    }
+
+    try {
+      await notifyPaymentReceived(
+        context.user.business_id,
+        paymentId,
+        paymentNumber || "Payment",
+        amountNum,
+        context.user.id
       );
+    } catch {
+      // Non-fatal
     }
-  }
 
-  // 9. Duplicate Transaction ID Detection (Requirement 4)
-  if (cleanTxn) {
-    const { data: matchedTxn } = await supabase
-      .from("payments")
-      .select("id, payment_number")
-      .eq("business_id", context.user.business_id)
-      .eq("transaction_id", cleanTxn)
-      .in("status", ["SUCCESS", "PENDING"])
-      .maybeSingle();
-
-    if (matchedTxn) {
-      throw new Error(
-        `DUPLICATE_TRANSACTION: External Transaction ID "${cleanTxn}" has already been recorded for payment ${matchedTxn.payment_number}.`
-      );
-    }
-  }
-
-  // 10. Electronic Bank UTR / Reference Duplicate Detection (Requirement 4 & 5)
-  // CASH payments and empty references are exempted to allow genuine repeated cash payments
-  if (values.payment_method !== "CASH" && cleanRef && !values.allow_duplicate_reference) {
-    const { data: matchedUtr } = await supabase
-      .from("payments")
-      .select("id, payment_number, payment_date")
-      .eq("business_id", context.user.business_id)
-      .or(`utr_number.eq.${cleanRef},reference.eq.${cleanRef}`)
-      .in("status", ["SUCCESS", "PENDING"])
-      .maybeSingle();
-
-    if (matchedUtr) {
-      throw new Error(
-        `DUPLICATE_REFERENCE: Bank UTR/Reference "${cleanRef}" has already been recorded for payment ${matchedUtr.payment_number} on ${matchedUtr.payment_date}.`
-      );
-    }
-  }
-
-  // 11. Execute Atomic Payment Creation via SQL RPC
-  const { data: rpcData, error: rpcErr } = await supabase.rpc("create_payment", {
-    p_business_id: context.user.business_id,
-    p_customer_id: values.customer_id,
-    p_amount: amountNum,
-    p_payment_date: values.payment_date,
-    p_payment_method: values.payment_method,
-    p_order_id: values.order_id || null,
-    p_reference: cleanRef,
-    p_notes: values.notes?.trim() || null,
-    p_status: status,
-    p_idempotency_key: idempotencyKey,
-    p_transaction_id: cleanTxn,
-    p_utr_number: values.utr_number?.trim() || cleanRef,
-    p_allow_duplicate_reference: values.allow_duplicate_reference || false,
-    p_operator_id: context.user.id,
-  });
-
-  if (rpcErr) throw rpcErr;
-
-  const result = typeof rpcData === "object" && rpcData !== null ? rpcData : { payment_id: rpcData };
-  const paymentId: string = result.payment_id;
-  const paymentNumber: string = result.payment_number;
-  const alreadyProcessed: boolean = Boolean(result.already_processed);
-
-  if (alreadyProcessed) {
     return {
       payment_id: paymentId,
       payment_number: paymentNumber,
-      already_processed: true,
-      message: "Payment request already processed",
+      already_processed: false,
+      success: true,
+      message: "Payment created successfully",
+    };
+  } catch (err: any) {
+    if (err && typeof err === "object" && "digest" in err && String(err.digest).startsWith("NEXT_REDIRECT")) {
+      throw err;
+    }
+    console.error("createPayment exception:", err);
+    return {
+      payment_id: "",
+      success: false,
+      error: err instanceof Error ? err.message : "Failed to record payment.",
+      message: err instanceof Error ? err.message : "Failed to record payment.",
     };
   }
-
-  // 12. Guarantee Authoritative Totals Sync
-  if (values.order_id) {
-    await syncAuthoritativeOrderTotals(supabase, context.user.business_id, values.order_id);
-  }
-
-  // Recalculate customer ledger running balances to ensure 100% mathematical consistency
-  try {
-    await supabase.rpc("recalculate_customer_ledger", {
-      p_business_id: context.user.business_id,
-      p_customer_id: values.customer_id,
-    });
-  } catch (recalcErr) {
-    console.error("Non-fatal: recalculate_customer_ledger notice", recalcErr);
-  }
-
-  try {
-    await notifyPaymentReceived(
-      context.user.business_id,
-      paymentId,
-      paymentNumber || "Payment",
-      amountNum,
-      context.user.id
-    );
-  } catch {
-    // Non-fatal
-  }
-
-  return {
-    payment_id: paymentId,
-    payment_number: paymentNumber,
-    already_processed: false,
-    message: "Payment created successfully",
-  };
 }
-
 export async function updatePayment(
   values: UpdatePaymentFormValues
 ): Promise<{ success: boolean; message: string | null }> {

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useTransition, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
+import { useFormStatus } from "react-dom";
 import {
   Shield,
   UserPlus,
@@ -9,19 +10,12 @@ import {
   Eye,
   EyeOff,
   CheckCircle2,
-  XCircle,
   AlertCircle,
   Check,
   X,
   Search,
-  Filter,
   SlidersHorizontal,
-  ChevronDown,
-  ChevronRight,
   Lock,
-  UserCheck,
-  UserX,
-  ArrowRight,
   Info,
   Loader2,
   Trash2,
@@ -34,7 +28,7 @@ import {
   deleteUserAccountAction,
 } from "@/lib/users/actions";
 import { USER_STATUSES, USER_STATUS_LABELS } from "@/lib/users/constants";
-import { ERP_MODULES, ModuleDefinition, PermissionItem } from "@/lib/permissions/modules";
+import { ERP_MODULES, ModuleDefinition } from "@/lib/permissions/modules";
 
 interface UserRecord {
   id: string;
@@ -79,6 +73,44 @@ interface Props {
   highlightedUserId?: string;
 }
 
+
+function CreateManagerSubmitButton({ isValid }: { isValid: boolean }) {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending || !isValid}
+      className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-[var(--accent)] px-5 text-sm font-semibold text-white shadow-xs transition hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {pending ? (
+        <>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span>Creating Manager Account...</span>
+        </>
+      ) : (
+        <>
+          <UserPlus className="h-4 w-4" />
+          <span>Create Manager Account</span>
+        </>
+      )}
+    </button>
+  );
+}
+
+function InviteSubmitButton() {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="min-h-10 rounded-lg bg-[var(--accent)] px-5 text-sm font-semibold text-white hover:bg-[var(--accent-strong)] disabled:opacity-50 inline-flex items-center gap-2"
+    >
+      {pending && <Loader2 className="h-4 w-4 animate-spin" />}
+      <span>{pending ? "Sending..." : "Send Invite Email"}</span>
+    </button>
+  );
+}
+
 export function UserManagementClient({
   currentUserId,
   currentUserRoleKey,
@@ -93,8 +125,7 @@ export function UserManagementClient({
   // Password state for Create Manager
   const [managerPassword, setManagerPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [createPending, startCreateTransition] = useTransition();
-
+  
   // Active modal for permissions
   const [editingPermissionsUser, setEditingPermissionsUser] = useState<UserRecord | null>(() => {
     if (highlightedUserId) {
@@ -109,8 +140,7 @@ export function UserManagementClient({
   const [permissionSearch, setPermissionSearch] = useState("");
   const permSearchTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>("ALL");
-  const [savePermsPending, startSavePermsTransition] = useTransition();
-
+  
   // Password Reset modal state
   const [resetPasswordUser, setResetPasswordUser] = useState<UserRecord | null>(null);
   const [resetPasswordMode, setResetPasswordMode] = useState<"direct" | "email">("direct");
@@ -333,8 +363,7 @@ export function UserManagementClient({
     const updated = { ...permissionDraft };
 
     for (const perm of allPermissions) {
-      const key = `${perm.module}.${perm.action}`;
-
+      
       if (preset === "ALL") {
         updated[perm.id] = true;
       } else if (preset === "NONE") {
@@ -548,14 +577,7 @@ export function UserManagementClient({
             </div>
 
             <div className="flex items-center justify-end">
-              <button
-                type="submit"
-                disabled={!isPasswordValid}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-[var(--accent)] px-5 text-sm font-semibold text-white shadow-xs transition hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <UserPlus className="h-4 w-4" />
-                Create Manager Account
-              </button>
+              <CreateManagerSubmitButton isValid={isPasswordValid} />
             </div>
           </form>
         ) : (
@@ -596,12 +618,7 @@ export function UserManagementClient({
               </label>
             </div>
             <div className="flex justify-end">
-              <button
-                type="submit"
-                className="min-h-10 rounded-lg bg-[var(--accent)] px-5 text-sm font-semibold text-white hover:bg-[var(--accent-strong)]"
-              >
-                Send Invite Email
-              </button>
+              <InviteSubmitButton />
             </div>
           </form>
         )}
