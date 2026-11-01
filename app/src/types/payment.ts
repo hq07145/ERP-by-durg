@@ -8,6 +8,7 @@ export interface Payment {
   business_id: string;
   customer_id: string;
   order_id: string | null;
+  delivery_id?: string | null;
   payment_number: string;
   amount: string | number;
   payment_date: string;
@@ -50,6 +51,7 @@ export interface CustomerLedgerEntry {
   business_id: string;
   customer_id: string;
   order_id: string | null;
+  delivery_id?: string | null;
   payment_id: string | null;
   entry_type: LedgerEntryType;
   description: string;
@@ -65,6 +67,7 @@ export interface CustomerLedgerEntryWithDetails extends CustomerLedgerEntry {
   customer_name: string;
   order_number: string | null;
   payment_number: string | null;
+  delivery_number?: string | null;
 }
 
 export interface CustomerSummary {

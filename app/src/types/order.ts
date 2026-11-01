@@ -63,6 +63,17 @@ export interface Order {
   delivery_status: DeliveryStatus;
   delivery_calculated_at: string | null;
   delivery_calculation_version: number;
+  // Step 7: Target rate adjustment snapshot fields
+  is_target_adjusted?: boolean;
+  target_total_amount?: string | number | null;
+  original_total_amount?: string | number | null;
+  adjustment_strategy?: "SINGLE_PRODUCT" | "PROPORTIONAL" | null;
+  rounding_residual?: string | number | null;
+  adjustment_confirmed?: boolean;
+  adjusted_by?: string | null;
+  adjusted_at?: string | null;
+  is_legacy_ledger_posted?: boolean | null;
+  intended_advance_amount?: number | null;
 }
 
 export interface CustomerAdvanceAllocation {
@@ -113,6 +124,10 @@ export interface OrderItem {
   dispatched_quantity?: string | number;
   delivered_quantity?: string | number;
   remaining_quantity?: string | number;
+  // Step 7: Line adjustment snapshot
+  original_unit_price?: string | number | null;
+  adjusted_rate_inclusive?: string | number | null;
+  is_rate_adjusted?: boolean;
 }
 
 export interface OrderItemWithProduct extends OrderItem {
@@ -161,6 +176,9 @@ export interface OrderItemFormValues {
   cgst_rate?: string;
   igst_rate?: string;
   lgst_rate?: string;
+  original_unit_price?: string;
+  adjusted_rate_inclusive?: string;
+  is_rate_adjusted?: boolean;
 }
 
 export interface OrderFormValues {
@@ -172,6 +190,22 @@ export interface OrderFormValues {
   place_of_supply?: string;
   notes: string;
   items: OrderItemFormValues[];
+  target_adjustment?: {
+    targetTotal: string;
+    originalTotal: string;
+    strategy: "SINGLE_PRODUCT" | "PROPORTIONAL";
+    isExactMatch: boolean;
+    residualDifference: string;
+    confirmed: boolean;
+    lines: Array<{
+      index: number;
+      productId: string;
+      originalUnitPrice: string;
+      adjustedUnitPrice: string;
+      adjustedInclusiveRate: string;
+      isAdjusted: boolean;
+    }>;
+  };
 }
 
 export interface OrderListItem {
@@ -260,6 +294,14 @@ export interface OrderDeliveryItem {
   created_at: string;
   total_quantity?: number;
   unit?: string;
+  subtotal?: number | null;
+  tax_amount?: number | null;
+  total_amount?: number | null;
+  advance_adjusted?: number | null;
+  is_ledger_posted?: boolean | null;
+  ledger_posted_at?: string | null;
+  is_ledger_reversed?: boolean | null;
+  ledger_reversed_at?: string | null;
   linked_returns?: Array<{
     id: string;
     return_number: string;
@@ -304,4 +346,28 @@ export interface OrderProductionItem {
   actual_end_date: string | null;
   notes?: string | null;
   created_at: string;
+}
+
+export interface OrderTargetAdjustmentAudit {
+  id: string;
+  business_id: string;
+  order_id: string;
+  order_number: string;
+  adjustment_event_type: "INVOICE_CREATE" | "INVOICE_UPDATE";
+  adjustment_strategy: "SINGLE_PRODUCT" | "PROPORTIONAL";
+  original_invoice_total: number | string;
+  target_invoice_total: number | string;
+  final_invoice_total: number | string;
+  taxable_amount: number | string;
+  cgst_amount: number | string;
+  sgst_amount: number | string;
+  igst_amount: number | string;
+  rounding_residual: number | string;
+  is_exact_match: boolean;
+  confirmation_status: boolean;
+  adjusted_items_count: number;
+  items_snapshot: any;
+  created_by?: string | null;
+  created_at: string;
+  users?: { name?: string | null } | null;
 }
