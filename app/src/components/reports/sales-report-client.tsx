@@ -5,7 +5,12 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ReportFilters as ReportFiltersComponent } from "@/components/reports/report-filters";
 import { DistrictSalesSummary } from "@/components/reports/district-sales-summary";
 import { ReportTable } from "@/components/reports/report-table";
-import { getSalesReportBundle, exportSalesReport, type SalesReportVariant } from "@/lib/reports/actions";
+import {
+  getSalesReportBundle,
+  exportSalesReport,
+  exportDetailedSalesTransactions,
+  type SalesReportVariant,
+} from "@/lib/reports/actions";
 import { triggerDownload } from "@/lib/reports/export-client";
 import { X, FileSpreadsheet, FileText, CheckCircle2, Loader2, Download } from "lucide-react";
 import {
@@ -40,6 +45,11 @@ export function SalesReportClient() {
   const [selectedFormat, setSelectedFormat] = useState<"csv" | "excel" | "pdf">("pdf");
   const [selectedReportVariant, setSelectedReportVariant] = useState<SalesReportVariant | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+
+  // Detailed Sales Transactions direct download state & table sort state
+  const [detailedExportingFormat, setDetailedExportingFormat] = useState<"pdf" | "excel" | "csv" | null>(null);
+  const [detailedExportError, setDetailedExportError] = useState<string | null>(null);
+  const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
 
   // Initialize filters from URL with reference preservation to avoid duplicate fetches
   const initializeFromSearchParams = useCallback(() => {
@@ -162,6 +172,24 @@ export function SalesReportClient() {
     await handleDirectDownload(selectedReportVariant, selectedFormat);
   };
 
+  const handleDownloadDetailed = async (format: "pdf" | "excel" | "csv") => {
+    setDetailedExportingFormat(format);
+    setDetailedExportError(null);
+    try {
+      const { content, contentType, filename } = await exportDetailedSalesTransactions(
+        filters,
+        format,
+        sortConfig
+      );
+      triggerDownload(content, contentType, filename);
+    } catch (err: any) {
+      console.error("Detailed transactions export failed:", err);
+      setDetailedExportError(err.message || `Failed to export ${format.toUpperCase()}. Please try again.`);
+    } finally {
+      setDetailedExportingFormat(null);
+    }
+  };
+
   const handlePageChange = (page: number) => {
     setCurrentPage(page);
     const params = new URLSearchParams(searchParams.toString());
@@ -205,16 +233,86 @@ export function SalesReportClient() {
         isLoading={isLoading}
       />
 
-      {/* Detailed Sales Transactions Table */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-bold text-gray-800 uppercase tracking-wider">
-            Detailed Sales Transactions
-          </h3>
-          <span className="text-xs text-gray-500 font-medium">
-            Showing {rows.length} of {totalCount} records
-          </span>
+      {/* Detailed Sales Transactions Table with Direct Download Buttons */}
+      <div className="space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-white p-3 sm:p-4 rounded-xl border border-slate-200/90 shadow-2xs">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-bold text-gray-800 uppercase tracking-wider">
+                Detailed Sales Transactions
+              </h3>
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-teal-50 text-teal-700 border border-teal-200">
+                {rows.length} of {totalCount} records
+              </span>
+            </div>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Filtered transactions with exact line-item columns, quantities, and quality standards.
+            </p>
+          </div>
+
+          {/* Three Download Buttons */}
+          <div className="flex items-center flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => handleDownloadDetailed("pdf")}
+              disabled={detailedExportingFormat !== null || isLoading}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition-colors shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Download Detailed Sales Transactions as PDF"
+            >
+              {detailedExportingFormat === "pdf" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-rose-600" />
+              ) : (
+                <FileText className="h-3.5 w-3.5 text-rose-600" />
+              )}
+              <span>Download PDF</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleDownloadDetailed("excel")}
+              disabled={detailedExportingFormat !== null || isLoading}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition-colors shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Download Detailed Sales Transactions as Excel (.xlsx)"
+            >
+              {detailedExportingFormat === "excel" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-600" />
+              ) : (
+                <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
+              )}
+              <span>Download Excel (.xlsx)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleDownloadDetailed("csv")}
+              disabled={detailedExportingFormat !== null || isLoading}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Download Detailed Sales Transactions as CSV"
+            >
+              {detailedExportingFormat === "csv" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
+              ) : (
+                <Download className="h-3.5 w-3.5 text-blue-600" />
+              )}
+              <span>Download CSV</span>
+            </button>
+          </div>
         </div>
+
+        {detailedExportError && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 flex items-center justify-between">
+            <span>⚠️ {detailedExportError}</span>
+            <button
+              type="button"
+              onClick={() => setDetailedExportError(null)}
+              className="text-red-500 hover:text-red-700 font-bold ml-2 text-sm leading-none"
+              aria-label="Dismiss export error"
+            >
+              ×
+            </button>
+          </div>
+        )}
+
         <ReportTable
           reportType={reportType}
           rows={rows}
@@ -223,6 +321,8 @@ export function SalesReportClient() {
           totalCount={totalCount}
           currentPage={currentPage}
           isLoading={isLoading}
+          sortConfig={sortConfig}
+          onSortChange={setSortConfig}
         />
       </div>
 

@@ -60,18 +60,20 @@ export default async function InventoryPage({
   const pageSize = 20;
 
   // =========================================================================
-  // PARALLEL DATA FETCHING: Ready Stock & Raw Materials loaded concurrently
+  // PARALLEL DATA FETCHING: Ready Stock, Remaining Orders, Ready for Dispatch
+  // and Raw Materials loaded concurrently
   // =========================================================================
   const [
     { data: productsData },
     { data: invData },
-    { data: outputsData },
+    { data: remainingOrdersData },
+    { data: readyForDispatchData },
     rawMaterialsResult,
     rawMaterialsListResult,
   ] = await Promise.all([
     supabase
       .from("products")
-      .select("id, name, sku, unit, min_stock, reorder_level, selling_price, active")
+      .select("id, name, sku, unit, min_stock, reorder_level, selling_price, active, quality_standard")
       .eq("business_id", context.user.business_id)
       .eq("active", true)
       .order("name", { ascending: true }),
@@ -80,10 +82,8 @@ export default async function InventoryPage({
       .select("id, item_id, current_stock, reserved_stock, available_stock")
       .eq("business_id", context.user.business_id)
       .eq("item_type", "finished_good"),
-    supabase
-      .from("production_output")
-      .select("product_id, quantity_produced")
-      .eq("business_id", context.user.business_id),
+    supabase.rpc("get_product_remaining_orders", { p_business_id: context.user.business_id }),
+    supabase.rpc("get_ready_for_dispatch", { p_business_id: context.user.business_id }),
     canViewRawMaterials
       ? supabase
           .from("inventory")
@@ -113,32 +113,50 @@ export default async function InventoryPage({
     });
   });
 
-  const totalProducedMap = new Map<string, number>();
-  (outputsData ?? []).forEach((row: any) => {
-    const pid = row.product_id;
-    const qty = Number(row.quantity_produced) || 0;
-    totalProducedMap.set(pid, (totalProducedMap.get(pid) || 0) + qty);
+  const remainingMap = new Map<
+    string,
+    {
+      totalOrdered: number;
+      totalDispatched: number;
+      remainingQty: number;
+      ordersBreakdown: Array<{
+        order_id: string;
+        order_number: string;
+        ordered_quantity: number;
+        dispatched_quantity: number;
+        remaining_quantity: number;
+      }>;
+    }
+  >();
+  (remainingOrdersData ?? []).forEach((row: any) => {
+    remainingMap.set(row.product_id, {
+      totalOrdered: Number(row.total_ordered) || 0,
+      totalDispatched: Number(row.total_dispatched) || 0,
+      remainingQty: Number(row.remaining_quantity) || 0,
+      ordersBreakdown: Array.isArray(row.orders_breakdown) ? row.orders_breakdown : [],
+    });
   });
 
   const readyStockItems: ReadyStockProductItem[] = (productsData ?? []).map((prod: any) => {
     const inv = inventoryMap.get(prod.id);
     const isRecorded = inv !== undefined;
     const current = isRecorded ? inv.current : null;
-    const reserved = isRecorded ? inv.reserved : 0;
-    const available = isRecorded ? Math.max(0, (current ?? 0) - reserved) : 0;
-    const totalProduced = totalProducedMap.get(prod.id) || 0;
+    const available = isRecorded ? inv.available : 0;
+    const rem = remainingMap.get(prod.id);
 
     return {
       id: prod.id,
       name: prod.name,
       sku: prod.sku,
       unit: prod.unit,
+      quality_standard: prod.quality_standard || null,
       min_stock: Number(prod.min_stock) || 0,
       reorder_level: Number(prod.reorder_level) || 0,
       current_stock: current,
-      reserved_stock: reserved,
+      reserved_stock: 0,
       available_stock: available,
-      total_produced: totalProduced,
+      remaining_order_qty: rem ? rem.remainingQty : 0,
+      orders_breakdown: rem ? rem.ordersBreakdown : [],
       is_recorded: isRecorded,
     };
   });
@@ -341,6 +359,7 @@ export default async function InventoryPage({
         readyStockContent={
           <ReadyStockView
             items={readyStockItems}
+            readyForDispatchItems={readyForDispatchData ?? []}
             canAdd={canAdd}
             canAdjust={canAdjust}
             canViewHistory={canViewHistory}

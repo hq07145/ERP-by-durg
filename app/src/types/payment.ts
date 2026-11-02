@@ -83,6 +83,13 @@ export interface CustomerSummary {
   opening_balance_amount?: number;
   opening_balance_type?: string | null;
   opening_balance_date?: string | null;
+  initial_opening_balance_amount?: number;
+  initial_opening_balance_type?: string | null;
+  initial_opening_balance_date?: string | null;
+  effective_opening_balance_amount?: number;
+  effective_opening_balance_type?: string | null;
+  effective_opening_balance_date?: string | null;
+  is_opening_balance_corrected?: boolean;
   reconciliation_warning?: string | null;
   last_payment_date: string | null;
   last_payment_amount: string | number | null;

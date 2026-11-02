@@ -5,6 +5,7 @@ import {
   getAllCustomerOpeningBalancesAction,
   getActiveCustomersForOpeningBalanceAction,
   getOpeningBalanceAuditHistoryAction,
+  getCustomerOpeningBalanceHistoryAction,
 } from "@/lib/customers/opening-balance-actions";
 import { CustomerOpeningBalancesClient } from "@/components/customers/opening-balances/opening-balances-client";
 
@@ -24,10 +25,11 @@ export default async function CustomerOpeningBalancesPage() {
     redirect("/customers?error=forbidden");
   }
 
-  const [initialBalances, customers, initialAuditLogs] = await Promise.all([
+  const [initialBalances, customers, initialAuditLogs, initialCorrectionHistory] = await Promise.all([
     getAllCustomerOpeningBalancesAction(),
     getActiveCustomersForOpeningBalanceAction(),
     getOpeningBalanceAuditHistoryAction(),
+    getCustomerOpeningBalanceHistoryAction(),
   ]);
 
   return (
@@ -37,6 +39,7 @@ export default async function CustomerOpeningBalancesPage() {
       initialBalances={initialBalances}
       customers={customers}
       initialAuditLogs={initialAuditLogs}
+      initialCorrectionHistory={initialCorrectionHistory}
     />
   );
 }

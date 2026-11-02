@@ -380,7 +380,7 @@ export async function getCustomerLedger(
       }),
       supabase
         .from("customer_opening_balances")
-        .select("id, amount, balance_type, as_on_date, created_at, created_by")
+        .select("id, amount, balance_type, as_on_date, initial_amount, initial_balance_type, initial_as_on_date, is_corrected, created_at, created_by")
         .eq("business_id", context.user.business_id)
         .eq("customer_id", customerId)
         .order("as_on_date", { ascending: false })
@@ -407,10 +407,13 @@ export async function getCustomerLedger(
       return rawEntries;
     }
 
-    // Customer has a configured opening balance
-    const isRec = cob.balance_type === "RECEIVABLE";
-    const obAmount = Number(cob.amount) || 0;
-    const signedOb = isRec ? obAmount : -obAmount;
+    // Customer has a configured opening balance (use initial if corrected, as adjustments track corrections)
+    const initialAmt = (cob as any).initial_amount != null ? Number((cob as any).initial_amount) : Number(cob.amount) || 0;
+    const initialType = ((cob as any).initial_balance_type || cob.balance_type) as "RECEIVABLE" | "PAYABLE";
+    const initialDateRaw = (cob as any).initial_as_on_date || cob.as_on_date;
+    const initialDate = typeof initialDateRaw === 'string' ? initialDateRaw.split('T')[0] : (initialDateRaw instanceof Date ? initialDateRaw.toISOString().split('T')[0] : String(initialDateRaw));
+    const isRec = initialType === "RECEIVABLE";
+    const signedOb = isRec ? initialAmt : -initialAmt;
 
     const obEntry: CustomerLedgerEntryWithDetails = {
       id: `cob-${cob.id}`,
@@ -422,12 +425,14 @@ export async function getCustomerLedger(
       payment_id: null,
       payment_number: null,
       entry_type: "OPENING_BALANCE",
-      description: `Opening Balance (${cob.balance_type}) as of ${cob.as_on_date}`,
-      debit: isRec ? obAmount : 0,
-      credit: !isRec ? obAmount : 0,
+      description: (cob as any).is_corrected
+        ? `Original Opening Balance (${initialType}) as of ${initialDate}`
+        : `Opening Balance (${cob.balance_type}) as of ${cob.as_on_date}`,
+      debit: isRec ? initialAmt : 0,
+      credit: !isRec ? initialAmt : 0,
       balance: signedOb,
-      entry_date: cob.as_on_date,
-      created_at: cob.created_at || `${cob.as_on_date}T00:00:00Z`,
+      entry_date: initialDate,
+      created_at: cob.created_at || `${initialDate}T00:00:00Z`,
       created_by: cob.created_by || "",
     };
 
@@ -443,7 +448,7 @@ export async function getCustomerLedger(
 
     let running = signedOb;
     const updatedEntries = chronological.map((entry) => {
-      if (entry.entry_date > cob.as_on_date) {
+      if (entry.entry_date >= initialDate) {
         running = running + Number(entry.debit || 0) - Number(entry.credit || 0);
         return {
           ...entry,
@@ -509,7 +514,7 @@ export async function getCustomerPeriodBalanceStatement(
       startDate: row.period_start_date,
       endDate: row.period_end_date,
       dayBeforeStart: row.day_before_start,
-      openingBalance: Number(row.opening_balance) || 0,
+      openingBalance: Math.abs(Number(row.opening_balance) || 0),
       openingBalanceType: row.opening_balance_type as "RECEIVABLE" | "PAYABLE",
       periodSales: Number(row.period_sales) || 0,
       periodPayments: Number(row.period_payments) || 0,
@@ -545,6 +550,12 @@ export async function getCustomerSummary(customerId: string): Promise<CustomerSu
 
     if (!error && data && data.length > 0) {
       const s = data[0];
+      const origAmt = s.initial_opening_balance_amount != null
+        ? Math.abs(Number(s.initial_opening_balance_amount))
+        : (s.opening_balance_amount != null ? Math.abs(Number(s.opening_balance_amount)) : 0);
+      const origType = s.initial_opening_balance_type || s.opening_balance_type || null;
+      const origDate = s.initial_opening_balance_date || s.opening_balance_date || null;
+
       return {
         customer_id: s.customer_id,
         customer_name: s.customer_name,
@@ -555,9 +566,16 @@ export async function getCustomerSummary(customerId: string): Promise<CustomerSu
         available_advance: Math.max(0, Number(s.available_advance) || 0),
         total_advance_received: Number(s.total_advance_received) || 0,
         total_advance_allocated: Number(s.total_advance_allocated) || 0,
-        opening_balance_amount: s.opening_balance_amount != null ? Number(s.opening_balance_amount) : 0,
-        opening_balance_type: s.opening_balance_type || null,
-        opening_balance_date: s.opening_balance_date || null,
+        opening_balance_amount: origAmt,
+        opening_balance_type: origType,
+        opening_balance_date: origDate,
+        initial_opening_balance_amount: origAmt,
+        initial_opening_balance_type: origType,
+        initial_opening_balance_date: origDate,
+        effective_opening_balance_amount: s.effective_opening_balance_amount != null ? Math.abs(Number(s.effective_opening_balance_amount)) : origAmt,
+        effective_opening_balance_type: s.effective_opening_balance_type || origType,
+        effective_opening_balance_date: s.effective_opening_balance_date || origDate,
+        is_opening_balance_corrected: s.is_opening_balance_corrected ?? false,
         reconciliation_warning: s.reconciliation_warning || null,
         last_payment_date: s.last_payment_date,
         last_payment_amount: s.last_payment_amount ? Number(s.last_payment_amount) : null,

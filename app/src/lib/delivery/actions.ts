@@ -928,189 +928,30 @@ export async function dispatchDelivery(
     });
   }
 
-  // 3. Validate delivered / dispatched quantities against warehouse finished goods stock
-  const { data: deliveryItems, error: itemsErr } = await supabase
-    .from("delivery_items")
-    .select("id, product_id, ordered_quantity, delivered_quantity, products(name, sku)")
-    .eq("delivery_id", values.delivery_id)
-    .eq("business_id", businessId);
+  // 3. Dispatch atomically via dispatch_delivery RPC
+  // The database RPC enforces:
+  // - Row locks on delivery, delivery_items, inventory, and order_items
+  // - Validation against Available Manual Ready Stock (rejects if insufficient)
+  // - Validation against Remaining Order Quantity (rejects if over-dispatch)
+  // - Single transactional stock deduction and inventory_transactions record
+  // - Automatic posting to customer ledger
+  const { error: rpcErr } = await supabase.rpc("dispatch_delivery", {
+    p_business_id: businessId,
+    p_delivery_id: values.delivery_id,
+    p_vehicle: normalizedVehicle,
+    p_driver: normalizedDriver,
+    p_tracking_number: normalizedTracking,
+    p_notes: values.notes || null,
+  });
 
-  if (itemsErr || !deliveryItems || deliveryItems.length === 0) {
-    throw new Error("Delivery has no items to dispatch.");
+  if (rpcErr) {
+    throw new Error(rpcErr.message || "Failed to dispatch delivery.");
   }
 
-  // Pre-dispatch reservation analysis per line item
-  const reservationAdjustments: Array<{
-    productId: string;
-    inventoryId: string;
-    originalAvailable: number;
-    originalReserved: number;
-    originalCurrent: number;
-    dispatchQty: number;
-    reservedPortion: number;
-  }> = [];
-
-  for (const item of deliveryItems) {
-    const remainingQty = Number(item.ordered_quantity) - Number(item.delivered_quantity);
-    if (remainingQty <= 0) continue;
-
-    const prod = Array.isArray(item.products) ? item.products[0] : item.products;
-    const prodName = prod?.name || item.product_id;
-    const sku = prod?.sku || "N/A";
-
-    // Check finished goods stock in inventory
-    const { data: invRow } = await supabase
-      .from("inventory")
-      .select("id, available_stock, current_stock, reserved_stock")
-      .eq("business_id", businessId)
-      .eq("item_type", "finished_good")
-      .eq("item_id", item.product_id)
-      .maybeSingle();
-
-    if (!invRow) {
-      throw new Error(`No finished goods inventory recorded for "${prodName}" (${sku}).`);
-    }
-
-    const currentStock = Number(invRow.current_stock) || 0;
-    const reservedStock = Number(invRow.reserved_stock) || 0;
-    const availableStock = Number(invRow.available_stock) || 0;
-
-    // Physical warehouse stock must be sufficient for dispatch
-    if (currentStock < remainingQty) {
-      throw new Error(
-        `Insufficient finished goods warehouse stock for "${prodName}" (${sku}). Physical stock: ${currentStock}, Required: ${remainingQty}.`
-      );
-    }
-
-    // Calculate active reservation for this specific order
-    const { data: orderTxs } = await supabase
-      .from("inventory_transactions")
-      .select("quantity, reference_type")
-      .eq("business_id", businessId)
-      .eq("reference_id", delivery.order_id)
-      .eq("item_id", item.product_id)
-      .eq("item_type", "finished_good");
-
-    let activeOrderReservation = 0;
-    (orderTxs ?? []).forEach((tx) => {
-      if (tx.reference_type === "ORDER_RESERVATION") {
-        activeOrderReservation += Number(tx.quantity) || 0;
-      } else if (
-        tx.reference_type === "ORDER_DISPATCH_RELEASE" ||
-        tx.reference_type === "ORDER_CANCELLATION_RELEASE"
-      ) {
-        activeOrderReservation -= Number(tx.quantity) || 0;
-      }
-    });
-    activeOrderReservation = Math.max(0, activeOrderReservation);
-
-    const reservedPortion = Math.min(remainingQty, activeOrderReservation);
-    const unreservedPortion = remainingQty - reservedPortion;
-
-    // Any unreserved portion must not exceed general available stock
-    if (unreservedPortion > availableStock) {
-      throw new Error(
-        `Insufficient available finished goods stock for unreserved quantity of "${prodName}" (${sku}). Available: ${availableStock}, Unreserved needed: ${unreservedPortion}.`
-      );
-    }
-
-    reservationAdjustments.push({
-      productId: item.product_id,
-      inventoryId: invRow.id,
-      originalAvailable: availableStock,
-      originalReserved: reservedStock,
-      originalCurrent: currentStock,
-      dispatchQty: remainingQty,
-      reservedPortion,
-    });
-  }
-
-  // 4. Temporarily adjust available_stock for reserved portion so the DB RPC check passes
   const adminClient = createAdminSupabaseClient();
   const clientToUse = adminClient || supabase;
 
-  for (const adj of reservationAdjustments) {
-    if (adj.reservedPortion > 0) {
-      await clientToUse
-        .from("inventory")
-        .update({
-          available_stock: adj.originalAvailable + adj.reservedPortion,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", adj.inventoryId)
-        .eq("business_id", businessId);
-    }
-  }
-
-  // 5. Dispatch via RPC (deducts inventory exactly once at dispatch point, creates transaction, updates dispatched_at)
-  let rpcError: Error | null = null;
-  try {
-    const { error } = await supabase.rpc("dispatch_delivery", {
-      p_business_id: businessId,
-      p_delivery_id: values.delivery_id,
-      p_vehicle: normalizedVehicle,
-      p_driver: normalizedDriver,
-      p_tracking_number: normalizedTracking,
-      p_notes: values.notes || null,
-    });
-
-    if (error) {
-      rpcError = new Error(error.message || "Failed to dispatch delivery");
-    }
-  } catch (err: any) {
-    rpcError = err instanceof Error ? err : new Error(String(err));
-  }
-
-  // If RPC failed, rollback temporary availability adjustments
-  if (rpcError) {
-    for (const adj of reservationAdjustments) {
-      if (adj.reservedPortion > 0) {
-        await clientToUse
-          .from("inventory")
-          .update({
-            available_stock: adj.originalAvailable,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", adj.inventoryId)
-          .eq("business_id", businessId);
-      }
-    }
-    throw rpcError;
-  }
-
-  // 6. Post-dispatch: Release reservations and ensure driver_phone & dispatched_at are persisted
-  for (const adj of reservationAdjustments) {
-    if (adj.reservedPortion > 0) {
-      const newReserved = Math.max(0, adj.originalReserved - adj.reservedPortion);
-      const newCurrent = Math.max(0, adj.originalCurrent - adj.dispatchQty);
-      const newAvailable = Math.max(0, newCurrent - newReserved);
-
-      await clientToUse
-        .from("inventory")
-        .update({
-          reserved_stock: newReserved,
-          available_stock: newAvailable,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", adj.inventoryId)
-        .eq("business_id", businessId);
-
-      // Record ORDER_DISPATCH_RELEASE transaction
-      await clientToUse.from("inventory_transactions").insert({
-        business_id: businessId,
-        item_type: "finished_good",
-        item_id: adj.productId,
-        transaction_type: "ADJUSTMENT",
-        quantity: adj.reservedPortion,
-        reference_type: "ORDER_DISPATCH_RELEASE",
-        reference_id: delivery.order_id,
-        notes: `Released reservation of ${adj.reservedPortion} units upon delivery ${delivery.delivery_number} dispatch`,
-        created_by: context.user.id,
-      });
-    }
-  }
-
-  // 7. Persist driver_phone, dispatched_at, and details on deliveries table
+  // 4. Ensure driver_phone and timestamps are persisted on deliveries table
   await clientToUse
     .from("deliveries")
     .update({
