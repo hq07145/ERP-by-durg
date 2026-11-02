@@ -52,18 +52,25 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
     closingAdvance: number;
   } | null>(null);
 
+  const formatLocalDate = (d: Date): string => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
+
   // Helper to get date strings for presets
   const applyPreset = (preset: DatePreset) => {
     setActivePreset(preset);
     const today = new Date();
-    const todayStr = today.toISOString().split("T")[0];
+    const todayStr = formatLocalDate(today);
 
     let start = "";
     let end = todayStr;
 
     if (preset === "this_month") {
       const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
-      start = firstDay.toISOString().split("T")[0];
+      start = formatLocalDate(firstDay);
     } else if (preset === "this_fiscal_year") {
       // Indian Financial Year: April 1 to March 31
       const currentYear = today.getFullYear();
@@ -74,7 +81,7 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
     } else if (preset === "last_30_days") {
       const past30 = new Date(today);
       past30.setDate(today.getDate() - 30);
-      start = past30.toISOString().split("T")[0];
+      start = formatLocalDate(past30);
     } else if (preset === "all") {
       start = "";
       end = "";
@@ -117,7 +124,7 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
     if (!startDate) return;
     setActivePreset("custom");
 
-    const eDate = endDate || new Date().toISOString().split("T")[0];
+    const eDate = endDate || formatLocalDate(new Date());
     startTransition(async () => {
       try {
         const res = await getCustomerPeriodBalanceStatement(customer.customer_id, startDate, eDate);
@@ -162,11 +169,50 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
     }
   };
 
+  function formatAsOnDate(val: string | Date | null | undefined): string {
+    if (!val) return "Original Setup";
+    try {
+      const s = typeof val === "string" ? val.split("T")[0] : val.toISOString().split("T")[0];
+      const [y, m, d] = s.split("-").map(Number);
+      if (!y || !m || !d) return format(new Date(val), "MMM d, yyyy");
+      return format(new Date(y, m - 1, d), "MMM d, yyyy");
+    } catch {
+      return String(val);
+    }
+  }
+
   // Find base opening balance record if present in raw entries
   const baseCobEntry = useMemo(
     () => ledgerEntries.find((e) => e.entry_type === "OPENING_BALANCE"),
     [ledgerEntries]
   );
+
+  // Permanent Original Opening Balance (Immutable baseline)
+  const permanentOpeningAmount = useMemo(() => {
+    if (customer.initial_opening_balance_amount != null) {
+      return Math.abs(Number(customer.initial_opening_balance_amount));
+    }
+    if (customer.opening_balance_amount != null) {
+      return Math.abs(Number(customer.opening_balance_amount));
+    }
+    if (baseCobEntry) {
+      return Math.abs(Number(baseCobEntry.balance || 0));
+    }
+    return 0;
+  }, [customer, baseCobEntry]);
+
+  const permanentOpeningType = useMemo((): "RECEIVABLE" | "PAYABLE" | "NONE" => {
+    const rawType = customer.initial_opening_balance_type || customer.opening_balance_type;
+    if (rawType === "RECEIVABLE" || rawType === "PAYABLE") return rawType;
+    if (baseCobEntry) {
+      return Number(baseCobEntry.balance || 0) >= 0 ? "RECEIVABLE" : "PAYABLE";
+    }
+    return permanentOpeningAmount > 0 ? "RECEIVABLE" : "NONE";
+  }, [customer, baseCobEntry, permanentOpeningAmount]);
+
+  const permanentOpeningDate = useMemo(() => {
+    return customer.initial_opening_balance_date || customer.opening_balance_date || baseCobEntry?.entry_date || null;
+  }, [customer, baseCobEntry]);
 
   // Compute filtered ledger entries & dynamic running balance
   const displayData = useMemo(() => {
@@ -266,7 +312,7 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
 
     return {
       entries: displayEntries,
-      openingBalance: opBal,
+      openingBalance: Math.abs(opBal),
       openingBalanceType: opType,
       openingDate,
       periodSales: finalSales,
@@ -422,26 +468,26 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
             <span>Opening Balance</span>
             <span
               className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                displayData.openingBalanceType === "RECEIVABLE"
+                permanentOpeningType === "RECEIVABLE"
                   ? "bg-amber-200 text-amber-900"
-                  : displayData.openingBalanceType === "PAYABLE"
+                  : permanentOpeningType === "PAYABLE"
                   ? "bg-teal-200 text-teal-900"
                   : "bg-gray-200 text-gray-700"
               }`}
             >
-              {displayData.openingBalanceType === "RECEIVABLE"
+              {permanentOpeningType === "RECEIVABLE"
                 ? "DUE"
-                : displayData.openingBalanceType === "PAYABLE"
+                : permanentOpeningType === "PAYABLE"
                 ? "ADVANCE"
                 : "NIL"}
             </span>
           </div>
           <p className="text-xl font-bold text-amber-950 font-mono">
-            ₹{displayData.openingBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            ₹{permanentOpeningAmount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </p>
           <p className="text-[11px] text-amber-700/80 mt-1 flex items-center gap-1">
             <Clock className="w-3 h-3" />
-            {displayData.openingDate ? `As of ${displayData.openingDate}` : "Initial Setup"}
+            {permanentOpeningDate ? `As of ${formatAsOnDate(permanentOpeningDate)}` : "Original Setup"}
           </p>
         </div>
 

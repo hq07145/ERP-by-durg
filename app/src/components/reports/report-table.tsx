@@ -13,6 +13,8 @@ interface ReportTableProps {
   totalCount?: number;
   currentPage?: number;
   isLoading?: boolean;
+  sortConfig?: { key: string; direction: "asc" | "desc" } | null;
+  onSortChange?: (sortConfig: { key: string; direction: "asc" | "desc" } | null) => void;
 }
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250];
@@ -25,8 +27,11 @@ export function ReportTable({
   totalCount,
   currentPage = 1,
   isLoading,
+  sortConfig: propSortConfig,
+  onSortChange,
 }: ReportTableProps) {
-  const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
+  const [internalSortConfig, setInternalSortConfig] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
+  const sortConfig = propSortConfig !== undefined ? propSortConfig : internalSortConfig;
   const [localPage, setLocalPage] = useState(currentPage);
   const [localPageSize, setLocalPageSize] = useState(pageSize);
 
@@ -69,10 +74,16 @@ export function ReportTable({
   }, [reportType, rows]);
 
   const handleSort = (key: string) => {
-    setSortConfig((prev) => ({
+    const nextSort = {
       key,
-      direction: prev?.key === key && prev.direction === "asc" ? "desc" : "asc",
-    }));
+      direction: sortConfig?.key === key && sortConfig.direction === "asc" ? ("desc" as const) : ("asc" as const),
+    };
+    if (propSortConfig !== undefined) {
+      onSortChange?.(nextSort);
+    } else {
+      setInternalSortConfig(nextSort);
+      onSortChange?.(nextSort);
+    }
   };
 
   const handlePageChange = (page: number) => {

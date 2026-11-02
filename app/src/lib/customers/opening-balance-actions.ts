@@ -14,6 +14,8 @@ import {
 import type {
   CustomerOpeningBalance,
   SetCustomerOpeningBalanceInput,
+  CorrectCustomerOpeningBalanceInput,
+  CustomerOpeningBalanceHistoryItem,
   CustomerPeriodBalanceStatement,
   CustomerOpeningBalanceAuditItem,
   CustomerOption,
@@ -48,6 +50,7 @@ export async function getAllCustomerOpeningBalancesAction(): Promise<CustomerOpe
     .from("customer_opening_balances")
     .select(`
       id, business_id, customer_id, amount, balance_type, as_on_date, notes,
+      initial_amount, initial_balance_type, initial_as_on_date, is_corrected, correction_count,
       created_by, created_at, updated_at,
       customer:customers(id, name, company_name, phone, email),
       creator:users!created_by(id, name, email)
@@ -69,6 +72,11 @@ export async function getAllCustomerOpeningBalancesAction(): Promise<CustomerOpe
     balance_type: row.balance_type,
     as_on_date: row.as_on_date,
     notes: row.notes,
+    initial_amount: row.initial_amount != null ? Number(row.initial_amount) : Number(row.amount) || 0,
+    initial_balance_type: row.initial_balance_type || row.balance_type,
+    initial_as_on_date: row.initial_as_on_date || row.as_on_date,
+    is_corrected: Boolean(row.is_corrected),
+    correction_count: Number(row.correction_count) || 0,
     created_by: row.created_by,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -274,6 +282,139 @@ export async function deleteCustomerOpeningBalanceAction(
   }
 
   return res;
+}
+
+/**
+ * Server Action: Correct an existing customer opening balance.
+ * Requires Admin or Super Admin role.
+ * - Posts an auditable adjustment entry for the signed difference.
+ * - Updates the effective opening balance.
+ * - Records a row in customer_opening_balance_history.
+ * - Recalculates subsequent running balances safely.
+ */
+export async function correctCustomerOpeningBalanceAction(
+  input: CorrectCustomerOpeningBalanceInput
+): Promise<OpeningBalanceActionResult<any>> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+
+  const isAdminOrSuper =
+    context.roleKey === "admin" ||
+    context.roleKey === "super_admin" ||
+    context.role?.name?.toLowerCase().includes("admin") ||
+    context.role?.name?.toLowerCase().includes("super") ||
+    hasPermission({ permissions: context.permissions }, "customers.edit");
+
+  if (!isAdminOrSuper) {
+    return {
+      success: false,
+      error: "Forbidden: Only Admin or Super Admin users are authorized to edit customer opening balances.",
+    };
+  }
+
+  if (!input.customerId) {
+    return { success: false, error: "Customer ID is required." };
+  }
+
+  if (typeof input.newAmount !== "number" || Number.isNaN(input.newAmount) || input.newAmount < 0) {
+    return { success: false, error: "Opening balance amount must be a non-negative number." };
+  }
+
+  if (input.newBalanceType !== "RECEIVABLE" && input.newBalanceType !== "PAYABLE") {
+    return { success: false, error: "Balance type must be either 'RECEIVABLE' or 'PAYABLE'." };
+  }
+
+  if (!input.newAsOnDate) {
+    return { success: false, error: "As-on date is required." };
+  }
+
+  const cleanReason = (input.reason || "").trim();
+  if (!cleanReason || cleanReason.length < 3) {
+    return { success: false, error: "Correction reason is mandatory (minimum 3 characters)." };
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) {
+    return { success: false, error: "Database service unavailable." };
+  }
+
+  const { data, error } = await supabase.rpc("correct_customer_opening_balance", {
+    p_business_id: context.user.business_id,
+    p_customer_id: input.customerId,
+    p_new_amount: Math.round(input.newAmount * 100) / 100,
+    p_new_balance_type: input.newBalanceType,
+    p_new_as_on_date: input.newAsOnDate,
+    p_reason: cleanReason,
+  });
+
+  if (error) {
+    console.error("correct_customer_opening_balance RPC error:", error);
+    return { success: false, error: error.message };
+  }
+
+  revalidatePath("/customer-opening-balances");
+  revalidatePath("/customers");
+  revalidatePath(`/customers/${input.customerId}`);
+  revalidatePath("/payments");
+  revalidatePath("/reports/customer-ledger");
+  revalidatePath("/reports/customer-outstanding");
+
+  return { success: true, data };
+}
+
+/**
+ * Server Action: Get opening balance correction history.
+ */
+export async function getCustomerOpeningBalanceHistoryAction(
+  customerId?: string
+): Promise<CustomerOpeningBalanceHistoryItem[]> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+
+  const canView =
+    hasPermission({ permissions: context.permissions }, "customers.view") ||
+    hasPermission({ permissions: context.permissions }, "payments.view") ||
+    context.roleKey === "admin" ||
+    context.roleKey === "super_admin";
+
+  if (!canView) return [];
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return [];
+
+  const { data, error } = await supabase.rpc("get_customer_opening_balance_history", {
+    p_business_id: context.user.business_id,
+    p_customer_id: customerId || null,
+  });
+
+  if (error || !data) {
+    console.error("get_customer_opening_balance_history RPC error:", error);
+    return [];
+  }
+
+  return (data || []).map((row: any) => ({
+    history_id: row.history_id,
+    business_id: row.business_id,
+    customer_id: row.customer_id,
+    customer_name: row.customer_name || "Customer",
+    customer_company: row.customer_company || null,
+    opening_balance_id: row.opening_balance_id,
+    old_amount: Number(row.old_amount) || 0,
+    old_balance_type: row.old_balance_type,
+    old_as_on_date: row.old_as_on_date,
+    new_amount: Number(row.new_amount) || 0,
+    new_balance_type: row.new_balance_type,
+    new_as_on_date: row.new_as_on_date,
+    difference_amount: Number(row.difference_amount) || 0,
+    adjustment_type: row.adjustment_type,
+    adjustment_amount: Number(row.adjustment_amount) || 0,
+    ledger_entry_id: row.ledger_entry_id || null,
+    reason: row.reason,
+    corrected_by: row.corrected_by,
+    corrected_by_name: row.corrected_by_name || "Admin",
+    corrected_by_email: row.corrected_by_email || null,
+    created_at: row.created_at,
+  }));
 }
 
 /**

@@ -44,6 +44,18 @@ const notices: Record<string, string> = {
   payment_recorded: "Payment transaction recorded and ledger updated successfully.",
 };
 
+function formatAsOnDate(val: string | Date | null | undefined): string {
+  if (!val) return "Original Setup";
+  try {
+    const s = typeof val === "string" ? val.split("T")[0] : val.toISOString().split("T")[0];
+    const [y, m, d] = s.split("-").map(Number);
+    if (!y || !m || !d) return format(new Date(val), "MMM d, yyyy");
+    return format(new Date(y, m - 1, d), "MMM d, yyyy");
+  } catch {
+    return String(val);
+  }
+}
+
 export default async function CustomerProfilePage({
   params,
   searchParams,
@@ -227,7 +239,40 @@ export default async function CustomerProfilePage({
       {/* ============================================================== */}
       {/* 2. EXECUTIVE FINANCIAL SUMMARY CARDS                           */}
       {/* ============================================================== */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        {/* Opening Balance (Permanent Original Saved Baseline) */}
+        <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-5 shadow-2xs">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider text-amber-800">
+              Opening Balance
+            </span>
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                (summary?.initial_opening_balance_type || summary?.opening_balance_type) === "RECEIVABLE"
+                  ? "bg-amber-200 text-amber-900"
+                  : (summary?.initial_opening_balance_type || summary?.opening_balance_type) === "PAYABLE"
+                  ? "bg-teal-200 text-teal-900"
+                  : "bg-slate-200 text-slate-700"
+              }`}
+            >
+              {(summary?.initial_opening_balance_type || summary?.opening_balance_type) === "RECEIVABLE"
+                ? "DUE"
+                : (summary?.initial_opening_balance_type || summary?.opening_balance_type) === "PAYABLE"
+                ? "ADVANCE"
+                : "NIL"}
+            </span>
+          </div>
+          <p className="mt-2 text-xl font-bold tracking-tight text-amber-950 font-mono">
+            ₹{Math.abs(Number(summary?.initial_opening_balance_amount ?? summary?.opening_balance_amount ?? 0)).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </p>
+          <p className="text-[11px] text-amber-700/80 mt-1 flex items-center gap-1">
+            <Clock className="w-3.5 h-3.5" />
+            {summary?.initial_opening_balance_date || summary?.opening_balance_date
+              ? `As of ${formatAsOnDate(summary.initial_opening_balance_date || summary.opening_balance_date)}`
+              : "Original Setup"}
+          </p>
+        </div>
+
         {/* Total Invoiced (Purchases) */}
         <div className="rounded-xl border border-[#E2E8F0] bg-white p-5 shadow-2xs">
           <div className="flex items-center justify-between">

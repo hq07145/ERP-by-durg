@@ -7,7 +7,13 @@
 export function triggerDownload(content: string, contentType: string, filename: string): void {
   let blob: Blob;
 
-  if (contentType === "application/pdf") {
+  const isBinaryBase64 =
+    contentType === "application/pdf" ||
+    contentType.includes("spreadsheetml") ||
+    filename.endsWith(".xlsx") ||
+    filename.endsWith(".pdf");
+
+  if (isBinaryBase64) {
     // Decode base64 to binary
     const binaryString = atob(content);
     const bytes = new Uint8Array(binaryString.length);
@@ -16,7 +22,7 @@ export function triggerDownload(content: string, contentType: string, filename: 
     }
     blob = new Blob([bytes], { type: contentType });
   } else {
-    // For CSV and Excel, content is already a UTF-8 string
+    // For CSV and HTML text, content is already a UTF-8 string
     blob = new Blob([content], { type: contentType });
   }
 

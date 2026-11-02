@@ -64,6 +64,10 @@ import {
   generateDetailedSalesCSV,
   generateDetailedSalesExcel,
   generateDetailedSalesPDF,
+  generateDetailedSalesTableCSV,
+  generateDetailedSalesTableXLSX,
+  generateDetailedSalesTablePDF,
+  type DetailedSalesTableData,
   type SaleDetailsProductWiseData,
   type LedgerEntryRow,
   type LedgerReportData,
@@ -2456,11 +2460,179 @@ export type SalesReportVariant =
   | "state_wise_gst"
   | "detailed_transactions";
 
+/**
+ * Exports Detailed Sales Transactions table in the exact 8-column structure:
+ * 1. ORDER #
+ * 2. DATE
+ * 3. CUSTOMER
+ * 4. DISTRICT
+ * 5. PRODUCT
+ * 6. QUALITY STANDARD
+ * 7. QTY
+ * 8. IS:498
+ *
+ * Preserves all active filters and screen table sorting order.
+ */
+export async function exportDetailedSalesTransactions(
+  filters: SalesReportFilters,
+  format: ExportFormat,
+  sortConfig?: { key: string; direction: "asc" | "desc" } | null
+): Promise<{ content: string; contentType: string; filename: string }> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+
+  const isAdminOrSuper = context.roleKey === "admin" || context.roleKey === "super_admin";
+  if (!isAdminOrSuper) {
+    throw new Error("Forbidden: Exporting sales report is restricted to Admin and Super Admin");
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) throw new Error("Supabase client not available");
+
+  let companyName = context.businessName || "SANKALP IRRIGATION";
+  if (context.user?.business_id) {
+    const { data: bData } = await supabase
+      .from("businesses")
+      .select("name, legal_name")
+      .eq("id", context.user.business_id)
+      .maybeSingle();
+    if (bData) {
+      companyName = bData.legal_name || bData.name || companyName;
+    }
+  }
+
+  // Fetch all matching records via single backend source of truth
+  const bundle = await getSalesReportBundle(filters, 50000, 0);
+  const rows = [...bundle.rows];
+
+  // Maintain active screen sort if provided
+  if (sortConfig && sortConfig.key) {
+    const { key, direction } = sortConfig;
+    rows.sort((a, b) => {
+      const aVal = (a as any)[key];
+      const bVal = (b as any)[key];
+      if (aVal === null || aVal === undefined) return 1;
+      if (bVal === null || bVal === undefined) return -1;
+      if (typeof aVal === "string" && typeof bVal === "string") {
+        return direction === "asc" ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+      }
+      if (typeof aVal === "number" && typeof bVal === "number") {
+        return direction === "asc" ? aVal - bVal : bVal - aVal;
+      }
+      return 0;
+    });
+  }
+
+  await auditExport(context, "sales", filters, format, rows.length);
+
+  // Exact 8 columns as displayed
+  const headers = [
+    "ORDER #",
+    "DATE",
+    "CUSTOMER",
+    "DISTRICT",
+    "PRODUCT",
+    "QUALITY STANDARD",
+    "QTY",
+    "IS:498",
+  ];
+
+  let totalQty = 0;
+  let totalIS498 = 0;
+
+  const dataRows = rows.map((r) => {
+    const q = Number(r.quantity) || 0;
+    const is498 = Number(r.qty_is_4985) || 0;
+    totalQty += q;
+    totalIS498 += is498;
+
+    const customerDisplay =
+      r.customer_company && r.customer_company !== r.customer_name
+        ? `${r.customer_company} (${r.customer_name})`
+        : r.customer_name;
+
+    return [
+      r.order_number,
+      formatLedgerDate(r.order_date),
+      customerDisplay,
+      r.customer_district || "—",
+      r.product_name,
+      r.quality_standard || "—",
+      q,
+      is498,
+    ];
+  });
+
+  const totalsRow = [
+    "TOTAL",
+    "",
+    "",
+    "",
+    "",
+    "",
+    totalQty,
+    totalIS498,
+  ];
+
+  const { startDate, endDate } = resolveDateRange(filters);
+  const periodStr =
+    startDate && endDate
+      ? `${formatLedgerDate(startDate)} to ${formatLedgerDate(endDate)}`
+      : startDate
+      ? `From ${formatLedgerDate(startDate)}`
+      : endDate
+      ? `Up to ${formatLedgerDate(endDate)}`
+      : "All Time";
+
+  const filterParts: string[] = [`Period: ${periodStr}`];
+  if (filters.district) filterParts.push(`District: ${filters.district}`);
+  if (filters.status) filterParts.push(`Status: ${filters.status}`);
+  const activeFiltersStr = filterParts.join("  |  ");
+
+  const dateStr = new Date().toISOString().split("T")[0];
+  const filename = `detailed_sales_transactions_${dateStr}.${format === "excel" ? "xlsx" : format}`;
+
+  const exportData: DetailedSalesTableData = {
+    companyName,
+    reportTitle: "DETAILED SALES TRANSACTIONS",
+    periodStr,
+    activeFiltersStr,
+    totalRecords: rows.length,
+    headers,
+    rows: dataRows,
+    totals: totalsRow,
+  };
+
+  switch (format) {
+    case "csv":
+      return {
+        content: generateDetailedSalesTableCSV(exportData),
+        contentType: "text/csv; charset=utf-8",
+        filename,
+      };
+    case "excel":
+      return {
+        content: generateDetailedSalesTableXLSX(exportData),
+        contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename,
+      };
+    case "pdf":
+      return {
+        content: generateDetailedSalesTablePDF(exportData),
+        contentType: "application/pdf",
+        filename,
+      };
+  }
+}
+
 export async function exportSalesReport(
   variant: SalesReportVariant,
   filters: SalesReportFilters,
   format: ExportFormat
 ): Promise<{ content: string; contentType: string; filename: string }> {
+  if (variant === "detailed_transactions") {
+    return exportDetailedSalesTransactions(filters, format);
+  }
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
 

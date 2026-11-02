@@ -1,5 +1,6 @@
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
 
 export interface LedgerEntryRow {
   date: string; // DD-MMM-YY
@@ -1719,6 +1720,198 @@ export function generateDetailedSalesPDF(data: LedgerReportData | DetailedSalesT
       doc.text(`Page ${pageInfo.pageNumber}`, pageWidth - margin, pageHeight - 20, { align: "right" });
     },
   });
+
+  const buffer = Buffer.from(doc.output("arraybuffer"));
+  return buffer.toString("base64");
+}
+
+// ============================================
+// 7. DETAILED SALES TRANSACTIONS (8-COLUMN TABLE EXPORT)
+// Exact columns: ORDER #, DATE, CUSTOMER, DISTRICT, PRODUCT, QUALITY STANDARD, QTY, IS:498
+// ============================================
+
+export interface DetailedSalesTableData {
+  companyName: string;
+  reportTitle: string;
+  periodStr: string;
+  activeFiltersStr?: string;
+  totalRecords: number;
+  headers: string[]; // ["ORDER #", "DATE", "CUSTOMER", "DISTRICT", "PRODUCT", "QUALITY STANDARD", "QTY", "IS:498"]
+  rows: (string | number)[][];
+  totals: (string | number)[];
+}
+
+/**
+ * Generates UTF-8 CSV with BOM for Detailed Sales Transactions (exact 8-column table structure).
+ */
+export function generateDetailedSalesTableCSV(data: DetailedSalesTableData): string {
+  const BOM = "\uFEFF";
+  const headerLine = data.headers.map(sanitizeCsv).join(",");
+  const dataLines = data.rows.map((row) => row.map(sanitizeCsv).join(",")).join("\n");
+  let result = BOM + headerLine + "\n" + dataLines;
+  if (data.totals && data.totals.length > 0) {
+    const totalsLine = data.totals.map(sanitizeCsv).join(",");
+    result += "\n" + totalsLine;
+  }
+  return result;
+}
+
+/**
+ * Generates genuine .xlsx binary workbook base64 for Detailed Sales Transactions (exact 8-column table).
+ * Preserves bold headers, autofilter, frozen header row, and numeric quantities.
+ */
+export function generateDetailedSalesTableXLSX(data: DetailedSalesTableData): string {
+  const wb = XLSX.utils.book_new();
+  const aoa = [data.headers, ...data.rows, data.totals];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+  // Column widths matching content
+  ws["!cols"] = [
+    { wch: 16 }, // ORDER #
+    { wch: 14 }, // DATE
+    { wch: 32 }, // CUSTOMER
+    { wch: 18 }, // DISTRICT
+    { wch: 34 }, // PRODUCT
+    { wch: 24 }, // QUALITY STANDARD
+    { wch: 14 }, // QTY
+    { wch: 14 }, // IS:498
+  ];
+
+  // Auto-filter enabled on data rows
+  ws["!autofilter"] = { ref: `A1:H${data.rows.length + 1}` };
+
+  // Freeze header row
+  ws["!views"] = [{ state: "frozen", ySplit: 1 }];
+
+  XLSX.utils.book_append_sheet(wb, ws, "Detailed Sales");
+  return XLSX.write(wb, { type: "base64", bookType: "xlsx" });
+}
+
+/**
+ * Generates professional Landscape A4 PDF base64 for Detailed Sales Transactions (exact 8-column table).
+ * Header repeated on every page, page numbers (Page X of Y), and company branding.
+ */
+export function generateDetailedSalesTablePDF(data: DetailedSalesTableData): string {
+  const doc = new jsPDF({
+    orientation: "landscape",
+    unit: "pt",
+    format: "a4",
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 20;
+
+  const pdfDataRows = data.rows.map((r) => [
+    r[0],
+    r[1],
+    r[2],
+    r[3],
+    r[4],
+    r[5],
+    formatIndianCurrency(r[6], true),
+    formatIndianCurrency(r[7], true),
+  ]);
+
+  const pdfTotalsRow = [
+    "TOTAL",
+    "",
+    "",
+    "",
+    "",
+    "",
+    formatIndianCurrency(data.totals[6], true),
+    formatIndianCurrency(data.totals[7], true),
+  ];
+
+  autoTable(doc, {
+    startY: 72,
+    margin: { left: margin, right: margin, top: 72, bottom: 35 },
+    head: [data.headers],
+    body: pdfDataRows,
+    foot: [pdfTotalsRow],
+    theme: "grid",
+    showHead: "everyPage",
+    styles: {
+      font: "helvetica",
+      fontSize: 7.5,
+      textColor: [30, 41, 59],
+      cellPadding: 4,
+      overflow: "linebreak",
+      lineWidth: 0.5,
+      lineColor: [226, 232, 240],
+    },
+    headStyles: {
+      fontStyle: "bold",
+      fillColor: [15, 118, 110], // #0F766E
+      textColor: [255, 255, 255],
+      lineWidth: 0.5,
+      lineColor: [13, 101, 94],
+      halign: "left",
+    },
+    tableWidth: pageWidth - margin * 2,
+    columnStyles: {
+      0: { halign: "center", cellWidth: 60 },
+      1: { halign: "center", cellWidth: 55 },
+      2: { halign: "left" },
+      3: { halign: "left", cellWidth: 75 },
+      4: { halign: "left" },
+      5: { halign: "left", cellWidth: 90 },
+      6: { halign: "right", cellWidth: 58 },
+      7: { halign: "right", cellWidth: 55 },
+    },
+    footStyles: {
+      fontStyle: "bold",
+      fillColor: [241, 245, 249],
+      textColor: [15, 23, 42],
+      lineWidth: 0.5,
+      lineColor: [203, 213, 225],
+    },
+    didDrawPage: function (pageInfo) {
+      // Header
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(13);
+      doc.setTextColor(15, 23, 42);
+      doc.text(data.companyName || "SANKALP IRRIGATION", pageWidth / 2, 26, { align: "center" });
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10.5);
+      doc.setTextColor(15, 118, 110);
+      doc.text(data.reportTitle || "DETAILED SALES TRANSACTIONS", pageWidth / 2, 42, { align: "center" });
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      const subheader = [
+        `Generated: ${new Date().toLocaleDateString("en-IN")}`,
+        data.activeFiltersStr || `Period: ${data.periodStr}`,
+        `Total Records: ${data.totalRecords}`,
+      ]
+        .filter(Boolean)
+        .join("   |   ");
+      doc.text(subheader, pageWidth / 2, 56, { align: "center" });
+    },
+  });
+
+  // Page numbering in footer on every page
+  const pageCount = (doc.internal as any).getNumberOfPages ? (doc.internal as any).getNumberOfPages() : doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    doc.setTextColor(148, 163, 184);
+    doc.text(
+      `Generated on ${new Date().toLocaleString("en-IN")}   |   Confidential - For Internal Use Only`,
+      margin,
+      pageHeight - 16
+    );
+    doc.text(
+      `Page ${i} of ${pageCount}`,
+      pageWidth - margin,
+      pageHeight - 16,
+      { align: "right" }
+    );
+  }
 
   const buffer = Buffer.from(doc.output("arraybuffer"));
   return buffer.toString("base64");
