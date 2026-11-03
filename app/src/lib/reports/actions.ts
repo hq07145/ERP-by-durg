@@ -22,6 +22,7 @@ import type {
   OrdersReportRow,
   PaymentsReportRow,
   CustomerDueReportRow,
+  InvoicePendingDueRow,
   ExpensesReportRow,
   ProfitReportRow,
   ProductionReportRow,
@@ -55,6 +56,11 @@ import {
   generateOperationalPDF,
   generateOperationalExcel,
   generateOperationalCSV,
+  generateCustomerOutstandingReportPDF,
+  generateCustomerOutstandingReportExcel,
+  generateCustomerOutstandingReportCSV,
+  type CustomerOutstandingReportData,
+  formatINR,
   generateStateWiseGstCSV,
   generateStateWiseGstExcel,
   generateStateWiseGstPDF,
@@ -1327,8 +1333,10 @@ export async function getCustomerDueReport(
     customer_company: r.customer_company,
     customer_phone: r.customer_phone,
     customer_email: r.customer_email,
-    opening_balance: Number(r.opening_balance) || 0,
+    opening_balance: Math.abs(Number(r.opening_balance)) || 0,
     opening_balance_type: r.opening_balance_type,
+    opening_receivable: Number(r.opening_receivable) || 0,
+    opening_credit: Number(r.opening_credit) || 0,
     period_sales: Number(r.period_sales) || 0,
     period_payments: Number(r.period_payments) || 0,
     closing_receivable: Number(r.closing_receivable) || 0,
@@ -1342,6 +1350,95 @@ export async function getCustomerDueReport(
     payment_terms: r.payment_terms,
     total_count: r.total_count ? Number(r.total_count) : undefined,
   }));
+}
+
+
+export async function getPendingInvoicesReport(
+  filters: CustomerDueReportFilters
+): Promise<InvoicePendingDueRow[]> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+  if (!hasPermission({ permissions: context.permissions }, "customers.view")) {
+    throw new Error("Forbidden: customers.view");
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) throw new Error("Supabase client not available");
+
+  const { startDate, endDate } = resolveDateRange(filters);
+
+  let query = supabase
+    .from("orders")
+    .select(`
+      id,
+      order_number,
+      order_date,
+      customer_id,
+      total_amount,
+      paid_amount,
+      due_amount,
+      status,
+      customer:customers(id, name, company_name)
+    `)
+    .eq("business_id", context.user.business_id)
+    .eq("status", "CONFIRMED")
+    .gt("due_amount", 0);
+
+  if (filters.customerId) query = query.eq("customer_id", filters.customerId);
+  if (startDate) query = query.gte("order_date", startDate);
+  if (endDate) query = query.lte("order_date", endDate);
+
+  const { data: orders, error: ordErr } = await query.order("order_date", { ascending: false });
+  if (ordErr) {
+    console.error("getPendingInvoicesReport error:", ordErr);
+    throw ordErr;
+  }
+
+  if (!orders || orders.length === 0) return [];
+
+  const orderIds = orders.map((o) => o.id);
+  const { data: ledgerEntries, error: ledgErr } = await supabase
+    .from("customer_ledger")
+    .select("order_id, entry_type, debit, credit")
+    .eq("business_id", context.user.business_id)
+    .in("order_id", orderIds)
+    .in("entry_type", ["CREDIT_NOTE", "ADJUSTMENT"]);
+
+  if (ledgErr) {
+    console.error("Error fetching credit notes for pending orders:", ledgErr);
+  }
+
+  const adjMap: Record<string, number> = {};
+  for (const le of ledgerEntries || []) {
+    if (le.order_id) {
+      adjMap[le.order_id] = (adjMap[le.order_id] || 0) + Number(le.credit || 0);
+    }
+  }
+
+  const invoiceRows: InvoicePendingDueRow[] = [];
+  for (const o of orders) {
+    const billAmount = Number(o.total_amount || 0);
+    const paidAmount = Number(o.paid_amount || 0);
+    const creditNotes = Number(adjMap[o.id] || 0);
+    const pendingDue = Math.max(0, Math.round((billAmount - paidAmount - creditNotes) * 100) / 100);
+
+    if (pendingDue > 0) {
+      invoiceRows.push({
+        order_id: o.id,
+        invoice_number: o.order_number,
+        invoice_date: o.order_date,
+        customer_id: o.customer_id,
+        customer_name: (o as any).customer?.name || "—",
+        customer_company: (o as any).customer?.company_name || "—",
+        bill_amount: billAmount,
+        paid_amount: paidAmount,
+        credit_notes: creditNotes,
+        pending_due: pendingDue,
+      });
+    }
+  }
+
+  return invoiceRows;
 }
 
 // ============================================
@@ -1984,9 +2081,7 @@ function getReportConfig(type: ReportType, rows: ReportRow[]): ReportExportData 
   const totalsMap = calculateReportTotals(type, rows);
 
   const formatCurrencyVal = (v: number | undefined) =>
-    v !== undefined
-      ? `₹${v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-      : "";
+    v !== undefined ? formatINR(v, true) : "";
 
   switch (type) {
     case "sales": {
@@ -2148,11 +2243,12 @@ function getReportConfig(type: ReportType, rows: ReportRow[]): ReportExportData 
         "Customer",
         "Company",
         "Phone",
-        "Opening Balance",
+        "Opening Receivable",
+        "Opening Credit",
         "Period Sales",
         "Payments Received",
-        "Closing Receivable",
-        "Advance Balance",
+        "Total Due Amount",
+        "Customer Advance",
         "Last Payment Date",
         "Last Payment",
         "Credit Limit",
@@ -2162,7 +2258,8 @@ function getReportConfig(type: ReportType, rows: ReportRow[]): ReportExportData 
         r.customer_name,
         r.customer_company ?? "",
         r.customer_phone ?? "",
-        formatCurrencyVal(Number(r.opening_balance ?? 0)),
+        formatCurrencyVal(Number(r.opening_receivable ?? (r.opening_balance_type === "RECEIVABLE" ? r.opening_balance : 0))),
+        formatCurrencyVal(Number(r.opening_credit ?? (r.opening_balance_type === "PAYABLE" ? r.opening_balance : 0))),
         formatCurrencyVal(Number(r.period_sales ?? r.total_purchases ?? 0)),
         formatCurrencyVal(Number(r.period_payments ?? r.total_paid ?? 0)),
         formatCurrencyVal(Number(r.closing_receivable ?? r.total_due ?? 0)),
@@ -2176,7 +2273,8 @@ function getReportConfig(type: ReportType, rows: ReportRow[]): ReportExportData 
         "TOTALS",
         "",
         "",
-        formatCurrencyVal(totalsMap["opening_balance"] ?? 0),
+        formatCurrencyVal(totalsMap["opening_receivable"] ?? 0),
+        formatCurrencyVal(totalsMap["opening_credit"] ?? 0),
         formatCurrencyVal(totalsMap["period_sales"] ?? totalsMap["total_purchases"] ?? 0),
         formatCurrencyVal(totalsMap["period_payments"] ?? totalsMap["total_paid"] ?? 0),
         formatCurrencyVal(totalsMap["closing_receivable"] ?? totalsMap["total_due"] ?? 0),
@@ -3722,32 +3820,35 @@ export async function exportReport(
       const reportData = await fetchReportData(reportType, filters);
       await auditExport(context, reportType, filters, format, reportData.rows.length);
 
-      const opData: OperationalReportData = {
+      const outstandingData: CustomerOutstandingReportData = {
         companyName,
         reportTitle: reportData.title,
         periodStr,
+        activeFiltersStr: (filters as CustomerDueReportFilters).minDueAmount
+          ? `Min Due: ${(filters as CustomerDueReportFilters).minDueAmount}`
+          : undefined,
+        totalRecords: reportData.rows.length,
         headers: reportData.headers,
         rows: reportData.rows,
         totals: reportData.totals,
-        numericColumnIndices: [3, 4, 5, 6, 7, 9, 10],
       };
 
       switch (format) {
         case "csv":
           return {
-            content: generateOperationalCSV(opData),
+            content: generateCustomerOutstandingReportCSV(outstandingData),
             contentType: "text/csv; charset=utf-8",
             filename,
           };
         case "excel":
           return {
-            content: generateOperationalExcel(opData),
+            content: generateCustomerOutstandingReportExcel(outstandingData),
             contentType: "application/vnd.ms-excel; charset=utf-8",
             filename,
           };
         case "pdf":
           return {
-            content: generateOperationalPDF(opData),
+            content: generateCustomerOutstandingReportPDF(outstandingData),
             contentType: "application/pdf",
             filename,
           };

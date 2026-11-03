@@ -183,11 +183,12 @@ export function ReportTable({
         return [
           { key: "customer_name", header: "Customer" },
           { key: "customer_company", header: "Company" },
-          { key: "opening_balance", header: "Opening Balance", align: "right" },
+          { key: "opening_receivable", header: "Opening Receivable", align: "right" },
+          { key: "opening_credit", header: "Opening Credit", align: "right" },
           { key: "period_sales", header: "Period Sales", align: "right" },
           { key: "period_payments", header: "Payments", align: "right" },
-          { key: "closing_receivable", header: "Closing Receivable", align: "right" },
-          { key: "closing_advance", header: "Advance Balance", align: "right" },
+          { key: "closing_receivable", header: "Total Due Amount", align: "right" },
+          { key: "closing_advance", header: "Customer Advance", align: "right" },
           { key: "last_payment_date", header: "Last Payment" },
           { key: "credit_limit", header: "Credit Limit", align: "right" },
         ];

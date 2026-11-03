@@ -191,6 +191,8 @@ export interface CustomerDueReportRow {
   customer_email: string | null;
   opening_balance: string | number;
   opening_balance_type?: string | null;
+  opening_receivable?: string | number;
+  opening_credit?: string | number;
   period_sales: string | number;
   period_payments: string | number;
   closing_receivable: string | number;
@@ -202,6 +204,19 @@ export interface CustomerDueReportRow {
   last_payment_amount: string | number;
   credit_limit: string | number;
   payment_terms: string | null;
+}
+
+export interface InvoicePendingDueRow {
+  order_id: string;
+  invoice_number: string;
+  invoice_date: string;
+  customer_id: string;
+  customer_name: string;
+  customer_company: string | null;
+  bill_amount: number;
+  paid_amount: number;
+  credit_notes: number;
+  pending_due: number;
 }
 
 export interface ExpensesReportRow {

@@ -51,6 +51,8 @@ export function calculateReportTotals(reportType: ReportType, rows: ReportRow[])
       totals["amount"] = sumKey("amount");
       break;
     case "customer_due":
+      totals["opening_receivable"] = sumKey("opening_receivable");
+      totals["opening_credit"] = sumKey("opening_credit");
       totals["opening_balance"] = sumKey("opening_balance");
       totals["period_sales"] = sumKey("period_sales");
       totals["period_payments"] = sumKey("period_payments");
@@ -59,6 +61,8 @@ export function calculateReportTotals(reportType: ReportType, rows: ReportRow[])
       totals["total_purchases"] = sumKey("period_sales");
       totals["total_paid"] = sumKey("period_payments");
       totals["total_due"] = sumKey("closing_receivable");
+      totals["last_payment_amount"] = sumKey("last_payment_amount");
+      totals["credit_limit"] = sumKey("credit_limit");
       break;
     case "expenses":
       totals["amount"] = sumKey("amount");
