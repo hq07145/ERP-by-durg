@@ -157,7 +157,8 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
           customerId: customer.customer_id,
           startDate: startDate || undefined,
           endDate: endDate || undefined,
-        },
+          isLedgerStatement: true,
+        } as any,
         formatType
       );
       triggerDownload(content, contentType, filename);
