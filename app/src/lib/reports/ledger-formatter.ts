@@ -36,6 +36,8 @@ export interface LedgerReportData {
   companyName: string;
   reportTitle: string;
   periodStr: string;
+  customerName?: string;
+  customerCompany?: string;
   openingDebit?: number;
   openingCredit?: number;
   entries: LedgerEntryRow[];
@@ -56,12 +58,25 @@ export interface OperationalReportData {
  */
 export function formatLedgerDate(dateInput: string | Date | null | undefined): string {
   if (!dateInput) return "";
-  const d = new Date(dateInput);
-  if (isNaN(d.getTime())) return String(dateInput);
-  const day = String(d.getDate()).padStart(2, "0");
-  const month = d.toLocaleString("en-US", { month: "short" });
-  const year = String(d.getFullYear()).slice(-2);
-  return `${day}-${month}-${year}`;
+  try {
+    const s = typeof dateInput === "string" ? dateInput.split("T")[0] : dateInput.toISOString().split("T")[0];
+    const parts = s.split("-").map(Number);
+    if (parts.length === 3 && parts[0] && parts[1] && parts[2]) {
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const day = String(parts[2]).padStart(2, "0");
+      const month = months[parts[1] - 1] || "Jan";
+      const year = String(parts[0]).slice(-2);
+      return `${day}-${month}-${year}`;
+    }
+    const d = new Date(dateInput);
+    if (isNaN(d.getTime())) return String(dateInput);
+    const day = String(d.getDate()).padStart(2, "0");
+    const month = d.toLocaleString("en-US", { month: "short" });
+    const year = String(d.getFullYear()).slice(-2);
+    return `${day}-${month}-${year}`;
+  } catch {
+    return String(dateInput);
+  }
 }
 
 /**
@@ -170,15 +185,16 @@ export function generateLedgerPDF(data: LedgerReportData): string {
 
   const openingDebit = Number(data.openingDebit) || 0;
   const openingCredit = Number(data.openingCredit) || 0;
-  const hasOpening = openingDebit > 0 || openingCredit > 0;
-  const openingDue = openingDebit > openingCredit ? openingDebit - openingCredit : 0;
+  const netOpening = openingDebit - openingCredit;
 
-  const TX_PER_PAGE = 26;
+  const TX_PER_PAGE = 25;
   const pagesData: string[][][] = [];
 
   let txIndex = 0;
-  let runningDebit = openingDebit;
-  let runningCredit = openingCredit;
+  let cumDebit = openingDebit;
+  let cumCredit = openingCredit;
+  let periodDebit = 0;
+  let periodCredit = 0;
   let pageIdx = 0;
 
   const entries = data.entries || [];
@@ -186,27 +202,52 @@ export function generateLedgerPDF(data: LedgerReportData): string {
   while (txIndex < entries.length || (pageIdx === 0 && entries.length === 0)) {
     const pageRows: string[][] = [];
     const isFirstPage = pageIdx === 0;
-    const runningDue = Math.max(0, runningDebit - runningCredit);
 
-    if (isFirstPage && hasOpening) {
-      pageRows.push([
-        "",
-        "Opening Balance",
-        "",
-        "",
-        formatIndianCurrency(openingDebit),
-        formatIndianCurrency(openingCredit),
-        formatIndianCurrency(openingDue, true),
-      ]);
-    } else if (!isFirstPage) {
+    const isAllTime = (data.periodStr || "").toLowerCase().includes("all time");
+    const openLabel = isAllTime ? "Original Opening Balance" : "Opening Balance";
+
+    if (isFirstPage) {
+      if (netOpening > 0) {
+        pageRows.push([
+          "",
+          `${openLabel} [RECEIVABLE]`,
+          "",
+          "",
+          formatIndianCurrencyWithSymbol(netOpening, true),
+          "",
+          formatIndianCurrencyWithSymbol(netOpening, true),
+        ]);
+      } else if (netOpening < 0) {
+        pageRows.push([
+          "",
+          `${openLabel} [PAYABLE / ADVANCE]`,
+          "",
+          "",
+          "",
+          formatIndianCurrencyWithSymbol(Math.abs(netOpening), true),
+          "₹0.00",
+        ]);
+      } else {
+        pageRows.push([
+          "",
+          `${openLabel} [NIL]`,
+          "",
+          "",
+          "₹0.00",
+          "₹0.00",
+          "₹0.00",
+        ]);
+      }
+    } else {
+      const runningDue = Math.max(0, cumDebit - cumCredit);
       pageRows.push([
         "",
         "Brought Forward",
         "",
         "",
-        formatIndianCurrency(runningDebit, true),
-        formatIndianCurrency(runningCredit, true),
-        formatIndianCurrency(runningDue, true),
+        formatIndianCurrencyWithSymbol(cumDebit, true),
+        formatIndianCurrencyWithSymbol(cumCredit, true),
+        formatIndianCurrencyWithSymbol(runningDue, true),
       ]);
     }
 
@@ -217,14 +258,16 @@ export function generateLedgerPDF(data: LedgerReportData): string {
     for (const tx of currentBatch) {
       const d = Number(tx.debit) || 0;
       const c = Number(tx.credit) || 0;
-      runningDebit += d;
-      runningCredit += c;
+      cumDebit += d;
+      cumCredit += c;
+      periodDebit += d;
+      periodCredit += c;
 
       const dueStr =
         tx.amountDue !== undefined && tx.amountDue !== null
-          ? formatIndianCurrency(tx.amountDue, true)
+          ? formatIndianCurrencyWithSymbol(tx.amountDue, true)
           : tx.debit
-          ? formatIndianCurrency(tx.debit, true)
+          ? formatIndianCurrencyWithSymbol(tx.debit, true)
           : "—";
 
       pageRows.push([
@@ -232,13 +275,13 @@ export function generateLedgerPDF(data: LedgerReportData): string {
         tx.particulars || "",
         tx.vchType || "",
         tx.vchNo || "",
-        formatIndianCurrency(tx.debit),
-        formatIndianCurrency(tx.credit),
+        d > 0 ? formatIndianCurrencyWithSymbol(d, true) : "",
+        c > 0 ? formatIndianCurrencyWithSymbol(c, true) : "",
         dueStr,
       ]);
     }
 
-    const currentRunningDue = Math.max(0, runningDebit - runningCredit);
+    const currentRunningDue = Math.max(0, cumDebit - cumCredit);
 
     if (!isLastPage) {
       pageRows.push([
@@ -246,58 +289,82 @@ export function generateLedgerPDF(data: LedgerReportData): string {
         "Carried Forward",
         "",
         "",
-        formatIndianCurrency(runningDebit, true),
-        formatIndianCurrency(runningCredit, true),
-        formatIndianCurrency(currentRunningDue, true),
+        formatIndianCurrencyWithSymbol(cumDebit, true),
+        formatIndianCurrencyWithSymbol(cumCredit, true),
+        formatIndianCurrencyWithSymbol(currentRunningDue, true),
       ]);
     } else {
-      const diff = runningDebit - runningCredit;
+      const netClosing = netOpening + periodDebit - periodCredit;
       let closingDebit = 0;
       let closingCredit = 0;
       let closingDue = 0;
 
-      if (diff > 0) {
-        closingCredit = diff;
-        closingDue = diff;
-      } else if (diff < 0) {
-        closingDebit = Math.abs(diff);
-        closingDue = 0; // Customer advances are not treated as unpaid dues
+      if (netClosing > 0) {
+        closingCredit = netClosing;
+        closingDue = netClosing;
+      } else if (netClosing < 0) {
+        closingDebit = Math.abs(netClosing);
+        closingDue = 0;
       }
 
-      const finalTotalDebit = runningDebit + closingDebit;
-      const finalTotalCredit = runningCredit + closingCredit;
-      const finalTotalDue = Math.max(0, diff);
+      // Total Period Transactions Row
+      pageRows.push([
+        "",
+        "Total Period Transactions",
+        "",
+        "",
+        formatIndianCurrencyWithSymbol(periodDebit, true),
+        formatIndianCurrencyWithSymbol(periodCredit, true),
+        "",
+      ]);
 
-      if (hasOpening || diff !== 0) {
+      // Closing Balance Row with explicit [RECEIVABLE] or [PAYABLE / ADVANCE] label
+      if (netClosing > 0) {
         pageRows.push([
           "",
-          diff < 0 ? "Closing Balance (Advance)" : "Closing Balance",
+          "Closing Balance [RECEIVABLE]",
           "",
           "",
-          formatIndianCurrency(closingDebit),
-          formatIndianCurrency(closingCredit),
-          formatIndianCurrency(closingDue, true),
+          formatIndianCurrencyWithSymbol(netClosing, true),
+          "",
+          formatIndianCurrencyWithSymbol(netClosing, true),
         ]);
+      } else if (netClosing < 0) {
         pageRows.push([
           "",
-          "Total",
+          "Closing Balance [PAYABLE / ADVANCE]",
           "",
           "",
-          formatIndianCurrency(finalTotalDebit, true),
-          formatIndianCurrency(finalTotalCredit, true),
-          formatIndianCurrency(finalTotalDue, true),
+          "",
+          formatIndianCurrencyWithSymbol(Math.abs(netClosing), true),
+          "₹0.00",
         ]);
       } else {
         pageRows.push([
           "",
-          "Total",
+          "Closing Balance [NIL]",
           "",
           "",
-          formatIndianCurrency(runningDebit, true),
-          formatIndianCurrency(runningCredit, true),
-          formatIndianCurrency(0, true),
+          "₹0.00",
+          "₹0.00",
+          "₹0.00",
         ]);
       }
+
+      // Reconciled Grand Total Row
+      const grandDebit = (netOpening > 0 ? netOpening : 0) + periodDebit + closingDebit;
+      const grandCredit = (netOpening < 0 ? Math.abs(netOpening) : 0) + periodCredit + closingCredit;
+      const balancedTotal = Math.max(grandDebit, grandCredit);
+
+      pageRows.push([
+        "",
+        "Total",
+        "",
+        "",
+        formatIndianCurrencyWithSymbol(balancedTotal, true),
+        formatIndianCurrencyWithSymbol(balancedTotal, true),
+        formatIndianCurrencyWithSymbol(closingDue, true),
+      ]);
     }
 
     pagesData.push(pageRows);
@@ -313,7 +380,7 @@ export function generateLedgerPDF(data: LedgerReportData): string {
     autoTable(doc, {
       startY: 85,
       margin: { left: margin, right: margin, top: 85, bottom: 45 },
-      head: [["Date", "Particulars", "Vch Type", "Vch No.", "Debit", "Credit", "Amount Due"]],
+      head: [["Date", "Particulars", "Voucher Type", "Voucher Number / Delivery Number", "Debit", "Credit", "Amount Due"]],
       body: rows,
       theme: "plain",
       styles: {
@@ -335,11 +402,11 @@ export function generateLedgerPDF(data: LedgerReportData): string {
       columnStyles: {
         0: { cellWidth: 55 },
         1: { cellWidth: "auto" },
-        2: { cellWidth: 58 },
-        3: { cellWidth: 68 },
+        2: { cellWidth: 60 },
+        3: { cellWidth: 75 },
         4: { cellWidth: 65, halign: "right" },
         5: { cellWidth: 65, halign: "right" },
-        6: { cellWidth: 70, halign: "right" },
+        6: { cellWidth: 68, halign: "right" },
       },
       didParseCell: function (cellData) {
         const rawRow = cellData.row.raw as any;
@@ -347,9 +414,14 @@ export function generateLedgerPDF(data: LedgerReportData): string {
         if (rowText === "Total") {
           cellData.cell.styles.fontStyle = "bold";
           cellData.cell.styles.lineWidth = { top: 0.75, bottom: 1.5, left: 0, right: 0 };
-        } else if (rowText === "Closing Balance" || rowText === "Opening Balance" || rowText.startsWith("Closing Balance")) {
+        } else if (
+          rowText.startsWith("Closing Balance") ||
+          rowText.startsWith("Opening Balance") ||
+          rowText.startsWith("Original Opening Balance") ||
+          rowText.startsWith("Total Period Transactions")
+        ) {
           cellData.cell.styles.fontStyle = "bold";
-          if (rowText.startsWith("Closing Balance")) {
+          if (rowText.startsWith("Closing Balance") || rowText.startsWith("Total Period Transactions")) {
             cellData.cell.styles.lineWidth = { top: 0.5, bottom: 0, left: 0, right: 0 };
           }
         } else if (rowText === "Carried Forward" || rowText === "Brought Forward") {
@@ -362,20 +434,23 @@ export function generateLedgerPDF(data: LedgerReportData): string {
     // Draw header on every page
     doc.setFont("NotoSans", "bold");
     doc.setFontSize(13);
-    doc.text(data.companyName, pageWidth / 2, 35, { align: "center" });
+    doc.text(data.companyName || "SANKALP IRRIGATION", pageWidth / 2, 32, { align: "center" });
 
     doc.setFont("NotoSans", "bold");
     doc.setFontSize(10);
-    doc.text(data.reportTitle, pageWidth / 2, 50, { align: "center" });
+    const custHeader = data.customerName
+      ? "Customer: " + data.customerName + (data.customerCompany ? " (" + data.customerCompany + ")" : "")
+      : data.reportTitle;
+    doc.text(custHeader, pageWidth / 2, 47, { align: "center" });
 
     doc.setFont("NotoSans", "normal");
     doc.setFontSize(8.5);
-    doc.text(data.periodStr, pageWidth / 2, 63, { align: "center" });
+    doc.text("Account Statement: " + data.periodStr, pageWidth / 2, 60, { align: "center" });
 
     // Footer - Page Number
     doc.setFont("NotoSans", "normal");
     doc.setFontSize(8);
-    const pageText = pagesData.length > 1 ? `Page ${p + 1} of ${pagesData.length}` : `Page 1`;
+    const pageText = pagesData.length > 1 ? "Page " + (p + 1) + " of " + pagesData.length : "Page 1";
     doc.text(pageText, pageWidth - margin, pageHeight - 25, { align: "right" });
   }
 
@@ -390,31 +465,28 @@ export function generateLedgerExcel(data: LedgerReportData): string {
   const BOM = "\uFEFF";
   const openingDebit = Number(data.openingDebit) || 0;
   const openingCredit = Number(data.openingCredit) || 0;
-  const hasOpening = openingDebit > 0 || openingCredit > 0;
-  const openingDue = openingDebit > openingCredit ? openingDebit - openingCredit : 0;
+  const netOpening = openingDebit - openingCredit;
 
-  let runningDebit = openingDebit;
-  let runningCredit = openingCredit;
+  let periodDebit = 0;
+  let periodCredit = 0;
 
   let bodyHtml = "";
+  const isAllTime = (data.periodStr || "").toLowerCase().includes("all time");
+  const openLabel = isAllTime ? "Original Opening Balance" : "Opening Balance";
 
-  if (hasOpening) {
-    bodyHtml += `<tr class="bold-row">
-      <td></td>
-      <td>Opening Balance</td>
-      <td></td>
-      <td></td>
-      <td class="num">${openingDebit > 0 ? openingDebit.toFixed(2) : ""}</td>
-      <td class="num">${openingCredit > 0 ? openingCredit.toFixed(2) : ""}</td>
-      <td class="num">${openingDue > 0 ? openingDue.toFixed(2) : "0.00"}</td>
-    </tr>`;
+  if (netOpening > 0) {
+    bodyHtml += '<tr class="bold-row"><td></td><td>' + openLabel + ' [RECEIVABLE]</td><td></td><td></td><td class="num">' + netOpening.toFixed(2) + '</td><td class="num"></td><td class="num">' + netOpening.toFixed(2) + '</td></tr>';
+  } else if (netOpening < 0) {
+    bodyHtml += '<tr class="bold-row"><td></td><td>' + openLabel + ' [PAYABLE / ADVANCE]</td><td></td><td></td><td class="num"></td><td class="num">' + Math.abs(netOpening).toFixed(2) + '</td><td class="num">0.00</td></tr>';
+  } else {
+    bodyHtml += '<tr class="bold-row"><td></td><td>' + openLabel + ' [NIL]</td><td></td><td></td><td class="num">0.00</td><td class="num">0.00</td><td class="num">0.00</td></tr>';
   }
 
   for (const tx of data.entries) {
     const d = Number(tx.debit) || 0;
     const c = Number(tx.credit) || 0;
-    runningDebit += d;
-    runningCredit += c;
+    periodDebit += d;
+    periodCredit += c;
 
     const dueStr =
       tx.amountDue !== undefined && tx.amountDue !== null
@@ -423,103 +495,82 @@ export function generateLedgerExcel(data: LedgerReportData): string {
         ? d.toFixed(2)
         : "";
 
-    bodyHtml += `<tr>
-      <td>${sanitizeExcel(tx.date)}</td>
-      <td>${sanitizeExcel(tx.particulars)}</td>
-      <td>${sanitizeExcel(tx.vchType)}</td>
-      <td>${sanitizeExcel(tx.vchNo)}</td>
-      <td class="num">${d > 0 ? d.toFixed(2) : ""}</td>
-      <td class="num">${c > 0 ? c.toFixed(2) : ""}</td>
-      <td class="num">${dueStr}</td>
-    </tr>`;
+    bodyHtml += '<tr><td>' + sanitizeExcel(tx.date) + '</td><td>' + sanitizeExcel(tx.particulars) + '</td><td>' + sanitizeExcel(tx.vchType) + '</td><td>' + sanitizeExcel(tx.vchNo) + '</td><td class="num">' + (d > 0 ? d.toFixed(2) : "") + '</td><td class="num">' + (c > 0 ? c.toFixed(2) : "") + '</td><td class="num">' + dueStr + '</td></tr>';
   }
 
-  const diff = runningDebit - runningCredit;
+  const netClosing = netOpening + periodDebit - periodCredit;
   let closingDebit = 0;
   let closingCredit = 0;
   let closingDue = 0;
-  if (diff > 0) {
-    closingCredit = diff;
-    closingDue = diff;
-  } else if (diff < 0) {
-    closingDebit = Math.abs(diff);
+  if (netClosing > 0) {
+    closingCredit = netClosing;
+    closingDue = netClosing;
+  } else if (netClosing < 0) {
+    closingDebit = Math.abs(netClosing);
     closingDue = 0;
   }
 
-  const finalTotalDebit = runningDebit + closingDebit;
-  const finalTotalCredit = runningCredit + closingCredit;
-  const finalTotalDue = Math.max(0, diff);
+  // Total Period Transactions
+  bodyHtml += '<tr class="bold-row"><td></td><td>Total Period Transactions</td><td></td><td></td><td class="num">' + periodDebit.toFixed(2) + '</td><td class="num">' + periodCredit.toFixed(2) + '</td><td class="num"></td></tr>';
 
-  if (hasOpening || diff !== 0) {
-    bodyHtml += `<tr class="bold-row">
-      <td></td>
-      <td>${diff < 0 ? "Closing Balance (Advance)" : "Closing Balance"}</td>
-      <td></td>
-      <td></td>
-      <td class="num">${closingDebit > 0 ? closingDebit.toFixed(2) : ""}</td>
-      <td class="num">${closingCredit > 0 ? closingCredit.toFixed(2) : ""}</td>
-      <td class="num">${closingDue > 0 ? closingDue.toFixed(2) : "0.00"}</td>
-    </tr>`;
-    bodyHtml += `<tr class="total-row">
-      <td></td>
-      <td>Total</td>
-      <td></td>
-      <td></td>
-      <td class="num">${finalTotalDebit.toFixed(2)}</td>
-      <td class="num">${finalTotalCredit.toFixed(2)}</td>
-      <td class="num">${finalTotalDue.toFixed(2)}</td>
-    </tr>`;
+  // Closing Balance
+  if (netClosing > 0) {
+    bodyHtml += '<tr class="bold-row"><td></td><td>Closing Balance [RECEIVABLE]</td><td></td><td></td><td class="num">' + netClosing.toFixed(2) + '</td><td class="num"></td><td class="num">' + netClosing.toFixed(2) + '</td></tr>';
+  } else if (netClosing < 0) {
+    bodyHtml += '<tr class="bold-row"><td></td><td>Closing Balance [PAYABLE / ADVANCE]</td><td></td><td></td><td class="num"></td><td class="num">' + Math.abs(netClosing).toFixed(2) + '</td><td class="num">0.00</td></tr>';
   } else {
-    bodyHtml += `<tr class="total-row">
-      <td></td>
-      <td>Total</td>
-      <td></td>
-      <td></td>
-      <td class="num">${runningDebit.toFixed(2)}</td>
-      <td class="num">${runningCredit.toFixed(2)}</td>
-      <td class="num">${finalTotalDue.toFixed(2)}</td>
-    </tr>`;
+    bodyHtml += '<tr class="bold-row"><td></td><td>Closing Balance [NIL]</td><td></td><td></td><td class="num">0.00</td><td class="num">0.00</td><td class="num">0.00</td></tr>';
   }
 
-  return `${BOM}<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
-<head>
-  <meta charset="UTF-8">
-  <style>
-    body { font-family: Calibri, Arial, sans-serif; font-size: 10pt; color: #000000; }
-    h2 { font-size: 14pt; margin: 0; text-align: center; }
-    h3 { font-size: 11pt; margin: 4px 0; text-align: center; }
-    .period { font-size: 9pt; margin: 2px 0 16px 0; text-align: center; color: #333333; }
-    table { border-collapse: collapse; width: 100%; }
-    th { border-top: 1.5pt solid #000000; border-bottom: 1.5pt solid #000000; font-weight: bold; text-align: left; padding: 6px; }
-    th.num { text-align: right; }
-    td { padding: 4px 6px; border-bottom: 0.5pt solid #f0f0f0; }
-    td.num { text-align: right; mso-number-format: "\\#\\,\\#\\#0\\.00"; }
-    .bold-row { font-weight: bold; }
-    .total-row { font-weight: bold; border-top: 1pt solid #000000; border-bottom: 2pt double #000000; }
-  </style>
-</head>
-<body>
-  <h2>${sanitizeExcel(data.companyName)}</h2>
-  <h3>${sanitizeExcel(data.reportTitle)}</h3>
-  <p class="period">${sanitizeExcel(data.periodStr)}</p>
-  <table>
-    <thead>
-      <tr>
-        <th>Date</th>
-        <th>Particulars</th>
-        <th>Vch Type</th>
-        <th>Vch No.</th>
-        <th class="num">Debit</th>
-        <th class="num">Credit</th>
-        <th class="num">Amount Due</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${bodyHtml}
-    </tbody>
-  </table>
-</body>
-</html>`;
+  const grandDebit = (netOpening > 0 ? netOpening : 0) + periodDebit + closingDebit;
+  const grandCredit = (netOpening < 0 ? Math.abs(netOpening) : 0) + periodCredit + closingCredit;
+  const balancedTotal = Math.max(grandDebit, grandCredit);
+
+  bodyHtml += '<tr class="total-row"><td></td><td>Total</td><td></td><td></td><td class="num">' + balancedTotal.toFixed(2) + '</td><td class="num">' + balancedTotal.toFixed(2) + '</td><td class="num">' + closingDue.toFixed(2) + '</td></tr>';
+
+  const custHeader = data.customerName
+    ? "Customer: " + data.customerName + (data.customerCompany ? " (" + data.customerCompany + ")" : "")
+    : data.reportTitle;
+
+  return BOM + '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">\n' +
+'<head>\n' +
+'  <meta charset="UTF-8">\n' +
+'  <style>\n' +
+'    body { font-family: Calibri, Arial, sans-serif; font-size: 10pt; color: #000000; }\n' +
+'    h2 { font-size: 14pt; margin: 0; text-align: center; }\n' +
+'    h3 { font-size: 11pt; margin: 4px 0; text-align: center; }\n' +
+'    .period { font-size: 9pt; margin: 2px 0 16px 0; text-align: center; color: #333333; }\n' +
+'    table { border-collapse: collapse; width: 100%; }\n' +
+'    th { border-top: 1.5pt solid #000000; border-bottom: 1.5pt solid #000000; font-weight: bold; text-align: left; padding: 6px; }\n' +
+'    th.num { text-align: right; }\n' +
+'    td { padding: 4px 6px; border-bottom: 0.5pt solid #f0f0f0; }\n' +
+'    td.num { text-align: right; mso-number-format: "\\\\#\\\\,\\\\#\\\\#0\\\\.00"; }\n' +
+'    .bold-row { font-weight: bold; }\n' +
+'    .total-row { font-weight: bold; border-top: 1pt solid #000000; border-bottom: 2pt double #000000; }\n' +
+'  </style>\n' +
+'</head>\n' +
+'<body>\n' +
+'  <h2>' + sanitizeExcel(data.companyName || "SANKALP IRRIGATION") + '</h2>\n' +
+'  <h3>' + sanitizeExcel(custHeader) + '</h3>\n' +
+'  <p class="period">' + sanitizeExcel("Account Statement: " + data.periodStr) + '</p>\n' +
+'  <table>\n' +
+'    <thead>\n' +
+'      <tr>\n' +
+'        <th>Date</th>\n' +
+'        <th>Particulars</th>\n' +
+'        <th>Voucher Type</th>\n' +
+'        <th>Voucher Number / Delivery Number</th>\n' +
+'        <th class="num">Debit</th>\n' +
+'        <th class="num">Credit</th>\n' +
+'        <th class="num">Amount Due</th>\n' +
+'      </tr>\n' +
+'    </thead>\n' +
+'    <tbody>\n' +
+'      ' + bodyHtml + '\n' +
+'    </tbody>\n' +
+'  </table>\n' +
+'</body>\n' +
+'</html>';
 }
 
 /**
@@ -527,33 +578,40 @@ export function generateLedgerExcel(data: LedgerReportData): string {
  */
 export function generateLedgerCSV(data: LedgerReportData): string {
   const BOM = "\uFEFF";
-  const lines: string[] = [
-    sanitizeCsv(data.companyName),
-    sanitizeCsv(data.reportTitle),
-    sanitizeCsv(data.periodStr),
+  const custHeader = data.customerName
+    ? "Customer: " + data.customerName + (data.customerCompany ? " (" + data.customerCompany + ")" : "")
+    : data.reportTitle;
+
+  const lines = [
+    sanitizeCsv(data.companyName || "SANKALP IRRIGATION"),
+    sanitizeCsv(custHeader),
+    sanitizeCsv("Account Statement: " + data.periodStr),
     "",
-    "Date,Particulars,Vch Type,Vch No.,Debit,Credit,Amount Due",
+    "Date,Particulars,Voucher Type,Voucher Number / Delivery Number,Debit,Credit,Amount Due",
   ];
 
   const openingDebit = Number(data.openingDebit) || 0;
   const openingCredit = Number(data.openingCredit) || 0;
-  const hasOpening = openingDebit > 0 || openingCredit > 0;
-  const openingDue = openingDebit > openingCredit ? openingDebit - openingCredit : 0;
+  const netOpening = openingDebit - openingCredit;
 
-  let runningDebit = openingDebit;
-  let runningCredit = openingCredit;
+  let periodDebit = 0;
+  let periodCredit = 0;
+  const isAllTime = (data.periodStr || "").toLowerCase().includes("all time");
+  const openLabel = isAllTime ? "Original Opening Balance" : "Opening Balance";
 
-  if (hasOpening) {
-    lines.push(
-      `,"Opening Balance",,,${openingDebit > 0 ? openingDebit.toFixed(2) : ""},${openingCredit > 0 ? openingCredit.toFixed(2) : ""},${openingDue > 0 ? openingDue.toFixed(2) : "0.00"}`
-    );
+  if (netOpening > 0) {
+    lines.push(',"' + openLabel + ' [RECEIVABLE]",,,' + netOpening.toFixed(2) + ',,' + netOpening.toFixed(2));
+  } else if (netOpening < 0) {
+    lines.push(',"' + openLabel + ' [PAYABLE / ADVANCE]",,,,' + Math.abs(netOpening).toFixed(2) + ',0.00');
+  } else {
+    lines.push(',"' + openLabel + ' [NIL]",,,0.00,0.00,0.00');
   }
 
   for (const tx of data.entries) {
     const d = Number(tx.debit) || 0;
     const c = Number(tx.credit) || 0;
-    runningDebit += d;
-    runningCredit += c;
+    periodDebit += d;
+    periodCredit += c;
 
     const dueStr =
       tx.amountDue !== undefined && tx.amountDue !== null
@@ -575,30 +633,35 @@ export function generateLedgerCSV(data: LedgerReportData): string {
     );
   }
 
-  const diff = runningDebit - runningCredit;
+  const netClosing = netOpening + periodDebit - periodCredit;
   let closingDebit = 0;
   let closingCredit = 0;
   let closingDue = 0;
-  if (diff > 0) {
-    closingCredit = diff;
-    closingDue = diff;
-  } else if (diff < 0) {
-    closingDebit = Math.abs(diff);
+  if (netClosing > 0) {
+    closingCredit = netClosing;
+    closingDue = netClosing;
+  } else if (netClosing < 0) {
+    closingDebit = Math.abs(netClosing);
     closingDue = 0;
   }
 
-  const finalTotalDebit = runningDebit + closingDebit;
-  const finalTotalCredit = runningCredit + closingCredit;
-  const finalTotalDue = Math.max(0, diff);
+  // Total Period Transactions
+  lines.push(',"Total Period Transactions",,,' + periodDebit.toFixed(2) + ',' + periodCredit.toFixed(2) + ',');
 
-  if (hasOpening || diff !== 0) {
-    lines.push(
-      `,"${diff < 0 ? "Closing Balance (Advance)" : "Closing Balance"}",,,${closingDebit > 0 ? closingDebit.toFixed(2) : ""},${closingCredit > 0 ? closingCredit.toFixed(2) : ""},${closingDue > 0 ? closingDue.toFixed(2) : "0.00"}`
-    );
-    lines.push(`,"Total",,,${finalTotalDebit.toFixed(2)},${finalTotalCredit.toFixed(2)},${finalTotalDue.toFixed(2)}`);
+  // Closing Balance
+  if (netClosing > 0) {
+    lines.push(',"Closing Balance [RECEIVABLE]",,,' + netClosing.toFixed(2) + ',,' + netClosing.toFixed(2));
+  } else if (netClosing < 0) {
+    lines.push(',"Closing Balance [PAYABLE / ADVANCE]",,,,,' + Math.abs(netClosing).toFixed(2) + ',0.00');
   } else {
-    lines.push(`,"Total",,,${runningDebit.toFixed(2)},${runningCredit.toFixed(2)},${finalTotalDue.toFixed(2)}`);
+    lines.push(',"Closing Balance [NIL]",,,0.00,0.00,0.00');
   }
+
+  const grandDebit = (netOpening > 0 ? netOpening : 0) + periodDebit + closingDebit;
+  const grandCredit = (netOpening < 0 ? Math.abs(netOpening) : 0) + periodCredit + closingCredit;
+  const balancedTotal = Math.max(grandDebit, grandCredit);
+
+  lines.push(',"Total",,,' + balancedTotal.toFixed(2) + ',' + balancedTotal.toFixed(2) + ',' + closingDue.toFixed(2));
 
   return BOM + lines.join("\n");
 }

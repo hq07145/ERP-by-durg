@@ -22,6 +22,7 @@ import { LEDGER_ENTRY_TYPE_COLORS, LEDGER_ENTRY_TYPE_LABELS } from "@/types/paym
 import { getCustomerPeriodBalanceStatement } from "@/lib/payments/actions";
 import { exportReport } from "@/lib/reports/actions";
 import { triggerDownload } from "@/lib/reports/export-client";
+import { CustomerStatementModal, type StatementExportFormat } from "./customer-statement-modal";
 
 interface CustomerLedgerProps {
   customer: CustomerSummary;
@@ -29,7 +30,7 @@ interface CustomerLedgerProps {
   canView: boolean;
 }
 
-type DatePreset = "all" | "this_month" | "this_fiscal_year" | "last_30_days" | "custom";
+type DatePreset = "all" | "this_month" | "last_month" | "this_fiscal_year" | "last_30_days" | "custom";
 
 export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLedgerProps) {
   const [isPending, startTransition] = useTransition();
@@ -37,6 +38,13 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
   const [activePreset, setActivePreset] = useState<DatePreset>("all");
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
+  const [isStatementModalOpen, setIsStatementModalOpen] = useState(false);
+  const [statementModalFormat, setStatementModalFormat] = useState<StatementExportFormat>("pdf");
+
+  const openStatementModal = (fmt: StatementExportFormat) => {
+    setStatementModalFormat(fmt);
+    setIsStatementModalOpen(true);
+  };
 
   // Server-computed period statement when custom date filter is active
   const [periodStatement, setPeriodStatement] = useState<{
@@ -70,7 +78,14 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
 
     if (preset === "this_month") {
       const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+      const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
       start = formatLocalDate(firstDay);
+      end = formatLocalDate(lastDay);
+    } else if (preset === "last_month") {
+      const firstDay = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      const lastDay = new Date(today.getFullYear(), today.getMonth(), 0);
+      start = formatLocalDate(firstDay);
+      end = formatLocalDate(lastDay);
     } else if (preset === "this_fiscal_year") {
       // Indian Financial Year: April 1 to March 31
       const currentYear = today.getFullYear();
@@ -224,8 +239,13 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
     let openingDate: string | null = null;
 
     if (!startDate && !endDate) {
-      // All time view: base opening balance if configured
-      if (baseCobEntry) {
+      // All time view: base opening balance from permanent baseline
+      if (permanentOpeningAmount > 0 && permanentOpeningType !== "NONE") {
+        signedOp = permanentOpeningType === "RECEIVABLE" ? permanentOpeningAmount : -permanentOpeningAmount;
+        opBal = permanentOpeningAmount;
+        opType = permanentOpeningType;
+        openingDate = permanentOpeningDate;
+      } else if (baseCobEntry) {
         signedOp = Number(baseCobEntry.balance || 0);
         opBal = Math.abs(signedOp);
         opType = signedOp >= 0 ? "RECEIVABLE" : "PAYABLE";
@@ -248,7 +268,9 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
             preCredit += Number(e.credit || 0);
           }
         }
-        const baseOb = baseCobEntry ? Number(baseCobEntry.balance || 0) : 0;
+        const baseOb = (permanentOpeningAmount > 0 && permanentOpeningType !== "NONE")
+          ? (permanentOpeningType === "RECEIVABLE" ? permanentOpeningAmount : -permanentOpeningAmount)
+          : (baseCobEntry ? Number(baseCobEntry.balance || 0) : 0);
         signedOp = baseOb + preDebit - preCredit;
         opBal = Math.abs(signedOp);
         opType = signedOp >= 0 ? "RECEIVABLE" : "PAYABLE";
@@ -360,6 +382,17 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
             </button>
             <button
               type="button"
+              onClick={() => applyPreset("last_month")}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                activePreset === "last_month"
+                  ? "bg-slate-900 text-white shadow-sm"
+                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+              }`}
+            >
+              Last Month
+            </button>
+            <button
+              type="button"
               onClick={() => applyPreset("this_fiscal_year")}
               className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
                 activePreset === "this_fiscal_year"
@@ -432,27 +465,27 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
             <span className="text-xs text-gray-500 font-medium">Export:</span>
             <button
               type="button"
-              onClick={() => handleExport("pdf")}
-              disabled={isExporting}
-              className="inline-flex items-center gap-1 px-2.5 py-1 bg-red-50 text-red-700 border border-red-200 rounded-lg text-xs font-medium hover:bg-red-100 disabled:opacity-50"
+              onClick={() => openStatementModal("pdf")}
+              className="inline-flex items-center gap-1 px-2.5 py-1 bg-red-50 text-red-700 border border-red-200 rounded-lg text-xs font-medium hover:bg-red-100 transition-colors"
+              title="Download Statement PDF with period selection"
             >
               <FileText className="w-3 h-3" />
               PDF
             </button>
             <button
               type="button"
-              onClick={() => handleExport("excel")}
-              disabled={isExporting}
-              className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-medium hover:bg-emerald-100 disabled:opacity-50"
+              onClick={() => openStatementModal("excel")}
+              className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-medium hover:bg-emerald-100 transition-colors"
+              title="Download Statement Excel with period selection"
             >
               <FileSpreadsheet className="w-3 h-3" />
               Excel
             </button>
             <button
               type="button"
-              onClick={() => handleExport("csv")}
-              disabled={isExporting}
-              className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg text-xs font-medium hover:bg-blue-100 disabled:opacity-50"
+              onClick={() => openStatementModal("csv")}
+              className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg text-xs font-medium hover:bg-blue-100 transition-colors"
+              title="Download Statement CSV with period selection"
             >
               <Download className="w-3 h-3" />
               CSV
@@ -624,11 +657,11 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 text-sm">
-              {/* If filtered by date and opening balance exists, display opening balance row */}
-              {startDate && (
+              {/* If filtered by date or all-time with initial opening balance, display opening balance row */}
+              {(startDate || (!startDate && !endDate && displayData.openingBalance > 0)) && (
                 <tr className="bg-amber-50/40 font-medium">
                   <td className="px-4 py-3 text-amber-900 whitespace-nowrap text-xs">
-                    {format(new Date(startDate), "MMM d, yyyy")}
+                    {startDate ? formatAsOnDate(startDate) : (displayData.openingDate ? formatAsOnDate(displayData.openingDate) : "Baseline")}
                   </td>
                   <td className="px-4 py-3">
                     <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-amber-200 text-amber-900">
@@ -636,16 +669,17 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
                     </span>
                   </td>
                   <td className="px-4 py-3 text-amber-900 text-xs">
-                    Balance brought forward as of {format(new Date(startDate), "MMM d, yyyy")} ({displayData.openingBalanceType})
+                    Opening Balance [{displayData.openingBalanceType === "RECEIVABLE" ? "RECEIVABLE" : displayData.openingBalanceType === "PAYABLE" ? "PAYABLE / ADVANCE" : "NIL"}]
+                    {startDate ? ` — Balance brought forward as of ${formatAsOnDate(startDate)}` : " — Original baseline opening balance"}
                   </td>
                   <td className="px-4 py-3 text-right font-mono text-amber-900">
                     {displayData.openingBalanceType === "RECEIVABLE" && displayData.openingBalance > 0
-                      ? displayData.openingBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                      ? displayData.openingBalance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
                       : "—"}
                   </td>
                   <td className="px-4 py-3 text-right font-mono text-amber-900">
                     {displayData.openingBalanceType === "PAYABLE" && displayData.openingBalance > 0
-                      ? displayData.openingBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                      ? displayData.openingBalance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
                       : "—"}
                   </td>
                   <td className="px-4 py-3 text-right font-mono font-bold">
@@ -658,7 +692,7 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
                           : "text-gray-700"
                       }
                     >
-                      {displayData.openingBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      ₹{displayData.openingBalance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       <span className="text-[10px] ml-1 font-normal uppercase">
                         {displayData.openingBalanceType === "RECEIVABLE" ? "Dr" : "Cr"}
                       </span>
@@ -814,6 +848,19 @@ export function CustomerLedger({ customer, ledgerEntries, canView }: CustomerLed
           </table>
         </div>
       </div>
+      {/* Customer Statement Period Selection Modal */}
+      <CustomerStatementModal
+        isOpen={isStatementModalOpen}
+        onClose={() => setIsStatementModalOpen(false)}
+        customer={{
+          customer_id: customer.customer_id,
+          customer_name: customer.customer_name,
+          customer_company: customer.customer_company,
+        }}
+        initialFormat={statementModalFormat}
+        currentFilterStartDate={startDate || undefined}
+        currentFilterEndDate={endDate || undefined}
+      />
     </div>
   );
 }
