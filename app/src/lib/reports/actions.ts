@@ -85,6 +85,9 @@ import {
 // ============================================
 
 function resolveDateRange(filters: ReportFilters): { startDate: string | null; endDate: string | null } {
+  if ((filters.dateRange as string) === "all" || (filters as any).isAllTime || ((filters as any).isLedgerStatement && !filters.startDate && !filters.endDate)) {
+    return { startDate: null, endDate: null };
+  }
   const effectiveRange = filters.dateRange || (!filters.startDate && !filters.endDate ? "this_month" : undefined);
   return resolveFinancialDateRange({
     dateRange: effectiveRange,
@@ -3685,26 +3688,77 @@ export async function exportReport(
 
       // Compute opening balance prior to startDate or from customer_opening_balances
       if (startDate) {
-        const { data: periodBal } = await supabase.rpc("get_customer_period_balance", {
-          p_business_id: context.user.business_id,
-          p_customer_id: customerId,
-          p_start_date: startDate,
-          p_end_date: endDate || new Date().toISOString().split("T")[0],
-        });
+        let opFound = false;
+        try {
+          const { data: periodBal } = await supabase.rpc("get_customer_period_balance", {
+            p_business_id: context.user.business_id,
+            p_customer_id: customerId,
+            p_start_date: startDate,
+            p_end_date: endDate || new Date().toISOString().split("T")[0],
+          });
 
-        if (periodBal && periodBal.length > 0) {
-          const bal = periodBal[0];
-          const opBal = Number(bal.opening_balance || 0);
-          if (bal.opening_balance_type === "RECEIVABLE" || opBal > 0) {
-            openingDebit = Math.abs(opBal);
-          } else if (bal.opening_balance_type === "PAYABLE" || opBal < 0) {
-            openingCredit = Math.abs(opBal);
+          if (periodBal && periodBal.length > 0) {
+            const bal = periodBal[0];
+            const opBal = Number(bal.opening_balance || 0);
+            if (bal.opening_balance_type === "RECEIVABLE" || opBal > 0) {
+              openingDebit = Math.abs(opBal);
+              openingCredit = 0;
+            } else if (bal.opening_balance_type === "PAYABLE" || opBal < 0) {
+              openingCredit = Math.abs(opBal);
+              openingDebit = 0;
+            }
+            opFound = true;
+          }
+        } catch (err) {
+          console.warn("get_customer_period_balance RPC failed, falling back to direct ledger sum:", err);
+        }
+
+        if (!opFound) {
+          // Fallback: permanent initial opening balance + all ledger transactions prior to startDate
+          const { data: cob } = await supabase
+            .from("customer_opening_balances")
+            .select("initial_amount, initial_balance_type, initial_as_on_date, amount, balance_type, as_on_date")
+            .eq("business_id", context.user.business_id)
+            .eq("customer_id", customerId)
+            .order("as_on_date", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          let baseSigned = 0;
+          if (cob) {
+            const amt = Math.abs(Number(cob.initial_amount ?? cob.amount ?? 0));
+            const type = cob.initial_balance_type || cob.balance_type || "RECEIVABLE";
+            baseSigned = type === "RECEIVABLE" ? amt : -amt;
+          }
+
+          const { data: priorEntries } = await supabase
+            .from("customer_ledger")
+            .select("debit, credit")
+            .eq("business_id", context.user.business_id)
+            .eq("customer_id", customerId)
+            .lt("entry_date", startDate);
+
+          let priorDebit = 0;
+          let priorCredit = 0;
+          for (const pe of priorEntries || []) {
+            priorDebit += Number(pe.debit || 0);
+            priorCredit += Number(pe.credit || 0);
+          }
+
+          const netPrior = baseSigned + priorDebit - priorCredit;
+          if (netPrior >= 0) {
+            openingDebit = netPrior;
+            openingCredit = 0;
+          } else {
+            openingCredit = Math.abs(netPrior);
+            openingDebit = 0;
           }
         }
       } else {
+        // All Time statement: Use permanent initial opening balance
         const { data: opEntry } = await supabase
           .from("customer_opening_balances")
-          .select("amount, balance_type, as_on_date")
+          .select("initial_amount, initial_balance_type, initial_as_on_date, amount, balance_type, as_on_date")
           .eq("business_id", context.user.business_id)
           .eq("customer_id", customerId)
           .order("as_on_date", { ascending: false })
@@ -3712,33 +3766,43 @@ export async function exportReport(
           .maybeSingle();
 
         if (opEntry) {
-          const amt = Number(opEntry.amount || 0);
-          if (opEntry.balance_type === "RECEIVABLE") {
+          const amt = Math.abs(Number(opEntry.initial_amount ?? opEntry.amount ?? 0));
+          const type = opEntry.initial_balance_type || opEntry.balance_type;
+          if (type === "RECEIVABLE") {
             openingDebit = amt;
-          } else if (opEntry.balance_type === "PAYABLE") {
+            openingCredit = 0;
+          } else if (type === "PAYABLE") {
             openingCredit = amt;
+            openingDebit = 0;
           }
         }
       }
 
       let q = supabase
         .from("customer_ledger")
-        .select("*, orders(id, order_number, total_amount, paid_amount, due_amount, status), payments(id, payment_number, amount, order_id)")
+        .select("*, orders(id, order_number, total_amount, paid_amount, due_amount, status), payments(id, payment_number, amount, order_id), deliveries(id, delivery_number)")
         .eq("business_id", context.user.business_id)
         .eq("customer_id", customerId);
 
       if (startDate) q = q.gte("entry_date", startDate);
       if (endDate) q = q.lte("entry_date", endDate);
 
-      const { data: cEntries } = await q.order("entry_date", { ascending: true }).order("created_at", { ascending: true });
+      const { data: cEntries } = await q
+        .order("entry_date", { ascending: true })
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true });
 
       for (const e of cEntries ?? []) {
         const d = Number(e.debit) || 0;
         const c = Number(e.credit) || 0;
-        const vchNo = (e as any).orders?.order_number || (e as any).payments?.payment_number || e.description || "—";
+        const deliveryNum = (e as any).deliveries?.delivery_number || (e.description?.match(/Delivery\s+([A-Za-z0-9-]+)/i)?.[1]) || null;
+        const orderNum = (e as any).orders?.order_number || (e.description?.match(/Inv\s+([A-Za-z0-9-]+)/i)?.[1]) || null;
+        const paymentNum = (e as any).payments?.payment_number || null;
+
+        const vchNo = deliveryNum || orderNum || paymentNum || (e.description && !e.description.startsWith("To Sales") && !e.description.startsWith("By Payment") ? e.description : "—");
         const vchType =
           e.entry_type === "INVOICE"
-            ? "Sales"
+            ? (deliveryNum ? "Delivery" : "Sales")
             : e.entry_type === "PAYMENT"
             ? "Receipt"
             : e.entry_type === "CREDIT_NOTE"
@@ -3762,16 +3826,26 @@ export async function exportReport(
           amountDue = d;
         }
 
-        const particulars =
-          e.entry_type === "INVOICE"
-            ? (e as any).orders?.order_number
-              ? `Invoice ${(e as any).orders.order_number}`
-              : e.description || "To Sales"
-            : e.entry_type === "PAYMENT"
-            ? (e as any).payments?.order_id
-              ? `Payment received for ${(e as any).orders?.order_number || "order"}`
-              : "Payment received (Advance)"
-            : e.description || "By Payment";
+        let particulars = e.description || "—";
+        if (e.entry_type === "INVOICE") {
+          if (deliveryNum && orderNum) {
+            particulars = `Delivery ${deliveryNum} (Inv ${orderNum})`;
+          } else if (deliveryNum) {
+            particulars = `Delivery ${deliveryNum}`;
+          } else if (orderNum) {
+            particulars = `Invoice ${orderNum}`;
+          } else {
+            particulars = e.description || "To Sales";
+          }
+        } else if (e.entry_type === "PAYMENT") {
+          if (paymentNum && orderNum) {
+            particulars = `Payment ${paymentNum} for ${orderNum}`;
+          } else if (paymentNum) {
+            particulars = `Payment received (${paymentNum})`;
+          } else {
+            particulars = e.description || "By Payment received";
+          }
+        }
 
         ledgerEntries.push({
           date: formatLedgerDate(e.entry_date),
@@ -3786,9 +3860,11 @@ export async function exportReport(
 
       await auditExport(context, reportType, filters, format, ledgerEntries.length);
 
-      const ledgerData = {
+      const ledgerData: LedgerReportData = {
         companyName,
-        reportTitle,
+        customerName: cust?.name,
+        customerCompany: cust?.company_name || undefined,
+        reportTitle: `${cust?.name || "Customer"}${cust?.company_name ? ` (${cust.company_name})` : ""} - Customer Due & Ledger Statement`,
         periodStr,
         openingDebit,
         openingCredit,
