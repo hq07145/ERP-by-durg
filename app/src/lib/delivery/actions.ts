@@ -1257,14 +1257,53 @@ export async function cancelDelivery(
 // MANUAL DELIVERY ENTRY WORKFLOW
 // ============================================
 
+/**
+ * Fetch active customers for the Delivery Challan workflow.
+ * Scoped strictly to the authenticated user's business_id.
+ */
+export async function getDeliveryCustomers(): Promise<CustomerDropdownItem[]> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+  if (
+    !hasPermission({ permissions: context.permissions }, "delivery.create") &&
+    !hasPermission({ permissions: context.permissions }, "delivery.view")
+  ) {
+    throw new Error("Forbidden: delivery.create or delivery.view required.");
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) throw new Error("Supabase client not available");
+
+  const { data, error } = await supabase
+    .from("customers")
+    .select("id, name, company_name, gst_number")
+    .eq("business_id", context.user.business_id)
+    .eq("status", "ACTIVE")
+    .order("name", { ascending: true });
+
+  if (error) {
+    console.error("getDeliveryCustomers: Error fetching active customers:", error);
+    throw new Error(`Failed to load customers: ${error.message}`);
+  }
+
+  return (data ?? []).map((c: any) => ({
+    id: c.id,
+    name: c.name,
+    company_name: c.company_name || null,
+    gst_number: c.gst_number || null,
+  }));
+}
 
 export async function getCustomerOrdersForDelivery(
   customerId: string
 ): Promise<CustomerOrderForDelivery[]> {
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
-  if (!hasPermission({ permissions: context.permissions }, "delivery.create")) {
-    throw new Error("Forbidden: delivery.create");
+  if (
+    !hasPermission({ permissions: context.permissions }, "delivery.create") &&
+    !hasPermission({ permissions: context.permissions }, "delivery.view")
+  ) {
+    throw new Error("Forbidden: delivery.create or delivery.view");
   }
 
   if (!customerId || !customerId.trim()) {
@@ -1276,7 +1315,7 @@ export async function getCustomerOrdersForDelivery(
 
   const businessId = context.user.business_id;
 
-  // 1. Fetch customer's orders that are not CANCELLED and not already DELIVERED
+  // 1. Fetch customer's orders that are not CANCELLED and not already FULLY DELIVERED / DISPATCHED
   const { data: orders, error: ordersErr } = await supabase
     .from("orders")
     .select(`
@@ -1293,6 +1332,7 @@ export async function getCustomerOrdersForDelivery(
         id,
         product_id,
         quantity,
+        dispatched_quantity,
         products(name, sku, unit)
       )
     `)
@@ -1300,13 +1340,36 @@ export async function getCustomerOrdersForDelivery(
     .eq("customer_id", customerId)
     .neq("status", "CANCELLED")
     .neq("delivery_status", "DELIVERED")
+    .neq("delivery_status", "FULLY_DISPATCHED")
     .order("order_date", { ascending: false });
 
-  if (ordersErr || !orders || orders.length === 0) {
+  if (ordersErr) {
+    console.error("getCustomerOrdersForDelivery: Error fetching customer orders:", ordersErr);
+    throw new Error(`Failed to load customer orders: ${ordersErr.message}`);
+  }
+
+  if (!orders || orders.length === 0) {
     return [];
   }
 
-  const orderIds = orders.map((o) => o.id);
+  // Filter orders that have remaining dispatch quantity > 0
+  const eligibleOrders = orders.filter((order) => {
+    const items = order.order_items || [];
+    if (items.length === 0) return false;
+    let orderRemainingQty = 0;
+    for (const it of items) {
+      const ordered = Number(it.quantity) || 0;
+      const dispatched = Number((it as any).dispatched_quantity) || 0;
+      orderRemainingQty += Math.max(0, ordered - dispatched);
+    }
+    return orderRemainingQty > 0;
+  });
+
+  if (eligibleOrders.length === 0) {
+    return [];
+  }
+
+  const orderIds = eligibleOrders.map((o) => o.id);
 
   // 2. Fetch existing active deliveries to flag orders that already have an active delivery parcel
   const { data: activeDeliveries } = await supabase
@@ -1334,7 +1397,7 @@ export async function getCustomerOrdersForDelivery(
   // 4. Fetch finished goods inventory
   const allProductIds = Array.from(
     new Set(
-      orders.flatMap((o) => (o.order_items || []).map((it: any) => it.product_id))
+      eligibleOrders.flatMap((o) => (o.order_items || []).map((it: any) => it.product_id))
     )
   );
 
@@ -1354,17 +1417,22 @@ export async function getCustomerOrdersForDelivery(
     });
   }
 
-  // 5. Evaluate readiness for each order
+  // 5. Evaluate readiness for each eligible order
   const results: CustomerOrderForDelivery[] = [];
 
-  for (const order of orders) {
+  for (const order of eligibleOrders) {
     const activeDel = activeDeliveriesMap.get(order.id);
     const hasActiveDelivery = !!activeDel;
+
+    let orderRemainingTotal = 0;
 
     const items = (order.order_items || []).map((it: any) => {
       const prod = Array.isArray(it.products) ? it.products[0] : it.products;
       const prodId = it.product_id;
-      const requiredQty = Number(it.quantity) || 0;
+      const orderedQty = Number(it.quantity) || 0;
+      const dispatchedQty = Number((it as any).dispatched_quantity) || 0;
+      const remainingQty = Math.max(0, orderedQty - dispatchedQty);
+      orderRemainingTotal += remainingQty;
 
       // Matching production orders
       const matchingPOs = (productionOrders ?? []).filter(
@@ -1386,8 +1454,8 @@ export async function getCustomerOrdersForDelivery(
 
       const inv = inventoryMap.get(prodId) || { current: 0, available: 0, reserved: 0 };
 
-      // Item is ready if production is fully completed for it OR physical finished goods stock covers the required quantity
-      const isReady = (allPOsDone && totalCompletedQty >= requiredQty) || inv.current >= requiredQty;
+      // Item is ready if production is fully completed for it OR physical finished goods stock covers the required remaining quantity
+      const isReady = (allPOsDone && totalCompletedQty >= remainingQty) || inv.current >= remainingQty;
 
       let poStatus = "NOT_STARTED";
       if (matchingPOs.length > 0) {
@@ -1398,7 +1466,7 @@ export async function getCustomerOrdersForDelivery(
         } else {
           poStatus = matchingPOs[0].status;
         }
-      } else if (inv.current >= requiredQty) {
+      } else if (inv.current >= remainingQty) {
         poStatus = "STOCK_AVAILABLE";
       }
 
@@ -1407,7 +1475,9 @@ export async function getCustomerOrdersForDelivery(
         product_id: prodId,
         product_name: prod?.name || "Product",
         product_sku: prod?.sku || null,
-        quantity: requiredQty,
+        quantity: orderedQty,
+        remaining_quantity: remainingQty,
+        dispatched_quantity: dispatchedQty,
         unit: prod?.unit || "units",
         production_status: poStatus,
         completed_quantity: totalCompletedQty,
@@ -1419,7 +1489,7 @@ export async function getCustomerOrdersForDelivery(
 
     const totalQty = items.reduce((sum, it) => sum + it.quantity, 0);
 
-    const incompleteItems = items.filter((it) => !it.is_ready);
+    const incompleteItems = items.filter((it) => (it.remaining_quantity || 0) > 0 && !it.is_ready);
     let isFullyReady = incompleteItems.length === 0 && !hasActiveDelivery && order.status === "CONFIRMED";
 
     let notReadyReason: string | null = null;
@@ -1429,7 +1499,7 @@ export async function getCustomerOrdersForDelivery(
       notReadyReason = `An active delivery (${activeDel?.delivery_number}, status: ${activeDel?.status}) already exists for this order.`;
     } else if (incompleteItems.length > 0) {
       notReadyReason = `Order cannot be marked fully Delivered: ${incompleteItems
-        .map((it) => `${it.product_name} (${it.completed_quantity}/${it.quantity} completed, warehouse stock: ${it.current_stock})`)
+        .map((it) => `${it.product_name} (${it.completed_quantity}/${it.remaining_quantity} completed, warehouse stock: ${it.current_stock})`)
         .join("; ")}.`;
     }
 
@@ -1444,6 +1514,7 @@ export async function getCustomerOrdersForDelivery(
       paid_amount: Number(order.paid_amount) || 0,
       due_amount: Number(order.due_amount) || 0,
       total_quantity: totalQty,
+      remaining_quantity: orderRemainingTotal,
       items,
       is_fully_ready: isFullyReady,
       not_ready_reason: notReadyReason,

@@ -263,6 +263,8 @@ export interface EligibleDeliveryOrder {
     product_name: string;
     product_sku: string | null;
     quantity: number;
+    remaining_quantity?: number;
+    dispatched_quantity?: number;
     unit: string;
   unit_price?: number;
   tax_rate?: number;
@@ -297,6 +299,7 @@ export interface CustomerOrderForDelivery {
   paid_amount: number;
   due_amount: number;
   total_quantity: number;
+  remaining_quantity?: number;
   items: {
     id: string;
     product_id: string;
