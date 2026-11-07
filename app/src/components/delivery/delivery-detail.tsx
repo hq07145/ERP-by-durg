@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect } from "react";
 import { format } from "date-fns";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -44,6 +44,7 @@ import {
 } from "@/lib/delivery/actions";
 import { triggerDownload } from "@/lib/reports/export-client";
 import { validateAndNormalizeVehicleNumber, validateDriverMobile } from "@/lib/delivery/validation";
+import { EditDriverModal } from "./edit-driver-modal";
 
 interface DeliveryDetailProps {
   delivery: DeliveryWithDetails;
@@ -89,6 +90,14 @@ export function DeliveryDetail({
 
   const [showInTransitModal, setShowInTransitModal] = useState(false);
   const [inTransitNotes, setInTransitNotes] = useState("");
+  const [showEditDriverModal, setShowEditDriverModal] = useState(false);
+  const [currentDriver, setCurrentDriver] = useState(delivery.driver);
+  const [currentDriverPhone, setCurrentDriverPhone] = useState(delivery.driver_phone);
+
+  useEffect(() => {
+    setCurrentDriver(delivery.driver);
+    setCurrentDriverPhone(delivery.driver_phone);
+  }, [delivery.driver, delivery.driver_phone]);
 
   const [isDownloadingChallan, setIsDownloadingChallan] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -328,7 +337,7 @@ export function DeliveryDetail({
 
         {/* Shipment Details Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 text-xs">
-          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100">
+          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100 flex flex-col justify-between">
             <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
               Invoice Number
             </span>
@@ -337,7 +346,7 @@ export function DeliveryDetail({
             </span>
           </div>
 
-          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100">
+          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100 flex flex-col justify-between">
             <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
               Expected Delivery
             </span>
@@ -348,7 +357,7 @@ export function DeliveryDetail({
             </span>
           </div>
 
-          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100">
+          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100 flex flex-col justify-between">
             <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
               Tracking Number
             </span>
@@ -357,7 +366,7 @@ export function DeliveryDetail({
             </span>
           </div>
 
-          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100">
+          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100 flex flex-col justify-between">
             <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
               Vehicle
             </span>
@@ -366,18 +375,32 @@ export function DeliveryDetail({
             </span>
           </div>
 
-          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100">
-            <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
-              Driver
-            </span>
-            <span className="font-semibold text-slate-800 text-sm mt-0.5 block">
-              {delivery.driver ?? "—"}
-              {delivery.driver_phone && (
-                <span className="text-xs text-slate-500 font-normal block mt-0.5">
-                  📞 {delivery.driver_phone}
-                </span>
-              )}
-            </span>
+          <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-100 flex flex-col justify-between">
+            <div>
+              <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">
+                Driver
+              </span>
+              <span className="font-semibold text-slate-800 text-sm mt-0.5 block">
+                {currentDriver ?? "—"}
+                {currentDriverPhone && (
+                  <span className="text-xs text-slate-500 font-normal block mt-0.5">
+                    📞 {currentDriverPhone}
+                  </span>
+                )}
+              </span>
+            </div>
+            {delivery.status === "IN_TRANSIT" && canEdit && (
+              <div className="pt-2 mt-2 border-t border-slate-200/60">
+                <button
+                  type="button"
+                  onClick={() => setShowEditDriverModal(true)}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-[#0F766E] hover:text-[#0D655E] hover:underline"
+                >
+                  <User className="w-3.5 h-3.5" />
+                  <span>Edit Driver Details</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -546,6 +569,18 @@ export function DeliveryDetail({
                   className="rounded-lg bg-orange-50 border border-orange-200 px-4 py-2 text-xs font-semibold text-orange-700 hover:bg-orange-100 transition disabled:opacity-50"
                 >
                   Mark In Transit
+                </button>
+              )}
+
+              {delivery.status === "IN_TRANSIT" && canEdit && (
+                <button
+                  type="button"
+                  onClick={() => setShowEditDriverModal(true)}
+                  disabled={isPending}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-amber-50 border border-amber-200 px-4 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100 transition disabled:opacity-50"
+                >
+                  <User className="w-3.5 h-3.5" />
+                  <span>Edit Driver Details</span>
                 </button>
               )}
 
@@ -1135,6 +1170,27 @@ export function DeliveryDetail({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Edit Driver Details Modal for IN_TRANSIT Delivery */}
+      {showEditDriverModal && (
+        <EditDriverModal
+          isOpen={showEditDriverModal}
+          onClose={() => setShowEditDriverModal(false)}
+          delivery={{
+            id: delivery.id,
+            delivery_number: delivery.delivery_number,
+            driver: currentDriver,
+            driver_phone: currentDriverPhone,
+            status: delivery.status,
+          }}
+          onSuccess={(updated) => {
+            setCurrentDriver(updated.driver);
+            setCurrentDriverPhone(updated.driver_phone);
+            setSuccessMessage(`Driver details updated successfully for Delivery ${delivery.delivery_number}.`);
+            router.refresh();
+          }}
+        />
       )}
     </div>
   );

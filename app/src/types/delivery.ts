@@ -136,6 +136,12 @@ export interface DispatchDeliveryFormValues {
   notes?: string;
 }
 
+export interface UpdateDriverDetailsInput {
+  delivery_id: string;
+  driver_name: string;
+  driver_mobile: string;
+}
+
 export interface DeliveryStatusCounts {
   ALL: number;
   PENDING?: number;

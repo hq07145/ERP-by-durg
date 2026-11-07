@@ -56,6 +56,73 @@ export function validateDriverMobile(val?: string | null): {
   return { isValid: true, normalized: match[1] };
 }
 
+/**
+ * Strict validation for required Driver Name.
+ * Rejects empty or whitespace-only values, trims leading/trailing whitespace.
+ */
+export function validateDriverName(val?: string | null): {
+  isValid: boolean;
+  normalized: string;
+  error?: string;
+} {
+  const trimmed = (val ?? "").trim();
+  if (!trimmed) {
+    return {
+      isValid: false,
+      normalized: "",
+      error: "Driver name is required.",
+    };
+  }
+  if (trimmed.length < 2) {
+    return {
+      isValid: false,
+      normalized: trimmed,
+      error: "Driver name must be at least 2 characters.",
+    };
+  }
+  if (trimmed.length > 100) {
+    return {
+      isValid: false,
+      normalized: trimmed,
+      error: "Driver name cannot exceed 100 characters.",
+    };
+  }
+
+  return { isValid: true, normalized: trimmed };
+}
+
+/**
+ * Strict validation for required Driver Mobile Number.
+ * Validates 10-digit Indian mobile format (starting with 6, 7, 8, or 9),
+ * allows optional +91, 91, or 0 prefixes, and normalizes consistently to 10 digits.
+ */
+export function validateRequiredDriverMobile(val?: string | null): {
+  isValid: boolean;
+  normalized: string;
+  error?: string;
+} {
+  const trimmed = (val ?? "").trim();
+  if (!trimmed) {
+    return {
+      isValid: false,
+      normalized: "",
+      error: "Driver mobile number is required.",
+    };
+  }
+
+  const clean = trimmed.replace(/[- \(\)]/g, "");
+  const match = clean.match(/^(?:\+91|91|0)?([6-9]\d{9})$/);
+  if (!match) {
+    return {
+      isValid: false,
+      normalized: trimmed,
+      error: "Driver mobile number must be a valid 10-digit Indian phone number starting with 6, 7, 8, or 9 (e.g., 9876543210 or +919876543210).",
+    };
+  }
+
+  return { isValid: true, normalized: match[1] };
+}
+
 export function validateInvoiceNumber(val?: string | null): {
   isValid: boolean;
   normalized: string;

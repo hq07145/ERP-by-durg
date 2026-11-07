@@ -84,6 +84,10 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
   const canDispatch = hasPermission({ permissions: context.permissions }, "delivery.dispatch");
   const canComplete = hasPermission({ permissions: context.permissions }, "delivery.complete");
   const canCancel = hasPermission({ permissions: context.permissions }, "delivery.cancel");
+  const canEdit =
+    hasPermission({ permissions: context.permissions }, "delivery.update") ||
+    hasPermission({ permissions: context.permissions }, "delivery.dispatch") ||
+    hasPermission({ permissions: context.permissions }, "delivery.edit");
   const canPack =
     hasPermission({ permissions: context.permissions }, "delivery.update") ||
     canDispatch ||
@@ -126,6 +130,7 @@ export default async function DeliveryPage({ searchParams }: PageProps) {
         canDispatch={canDispatch}
         canComplete={canComplete}
         canCancel={canCancel}
+        canEdit={canEdit}
         currentStatus={status}
         statusCounts={statusCounts}
         searchQuery={q}

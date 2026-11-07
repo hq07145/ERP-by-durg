@@ -8,7 +8,13 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { updateOrderDeliveryDatesFromSchedules, scheduleProductionQueue } from "@/lib/production/scheduler";
 import { notifyDeliveryEvent } from "@/lib/notifications/actions";
-import { validateAndNormalizeVehicleNumber, validateDriverMobile, validateInvoiceNumber } from "@/lib/delivery/validation";
+import {
+  validateAndNormalizeVehicleNumber,
+  validateDriverMobile,
+  validateDriverName,
+  validateRequiredDriverMobile,
+  validateInvoiceNumber,
+} from "@/lib/delivery/validation";
 import { DEFAULT_SETTINGS } from "@/lib/settings/constants";
 import { generateDeliveryChallanPdf } from "@/lib/delivery/challan-pdf";
 import type {
@@ -22,6 +28,7 @@ import type {
   InTransitDeliveryFormValues,
   CompleteDeliveryFormValues,
   CancelDeliveryFormValues,
+  UpdateDriverDetailsInput,
   DeliveryStatus,
   DeliveryStatusCounts,
   EligibleDeliveryOrder,
@@ -1037,6 +1044,160 @@ export async function markDeliveryInTransit(
   }
 
   return { success: true, message: "Delivery marked as in transit" };
+}
+
+/**
+ * Update Driver Details for an IN_TRANSIT delivery.
+ * 
+ * Rules:
+ * - Delivery status MUST be IN_TRANSIT.
+ * - Delivered or Cancelled deliveries cannot be updated.
+ * - Driver Name and Driver Mobile are strictly required & validated.
+ * - Only authorized users (delivery.update, delivery.dispatch, or delivery.create) can perform this update.
+ * - Stores previous details in audit_logs with user_id and timestamp.
+ * - Handles concurrent status transitions safely.
+ * - Preserves all delivery items, quantities, financials, ledger, order status, and delivery numbers.
+ */
+export async function updateDeliveryDriverDetails(
+  input: UpdateDriverDetailsInput
+): Promise<{ success: boolean; message: string; delivery: { id: string; driver: string; driver_phone: string } }> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+
+  // Authorization check
+  const isAuthorized =
+    hasPermission({ permissions: context.permissions }, "delivery.update") ||
+    hasPermission({ permissions: context.permissions }, "delivery.dispatch") ||
+    hasPermission({ permissions: context.permissions }, "delivery.create") ||
+    hasPermission({ permissions: context.permissions }, "delivery.edit");
+
+  if (!isAuthorized) {
+    throw new Error("Forbidden: delivery.update or delivery.dispatch permission required to edit driver details.");
+  }
+
+  if (!input.delivery_id || !input.delivery_id.trim()) {
+    throw new Error("Delivery ID is required.");
+  }
+
+  // 1. Validation
+  const nameVal = validateDriverName(input.driver_name);
+  if (!nameVal.isValid) {
+    throw new Error(nameVal.error || "Driver name is invalid.");
+  }
+
+  const phoneVal = validateRequiredDriverMobile(input.driver_mobile);
+  if (!phoneVal.isValid) {
+    throw new Error(phoneVal.error || "Driver mobile number is invalid.");
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) throw new Error("Supabase client not available");
+
+  const businessId = context.user.business_id;
+
+  // 2. Fetch existing delivery to verify existence, tenant ownership, and current status
+  const { data: existingDelivery, error: fetchErr } = await supabase
+    .from("deliveries")
+    .select("id, delivery_number, status, driver, driver_phone, vehicle, order_id")
+    .eq("id", input.delivery_id.trim())
+    .eq("business_id", businessId)
+    .maybeSingle();
+
+  if (fetchErr || !existingDelivery) {
+    throw new Error("Delivery not found or access denied.");
+  }
+
+  // 3. Status restriction: ONLY IN_TRANSIT is allowed
+  if (existingDelivery.status !== "IN_TRANSIT") {
+    if (existingDelivery.status === "DELIVERED") {
+      throw new Error(`Cannot edit driver details: Delivery ${existingDelivery.delivery_number} has already been DELIVERED.`);
+    }
+    if (existingDelivery.status === "CANCELLED") {
+      throw new Error(`Cannot edit driver details: Delivery ${existingDelivery.delivery_number} has been CANCELLED.`);
+    }
+    throw new Error(`Cannot edit driver details: Delivery ${existingDelivery.delivery_number} is in ${existingDelivery.status} status. Driver details can only be edited while In Transit.`);
+  }
+
+  // 4. Concurrent-safe atomic update
+  const now = new Date().toISOString();
+  const dbClient = createAdminSupabaseClient() || supabase;
+
+  const { data: updatedDelivery, error: updateErr } = await dbClient
+    .from("deliveries")
+    .update({
+      driver: nameVal.normalized,
+      driver_phone: phoneVal.normalized,
+      updated_at: now,
+    })
+    .eq("id", existingDelivery.id)
+    .eq("business_id", businessId)
+    .eq("status", "IN_TRANSIT") // Guarantees concurrency safety
+    .select("id, delivery_number, status, driver, driver_phone, updated_at")
+    .maybeSingle();
+
+  if (updateErr) {
+    console.error("updateDeliveryDriverDetails: Database update error:", updateErr);
+    throw new Error(`Failed to update driver details: ${updateErr.message}`);
+  }
+
+  if (!updatedDelivery) {
+    // If no row was updated, it means another request changed the status concurrently
+    const { data: latestDelivery } = await supabase
+      .from("deliveries")
+      .select("status")
+      .eq("id", existingDelivery.id)
+      .eq("business_id", businessId)
+      .maybeSingle();
+
+    throw new Error(
+      `Concurrent update conflict: Delivery status changed to ${latestDelivery?.status || "another status"} before driver update could be applied.`
+    );
+  }
+
+  // 5. Audit Log (Preserve previous driver details and record who & when)
+  try {
+    await dbClient.from("audit_logs").insert({
+      business_id: businessId,
+      user_id: context.user.id,
+      action: "DELIVERY_DRIVER_UPDATED",
+      entity_type: "delivery",
+      entity_id: existingDelivery.id,
+      old_data: {
+        driver: existingDelivery.driver || null,
+        driver_phone: existingDelivery.driver_phone || null,
+        status: existingDelivery.status,
+      },
+      new_data: {
+        driver: nameVal.normalized,
+        driver_phone: phoneVal.normalized,
+        updated_at: now,
+        status: "IN_TRANSIT",
+      },
+    });
+  } catch (auditErr) {
+    console.warn("Failed to insert audit log for delivery driver update:", auditErr);
+  }
+
+  // 6. Cache revalidation
+  try {
+    revalidatePath("/delivery");
+    revalidatePath(`/delivery/${existingDelivery.id}`);
+    if (existingDelivery.order_id) {
+      revalidatePath(`/orders/${existingDelivery.order_id}`);
+    }
+  } catch (revalErr) {
+    console.warn("Path revalidation warning:", revalErr);
+  }
+
+  return {
+    success: true,
+    message: `Driver details updated for Delivery ${existingDelivery.delivery_number}.`,
+    delivery: {
+      id: updatedDelivery.id,
+      driver: updatedDelivery.driver,
+      driver_phone: updatedDelivery.driver_phone,
+    },
+  };
 }
 
 export async function completeDelivery(
