@@ -45,6 +45,7 @@ import {
   validateDriverMobile,
 } from "@/lib/delivery/validation";
 import { CreatePartialDeliveryModal } from "./create-partial-delivery-modal";
+import { EditDriverModal } from "./edit-driver-modal";
 import { Printer } from "lucide-react";
 
 interface DeliveryListProps {
@@ -57,6 +58,7 @@ interface DeliveryListProps {
   canDispatch: boolean;
   canComplete: boolean;
   canCancel: boolean;
+  canEdit?: boolean;
   currentStatus?: DeliveryStatus;
   statusCounts?: DeliveryStatusCounts | null;
   searchQuery?: string;
@@ -87,6 +89,7 @@ export function DeliveryList({
   canDispatch,
   canComplete,
   canCancel,
+  canEdit,
   currentStatus,
   statusCounts,
   searchQuery = "",
@@ -101,6 +104,7 @@ export function DeliveryList({
   const [isPending, startTransition] = useTransition();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(initialCreateModalOpen);
   const [downloadingChallanId, setDownloadingChallanId] = useState<string | null>(null);
+  const [activeEditDriver, setActiveEditDriver] = useState<DeliveryListItem | null>(null);
 
   const handleDownloadChallan = async (deliveryId: string, deliveryNum: string) => {
     setDownloadingChallanId(deliveryId);
@@ -778,6 +782,17 @@ export function DeliveryList({
                       View
                     </Link>
                   )}
+                  {delivery.status === "IN_TRANSIT" && (canEdit ?? canDispatch) && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveEditDriver(delivery)}
+                      className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100 transition inline-flex items-center gap-1"
+                      title="Edit Driver Details"
+                    >
+                      <User className="w-3.5 h-3.5" />
+                      <span>Edit Driver</span>
+                    </button>
+                  )}
                   {actions.map((act) => (
                     <button
                       key={act.targetStatus}
@@ -914,6 +929,17 @@ export function DeliveryList({
                             )}
                             <span>Challan</span>
                           </button>
+                          {delivery.status === "IN_TRANSIT" && (canEdit ?? canDispatch) && (
+                            <button
+                              type="button"
+                              onClick={() => setActiveEditDriver(delivery)}
+                              className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100 transition inline-flex items-center gap-1"
+                              title="Edit Driver Details"
+                            >
+                              <User className="w-3 h-3" />
+                              <span>Edit Driver</span>
+                            </button>
+                          )}
                           {actions.map((act) => (
                             <button
                               key={act.targetStatus}
@@ -1306,6 +1332,26 @@ export function DeliveryList({
           customers={customers || []}
           onSuccess={(res) => {
             setActionSuccess(res.message || `Delivery ${res.delivery_number} recorded successfully!`);
+            router.refresh();
+          }}
+        />
+      )}
+
+      {/* Edit Driver Details Modal for IN_TRANSIT Deliveries */}
+      {activeEditDriver && (
+        <EditDriverModal
+          isOpen={!!activeEditDriver}
+          onClose={() => setActiveEditDriver(null)}
+          delivery={activeEditDriver}
+          onSuccess={(updated) => {
+            setItemsList((prev) =>
+              prev.map((item) =>
+                item.id === updated.id
+                  ? { ...item, driver: updated.driver, driver_phone: updated.driver_phone }
+                  : item
+              )
+            );
+            setActionSuccess(`Driver details updated successfully for Delivery ${activeEditDriver.delivery_number}.`);
             router.refresh();
           }}
         />

@@ -24,7 +24,11 @@ export default async function DeliveryDetailPage({ params }: PageProps) {
 
   if (!delivery) redirect("/delivery?error=not_found");
 
-  const canEdit = hasPermission({ permissions: context.permissions }, "delivery.edit");
+  const canEdit =
+    hasPermission({ permissions: context.permissions }, "delivery.update") ||
+    hasPermission({ permissions: context.permissions }, "delivery.dispatch") ||
+    hasPermission({ permissions: context.permissions }, "delivery.create") ||
+    hasPermission({ permissions: context.permissions }, "delivery.edit");
   const canDispatch = hasPermission({ permissions: context.permissions }, "delivery.dispatch");
   const canComplete = hasPermission({ permissions: context.permissions }, "delivery.complete");
   const canCancel = hasPermission({ permissions: context.permissions }, "delivery.cancel");
