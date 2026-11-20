@@ -1,8 +1,9 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { getAuthContext } from "@/lib/auth/context";
+import { getAuthContext, normalizeRoleKey } from "@/lib/auth/context";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import type {
   Notification,
   NotificationType,
@@ -51,12 +52,14 @@ export async function getNotifications(
     };
   }
 
-  // Fallback direct query with strict user_id and business_id isolation
+  // Fallback direct query with strict user_id and business_id isolation + 24h retention window
+  const cutoffIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   let query = supabase
     .from("notifications")
     .select("*", { count: "exact" })
     .eq("business_id", context.user.business_id)
     .eq("user_id", context.user.id)
+    .gt("created_at", cutoffIso)
     .order("created_at", { ascending: false })
     .range(offset, offset + limit - 1);
 
@@ -72,6 +75,7 @@ export async function getNotifications(
     .select("*", { count: "exact", head: true })
     .eq("business_id", context.user.business_id)
     .eq("user_id", context.user.id)
+    .gt("created_at", cutoffIso)
     .eq("is_read", false);
 
   return {
@@ -99,12 +103,14 @@ export async function getUnreadCount(): Promise<number> {
     return data;
   }
 
-  // Direct query fallback
+  // Direct query fallback with 24h retention window
+  const cutoffIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const { count } = await supabase
     .from("notifications")
     .select("*", { count: "exact", head: true })
     .eq("business_id", context.user.business_id)
     .eq("user_id", context.user.id)
+    .gt("created_at", cutoffIso)
     .eq("is_read", false);
 
   return count ?? 0;
@@ -173,36 +179,30 @@ export async function markAllNotificationsRead(): Promise<{ count: number }> {
 }
 
 /**
- * Create a notification with duplicate prevention
- * If an unread notification with the same user, type, ref_type, and ref_id already exists,
- * returns the existing ID rather than creating duplicate spam.
+ * Create a notification with database-level idempotent deduplication.
+ * Uses event identity (event_type, entity_type, entity_id, event_version, idempotency_key).
+ * Atomic upsert prevents duplicate creation across concurrent requests, retries, and dual code paths.
  */
 export async function createNotification(
   params: CreateNotificationParams
 ): Promise<{ id: string | null; error?: string }> {
-  const supabase = await createServerSupabaseClient();
+  // Use admin client if available to bypass RLS cross-user visibility barriers
+  const adminClient = createAdminSupabaseClient();
+  const serverClient = await createServerSupabaseClient();
+  const supabase = adminClient || serverClient;
+
   if (!supabase) return { id: null, error: "Supabase client not available" };
 
   try {
-    // 1. Prevent duplicate notifications on retries
-    const { data: existing } = await supabase
-      .from("notifications")
-      .select("id")
-      .eq("business_id", params.business_id)
-      .eq("user_id", params.user_id)
-      .eq("type", params.type)
-      .eq("ref_type", params.ref_type)
-      .eq("ref_id", params.ref_id)
-      .eq("is_read", false)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const eventType = params.event_type || params.type;
+    const entityType = params.entity_type || params.ref_type;
+    const entityId = params.entity_id || params.ref_id;
+    const eventVersion = params.event_version || "1";
+    const idempotencyKey =
+      params.idempotency_key ||
+      `${eventType}:${entityType}:${entityId}:${eventVersion}`;
 
-    if (existing?.id) {
-      return { id: existing.id, error: undefined };
-    }
-
-    // 2. Try RPC insertion
+    // 1. Try atomic RPC insertion
     const { data, error } = await supabase.rpc("create_notification", {
       p_business_id: params.business_id,
       p_user_id: params.user_id,
@@ -211,30 +211,71 @@ export async function createNotification(
       p_message: params.message,
       p_ref_type: params.ref_type,
       p_ref_id: params.ref_id,
+      p_event_type: eventType,
+      p_entity_type: entityType,
+      p_entity_id: entityId,
+      p_event_version: eventVersion,
+      p_idempotency_key: idempotencyKey,
     });
 
     if (!error && data) {
       return { id: data as string, error: undefined };
     }
 
-    // 3. Fallback direct insert
-    const { data: inserted, error: insertErr } = await supabase
+    // 2. Fallback direct upsert with database UNIQUE constraint conflict target
+    const { data: upserted, error: upsertErr } = await supabase
       .from("notifications")
-      .insert({
-        business_id: params.business_id,
-        user_id: params.user_id,
-        type: params.type,
-        title: params.title,
-        message: params.message,
-        ref_type: params.ref_type,
-        ref_id: params.ref_id,
-        is_read: false,
-      })
+      .upsert(
+        {
+          business_id: params.business_id,
+          user_id: params.user_id,
+          type: params.type,
+          title: params.title,
+          message: params.message,
+          ref_type: params.ref_type,
+          ref_id: params.ref_id,
+          event_type: eventType,
+          entity_type: entityType,
+          entity_id: entityId,
+          event_version: eventVersion,
+          idempotency_key: idempotencyKey,
+          is_read: false,
+        },
+        { onConflict: "business_id,user_id,idempotency_key", ignoreDuplicates: true }
+      )
       .select("id")
-      .single();
+      .maybeSingle();
 
-    if (insertErr) return { id: null, error: insertErr.message };
-    return { id: inserted.id, error: undefined };
+    if (upsertErr) {
+      // If error was due to constraint or duplicate, query existing
+      const { data: existing } = await supabase
+        .from("notifications")
+        .select("id")
+        .eq("business_id", params.business_id)
+        .eq("user_id", params.user_id)
+        .eq("idempotency_key", idempotencyKey)
+        .maybeSingle();
+
+      if (existing?.id) {
+        return { id: existing.id, error: undefined };
+      }
+      return { id: null, error: upsertErr.message };
+    }
+
+    if (upserted?.id) {
+      return { id: upserted.id, error: undefined };
+    }
+
+    // Upsert ignored duplicate row, fetch existing ID
+    const { data: existing } = await supabase
+      .from("notifications")
+      .select("id")
+      .eq("business_id", params.business_id)
+      .eq("user_id", params.user_id)
+      .eq("idempotency_key", idempotencyKey)
+      .maybeSingle();
+
+    return { id: existing?.id || null, error: undefined };
   } catch (err: any) {
     return { id: null, error: err.message || "Failed to create notification" };
   }
@@ -250,7 +291,9 @@ export async function getUsersToNotify(
   permissionName: string,
   excludeUserId?: string
 ): Promise<string[]> {
-  const supabase = await createServerSupabaseClient();
+  const adminClient = createAdminSupabaseClient();
+  const serverClient = await createServerSupabaseClient();
+  const supabase = adminClient || serverClient;
   if (!supabase) return [];
 
   try {
@@ -328,7 +371,36 @@ export async function getUsersToNotify(
 
     let result = Array.from(authorizedUserIds);
     if (excludeUserId) {
-      result = result.filter(id => id !== excludeUserId);
+      // Business Rule (Option B): Super Admin must receive all authorized operational notifications,
+      // even when Super Admin performs the triggering action.
+      // Acting Managers, Staff, Supervisors, and unknown roles strictly retain normal actor-exclusion behavior.
+      // Strict role identification: requires exact match to canonical role name ("Super Admin"),
+      // canonical role key ("super_admin"), or canonical role UUID ("22222222-2222-4222-8222-222222222222").
+      const CANONICAL_SUPER_ADMIN_ROLE_NAME = "Super Admin";
+      const CANONICAL_SUPER_ADMIN_ROLE_KEY = "super_admin";
+      const CANONICAL_SUPER_ADMIN_ROLE_ID = "22222222-2222-4222-8222-222222222222";
+
+      const { data: actorRoles } = await supabase
+        .from("user_roles")
+        .select("role_id, role:roles(id, name)")
+        .eq("user_id", excludeUserId)
+        .eq("business_id", businessId);
+
+      const isActorSuperAdmin = (actorRoles ?? []).some((ur: any) => {
+        const roleObj = Array.isArray(ur.role) ? ur.role[0] : ur.role;
+        const roleName = roleObj?.name?.trim();
+        const roleKey = roleName ? normalizeRoleKey(roleName) : null;
+        return (
+          roleKey === CANONICAL_SUPER_ADMIN_ROLE_KEY ||
+          roleName === CANONICAL_SUPER_ADMIN_ROLE_NAME ||
+          ur.role_id === CANONICAL_SUPER_ADMIN_ROLE_ID ||
+          roleObj?.id === CANONICAL_SUPER_ADMIN_ROLE_ID
+        );
+      });
+
+      if (!isActorSuperAdmin) {
+        result = result.filter(id => id !== excludeUserId);
+      }
     }
     return result;
   } catch (err) {
@@ -340,6 +412,9 @@ export async function getUsersToNotify(
 /**
  * Broadcast notification to all authorized users
  */
+/**
+ * Broadcast notification to all authorized users with idempotent event identity
+ */
 export async function broadcastNotification(
   businessId: string,
   permissionName: string,
@@ -348,12 +423,27 @@ export async function broadcastNotification(
   message: string,
   refType: NotificationRefType,
   refId: string,
-  excludeUserId?: string
+  excludeUserId?: string,
+  eventIdentity?: {
+    eventType?: string;
+    entityType?: string;
+    entityId?: string;
+    eventVersion?: string;
+    idempotencyKey?: string;
+  }
 ): Promise<{ sent: number; failed: number }> {
   const userIds = await getUsersToNotify(businessId, permissionName, excludeUserId);
 
   let sent = 0;
   let failed = 0;
+
+  const eventType = eventIdentity?.eventType || type;
+  const entityType = eventIdentity?.entityType || refType;
+  const entityId = eventIdentity?.entityId || refId;
+  const eventVersion = eventIdentity?.eventVersion || "1";
+  const idempotencyKey =
+    eventIdentity?.idempotencyKey ||
+    `${eventType}:${entityType}:${entityId}:${eventVersion}`;
 
   for (const userId of userIds) {
     const result = await createNotification({
@@ -364,6 +454,11 @@ export async function broadcastNotification(
       message,
       ref_type: refType,
       ref_id: refId,
+      event_type: eventType,
+      entity_type: entityType,
+      entity_id: entityId,
+      event_version: eventVersion,
+      idempotency_key: idempotencyKey,
     });
     if (result.id) sent++;
     else failed++;
@@ -373,7 +468,7 @@ export async function broadcastNotification(
 }
 
 // ============================================
-// DOMAIN EVENT NOTIFIERS
+// DOMAIN EVENT NOTIFIERS (Centralized Service)
 // ============================================
 
 /**
@@ -404,15 +499,24 @@ export async function notifyOrderEvent(
     cancelled: `Order #${orderNumber} has been cancelled`,
   } as const;
 
+  const notifType = typeMap[eventType];
+
   await broadcastNotification(
     businessId,
     "orders.view",
-    typeMap[eventType],
+    notifType,
     titleMap[eventType],
     messageMap[eventType],
     "order",
     orderId,
-    actorId
+    actorId,
+    {
+      eventType: notifType,
+      entityType: "order",
+      entityId: orderId,
+      eventVersion: "1",
+      idempotencyKey: `${notifType}:order:${orderId}:1`,
+    }
   );
 }
 
@@ -426,7 +530,9 @@ export async function notifyProductionEvent(
   eventType: "started" | "completed" | "delayed",
   actorId?: string
 ): Promise<void> {
-  const supabase = await createServerSupabaseClient();
+  const adminClient = createAdminSupabaseClient();
+  const serverClient = await createServerSupabaseClient();
+  const supabase = adminClient || serverClient;
   let orderNumber = "Order";
 
   if (supabase) {
@@ -456,15 +562,24 @@ export async function notifyProductionEvent(
     delayed: `Production for order ${orderNumber} has been delayed`,
   } as const;
 
+  const notifType = typeMap[eventType];
+
   await broadcastNotification(
     businessId,
     "production.view",
-    typeMap[eventType],
+    notifType,
     titleMap[eventType],
     messageMap[eventType],
     "production_order",
     productionOrderId,
-    actorId
+    actorId,
+    {
+      eventType: notifType,
+      entityType: "production_order",
+      entityId: productionOrderId,
+      eventVersion: "1",
+      idempotencyKey: `${notifType}:production_order:${productionOrderId}:1`,
+    }
   );
 }
 
@@ -478,7 +593,9 @@ export async function notifyQualityCheckFailed(
   notes: string | null,
   actorId?: string
 ): Promise<void> {
-  const supabase = await createServerSupabaseClient();
+  const adminClient = createAdminSupabaseClient();
+  const serverClient = await createServerSupabaseClient();
+  const supabase = adminClient || serverClient;
   let orderNumber = "Order";
 
   if (supabase) {
@@ -498,7 +615,14 @@ export async function notifyQualityCheckFailed(
     `Quality check failed for order ${orderNumber}: ${notes ?? "Defects identified during inspection"}`,
     "production_order",
     productionOrderId,
-    actorId
+    actorId,
+    {
+      eventType: "QUALITY_CHECK_FAILED",
+      entityType: "production_order",
+      entityId: productionOrderId,
+      eventVersion: "1",
+      idempotencyKey: `QUALITY_CHECK_FAILED:production_order:${productionOrderId}:1`,
+    }
   );
 }
 
@@ -512,7 +636,9 @@ export async function notifyDeliveryEvent(
   eventType: "ready" | "dispatched" | "delivered",
   actorId?: string
 ): Promise<void> {
-  const supabase = await createServerSupabaseClient();
+  const adminClient = createAdminSupabaseClient();
+  const serverClient = await createServerSupabaseClient();
+  const supabase = adminClient || serverClient;
   let orderNumber = "Order";
 
   if (supabase) {
@@ -542,15 +668,24 @@ export async function notifyDeliveryEvent(
     delivered: `Delivery for order ${orderNumber} has been delivered successfully`,
   } as const;
 
+  const notifType = typeMap[eventType];
+
   await broadcastNotification(
     businessId,
     "delivery.view",
-    typeMap[eventType],
+    notifType,
     titleMap[eventType],
     messageMap[eventType],
     "delivery",
     deliveryId,
-    actorId
+    actorId,
+    {
+      eventType: notifType,
+      entityType: "delivery",
+      entityId: deliveryId,
+      eventVersion: "1",
+      idempotencyKey: `${notifType}:delivery:${deliveryId}:1`,
+    }
   );
 }
 
@@ -575,7 +710,60 @@ export async function notifyPaymentReceived(
     `Payment #${paymentNumber} of ${formattedAmount} has been received`,
     "payment",
     paymentId,
-    actorId
+    actorId,
+    {
+      eventType: "PAYMENT_RECEIVED",
+      entityType: "payment",
+      entityId: paymentId,
+      eventVersion: "1",
+      idempotencyKey: `PAYMENT_RECEIVED:payment:${paymentId}:1`,
+    }
+  );
+}
+
+/**
+ * Notify on goods return events (created, approved, rejected, cancelled)
+ */
+export async function notifyGoodsReturnEvent(
+  businessId: string,
+  returnId: string,
+  returnNumber: string,
+  orderNumber?: string | null,
+  eventType: "created" | "approved" | "rejected" | "cancelled" = "created",
+  actorId?: string
+): Promise<void> {
+  const titleMap = {
+    created: "Goods Return Created",
+    approved: "Goods Return Approved",
+    rejected: "Goods Return Rejected",
+    cancelled: "Goods Return Cancelled",
+  } as const;
+
+  const orderSuffix = orderNumber ? ` for Order #${orderNumber}` : "";
+
+  const messageMap = {
+    created: `Goods return #${returnNumber}${orderSuffix} has been recorded`,
+    approved: `Goods return #${returnNumber}${orderSuffix} has been approved`,
+    rejected: `Goods return #${returnNumber}${orderSuffix} has been rejected`,
+    cancelled: `Goods return #${returnNumber}${orderSuffix} has been cancelled`,
+  } as const;
+
+  await broadcastNotification(
+    businessId,
+    "orders.view",
+    "GOODS_RETURN",
+    titleMap[eventType],
+    messageMap[eventType],
+    "goods_return",
+    returnId,
+    actorId,
+    {
+      eventType: `GOODS_RETURN_${eventType.toUpperCase()}`,
+      entityType: "goods_return",
+      entityId: returnId,
+      eventVersion: eventType,
+      idempotencyKey: `GOODS_RETURN:goods_return:${returnId}:${eventType}`,
+    }
   );
 }
 
@@ -601,7 +789,14 @@ export async function notifyPaymentOverdue(
     `Payment of ${formattedAmount} for order #${orderNumber} is overdue (due: ${dueDate})`,
     "order",
     orderId,
-    actorId
+    actorId,
+    {
+      eventType: "PAYMENT_OVERDUE",
+      entityType: "order",
+      entityId: orderId,
+      eventVersion: dueDate,
+      idempotencyKey: `PAYMENT_OVERDUE:order:${orderId}:${dueDate}`,
+    }
   );
 }
 
@@ -617,6 +812,7 @@ export async function notifyCustomerDue(
 ): Promise<void> {
   const numDue = Number(totalDue) || 0;
   const formattedAmount = `₹${numDue.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
+  const today = new Date().toISOString().split("T")[0];
 
   await broadcastNotification(
     businessId,
@@ -626,7 +822,14 @@ export async function notifyCustomerDue(
     `Customer "${customerName}" has outstanding dues of ${formattedAmount}`,
     "customer",
     customerId,
-    actorId
+    actorId,
+    {
+      eventType: "CUSTOMER_DUE",
+      entityType: "customer",
+      entityId: customerId,
+      eventVersion: today,
+      idempotencyKey: `CUSTOMER_DUE:customer:${customerId}:${today}`,
+    }
   );
 }
 
@@ -640,7 +843,9 @@ export async function notifyCapacityInsufficient(
   reason: string,
   actorId?: string
 ): Promise<void> {
-  const supabase = await createServerSupabaseClient();
+  const adminClient = createAdminSupabaseClient();
+  const serverClient = await createServerSupabaseClient();
+  const supabase = adminClient || serverClient;
   let orderNumber = "Order";
 
   if (supabase) {
@@ -660,7 +865,14 @@ export async function notifyCapacityInsufficient(
     `Capacity bottleneck for ${orderNumber}: ${reason}`,
     "production_order",
     productionOrderId,
-    actorId
+    actorId,
+    {
+      eventType: "CAPACITY_INSUFFICIENT",
+      entityType: "production_order",
+      entityId: productionOrderId,
+      eventVersion: "1",
+      idempotencyKey: `CAPACITY_INSUFFICIENT:production_order:${productionOrderId}:1`,
+    }
   );
 }
 
@@ -681,7 +893,15 @@ export async function notifyLowStock(
     "Low Stock Alert",
     `Raw material "${materialName}" is below reorder level (Available: ${availableStock}, Reorder: ${reorderLevel})`,
     "raw_material",
-    materialId
+    materialId,
+    undefined,
+    {
+      eventType: "LOW_STOCK",
+      entityType: "raw_material",
+      entityId: materialId,
+      eventVersion: "1",
+      idempotencyKey: `LOW_STOCK:raw_material:${materialId}:1`,
+    }
   );
 }
 
@@ -694,7 +914,9 @@ export async function notifyMaterialShortage(
   orderId: string,
   shortages: string[]
 ): Promise<void> {
-  const supabase = await createServerSupabaseClient();
+  const adminClient = createAdminSupabaseClient();
+  const serverClient = await createServerSupabaseClient();
+  const supabase = adminClient || serverClient;
   let orderNumber = "Order";
 
   if (supabase) {
@@ -713,6 +935,14 @@ export async function notifyMaterialShortage(
     "Material Shortage Alert",
     `Insufficient raw materials for ${orderNumber}: ${shortages.join("; ")}`,
     "production_order",
-    productionOrderId
+    productionOrderId,
+    undefined,
+    {
+      eventType: "MATERIAL_SHORTAGE",
+      entityType: "production_order",
+      entityId: productionOrderId,
+      eventVersion: "1",
+      idempotencyKey: `MATERIAL_SHORTAGE:production_order:${productionOrderId}:1`,
+    }
   );
 }

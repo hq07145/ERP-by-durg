@@ -14,7 +14,8 @@ export type NotificationType =
   | 'PAYMENT_OVERDUE'
   | 'CUSTOMER_DUE'
   | 'CAPACITY_INSUFFICIENT'
-  | 'QUALITY_CHECK_FAILED';
+  | 'QUALITY_CHECK_FAILED'
+  | 'GOODS_RETURN';
 
 export type NotificationRefType =
   | 'order'
@@ -23,7 +24,8 @@ export type NotificationRefType =
   | 'payment'
   | 'customer'
   | 'raw_material'
-  | 'product';
+  | 'product'
+  | 'goods_return';
 
 export interface Notification {
   id: string;
@@ -37,6 +39,11 @@ export interface Notification {
   is_read: boolean;
   created_at: string;
   read_at: string | null;
+  event_type?: string;
+  entity_type?: string;
+  entity_id?: string;
+  event_version?: string;
+  idempotency_key?: string;
 }
 
 export interface CreateNotificationParams {
@@ -47,6 +54,11 @@ export interface CreateNotificationParams {
   message: string;
   ref_type: NotificationRefType;
   ref_id: string;
+  event_type?: string;
+  entity_type?: string;
+  entity_id?: string;
+  event_version?: string;
+  idempotency_key?: string;
 }
 
 export interface NotificationListParams {
@@ -70,6 +82,7 @@ export const NOTIFICATION_ROUTES: Record<NotificationRefType, (id: string) => st
   customer: (id) => `/customers/${id}`,
   raw_material: (id) => `/raw-materials/${id}`,
   product: (id) => `/products/${id}`,
+  goods_return: (id) => `/returns/${id}`,
 };
 
 // Type colors for UI
@@ -90,6 +103,7 @@ export const NOTIFICATION_TYPE_COLORS: Record<NotificationType, string> = {
   CUSTOMER_DUE: 'bg-amber-100 text-amber-800 border-amber-200',
   CAPACITY_INSUFFICIENT: 'bg-red-100 text-red-800 border-red-200',
   QUALITY_CHECK_FAILED: 'bg-red-100 text-red-800 border-red-200',
+  GOODS_RETURN: 'bg-amber-100 text-amber-800 border-amber-200',
 };
 
 export const NOTIFICATION_TYPE_LABELS: Record<NotificationType, string> = {
@@ -109,6 +123,7 @@ export const NOTIFICATION_TYPE_LABELS: Record<NotificationType, string> = {
   CUSTOMER_DUE: 'Customer Due',
   CAPACITY_INSUFFICIENT: 'Capacity Insufficient',
   QUALITY_CHECK_FAILED: 'Quality Check Failed',
+  GOODS_RETURN: 'Goods Return',
 };
 
 export const NOTIFICATION_REF_TYPE_LABELS: Record<NotificationRefType, string> = {
@@ -119,4 +134,5 @@ export const NOTIFICATION_REF_TYPE_LABELS: Record<NotificationRefType, string> =
   customer: 'Customer',
   raw_material: 'Raw Material',
   product: 'Product',
+  goods_return: 'Goods Return',
 };

@@ -64,7 +64,11 @@ export function NotificationBell({ initialUnreadCount = 0 }: NotificationBellPro
       if (response.ok) {
         const data: NotificationListResult = await response.json();
         if (append) {
-          setNotifications(prev => [...prev, ...data.notifications]);
+          setNotifications(prev => {
+            const existingIds = new Set(prev.map(n => n.id));
+            const fresh = data.notifications.filter(n => !existingIds.has(n.id));
+            return [...prev, ...fresh];
+          });
         } else {
           setNotifications(data.notifications);
         }
