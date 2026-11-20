@@ -1356,6 +1356,68 @@ export async function getCustomerDueReport(
 }
 
 
+export interface CustomerDueSummary {
+  totalDueAmount: number;
+  totalCustomerAdvance: number;
+  customersWithDueCount: number;
+  totalCustomersCount: number;
+  asOfDate: string;
+}
+
+export async function getCustomerDueSummary(
+  filters: CustomerDueReportFilters
+): Promise<CustomerDueSummary> {
+  const context = await getAuthContext();
+  if (!context) redirect("/login?error=account_unavailable");
+  if (!hasPermission({ permissions: context.permissions }, "customers.view")) {
+    throw new Error("Forbidden: customers.view");
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) throw new Error("Supabase client not available");
+
+  const { startDate, endDate } = resolveDateRange(filters);
+  const minDue = filters.minDueAmount ? parseFloat(filters.minDueAmount) : null;
+
+  // Retrieve full dataset (p_limit: null, p_offset: 0) to compute aggregate company-wide totals across all pages
+  const { data, error } = await supabase.rpc("get_customer_outstanding_report", {
+    p_business_id: context.user.business_id,
+    p_start_date: startDate || null,
+    p_end_date: endDate || null,
+    p_customer_id: filters.customerId || null,
+    p_min_due: !isNaN(minDue as number) ? minDue : null,
+    p_limit: null,
+    p_offset: 0,
+  });
+
+  if (error) {
+    console.error("getCustomerDueSummary error:", error);
+    throw error;
+  }
+
+  let totalDue = 0;
+  let totalAdvance = 0;
+  let customersWithDue = 0;
+
+  for (const r of data || []) {
+    const due = Number(r.closing_receivable ?? r.total_due ?? 0);
+    const advance = Number(r.closing_advance ?? 0);
+    totalDue += due;
+    totalAdvance += advance;
+    if (due > 0) customersWithDue++;
+  }
+
+  const asOf = endDate || new Date().toISOString().split("T")[0];
+
+  return {
+    totalDueAmount: Math.round(totalDue * 100) / 100,
+    totalCustomerAdvance: Math.round(totalAdvance * 100) / 100,
+    customersWithDueCount: customersWithDue,
+    totalCustomersCount: (data || []).length,
+    asOfDate: asOf,
+  };
+}
+
 export async function getPendingInvoicesReport(
   filters: CustomerDueReportFilters
 ): Promise<InvoicePendingDueRow[]> {
@@ -1923,7 +1985,7 @@ export async function getReportPreview(
   filters: ReportFilters,
   limit = 50,
   offset = 0
-): Promise<{ rows: ReportRow[]; totalCount: number }> {
+): Promise<{ rows: ReportRow[]; totalCount: number; summary?: any }> {
   const context = await getAuthContext();
   if (!context) redirect("/login?error=account_unavailable");
 
@@ -1986,10 +2048,13 @@ export async function getReportPreview(
       break;
     }
     case "customer_due": {
-      const dueData = await getCustomerDueReport(filters as CustomerDueReportFilters, limit, offset);
+      const [dueData, summary] = await Promise.all([
+        getCustomerDueReport(filters as CustomerDueReportFilters, limit, offset),
+        getCustomerDueSummary(filters as CustomerDueReportFilters),
+      ]);
       rows = dueData;
       totalCount = (dueData as any)[0]?.total_count != null ? Number((dueData as any)[0].total_count) : dueData.length;
-      break;
+      return { rows, totalCount, summary };
     }
     case "expenses": {
       rows = await getExpensesReport(filters as ExpensesReportFilters, limit, offset);

@@ -5,6 +5,7 @@ import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/auth/context";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { notifyGoodsReturnEvent } from "@/lib/notifications/actions";
 import type {
   CreateGoodsReturnInput,
   ApproveGoodsReturnInput,
@@ -45,6 +46,22 @@ export async function createGoodsReturnAction(input: CreateGoodsReturnInput) {
 
   if (error) {
     throw new Error(error.message);
+  }
+
+  try {
+    const res = data as any;
+    if (res?.return_id && res?.return_number) {
+      await notifyGoodsReturnEvent(
+        context.user.business_id,
+        res.return_id,
+        res.return_number,
+        null,
+        "created",
+        context.user.id
+      );
+    }
+  } catch (notifErr) {
+    console.warn("Goods return creation notification non-fatal:", notifErr);
   }
 
   if (input.delivery_id) revalidatePath(`/delivery/${input.delivery_id}`);
@@ -99,6 +116,23 @@ export async function approveGoodsReturnAction(input: ApproveGoodsReturnInput) {
 
   await revalidateReturnRelations(supabase, input.return_id);
   revalidatePath("/returns");
+
+  try {
+    const res = data as any;
+    if (res?.return_id && res?.return_number) {
+      await notifyGoodsReturnEvent(
+        context.user.business_id,
+        res.return_id,
+        res.return_number,
+        null,
+        "approved",
+        context.user.id
+      );
+    }
+  } catch (notifErr) {
+    console.warn("Goods return approval notification non-fatal:", notifErr);
+  }
+
   return data;
 }
 
@@ -122,6 +156,23 @@ export async function rejectGoodsReturnAction(input: RejectGoodsReturnInput) {
 
   await revalidateReturnRelations(supabase, input.return_id);
   revalidatePath("/returns");
+
+  try {
+    const res = data as any;
+    if (res?.return_id && res?.return_number) {
+      await notifyGoodsReturnEvent(
+        context.user.business_id,
+        res.return_id,
+        res.return_number,
+        null,
+        "approved",
+        context.user.id
+      );
+    }
+  } catch (notifErr) {
+    console.warn("Goods return approval notification non-fatal:", notifErr);
+  }
+
   return data;
 }
 

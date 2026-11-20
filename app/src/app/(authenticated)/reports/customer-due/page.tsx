@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { ReportFilters as ReportFiltersComponent } from "@/components/reports/report-filters";
 import { ReportTable } from "@/components/reports/report-table";
-import { getReportPreview, exportReport, getPendingInvoicesReport } from "@/lib/reports/actions";
+import { getReportPreview, exportReport, getPendingInvoicesReport, type CustomerDueSummary } from "@/lib/reports/actions";
 import { triggerDownload } from "@/lib/reports/export-client";
 import { formatINR, formatLedgerDate } from "@/lib/reports/ledger-formatter";
 import {
@@ -54,6 +54,7 @@ export default function CustomerDueReportPage() {
   const [activeTab, setActiveTab] = useState<"customers" | "invoices">("customers");
   const [rows, setRows] = useState<CustomerDueReportRow[]>([]);
   const [pendingInvoices, setPendingInvoices] = useState<InvoicePendingDueRow[]>([]);
+  const [summaryTotals, setSummaryTotals] = useState<CustomerDueSummary | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -117,6 +118,9 @@ export default function CustomerDueReportPage() {
         ]);
         setRows(previewRes.rows as CustomerDueReportRow[]);
         setTotalCount(previewRes.totalCount);
+        if (previewRes.summary) {
+          setSummaryTotals(previewRes.summary);
+        }
         setPendingInvoices(invoicesRes);
       } catch (err: any) {
         console.error("Failed to fetch customer due report:", err);
@@ -205,10 +209,10 @@ export default function CustomerDueReportPage() {
     router.push("/reports");
   };
 
-  // KPI Calculations across loaded rows
-  const totalDueAmount = rows.reduce((acc, r) => acc + Number(r.closing_receivable ?? r.total_due ?? 0), 0);
-  const totalCustomerAdvance = rows.reduce((acc, r) => acc + Number(r.closing_advance ?? 0), 0);
-  const customersWithDueCount = rows.filter((r) => Number(r.closing_receivable ?? r.total_due ?? 0) > 0).length;
+  // KPI Calculations across entire eligible dataset (falls back to loaded rows if summary not yet loaded)
+  const totalDueAmount = summaryTotals?.totalDueAmount ?? rows.reduce((acc, r) => acc + Number(r.closing_receivable ?? r.total_due ?? 0), 0);
+  const totalCustomerAdvance = summaryTotals?.totalCustomerAdvance ?? rows.reduce((acc, r) => acc + Number(r.closing_advance ?? 0), 0);
+  const customersWithDueCount = summaryTotals?.customersWithDueCount ?? rows.filter((r) => Number(r.closing_receivable ?? r.total_due ?? 0) > 0).length;
 
   const totalInvoiceBill = pendingInvoices.reduce((acc, inv) => acc + Number(inv.bill_amount || 0), 0);
   const totalInvoicePaid = pendingInvoices.reduce((acc, inv) => acc + Number(inv.paid_amount || 0), 0);
@@ -249,7 +253,7 @@ export default function CustomerDueReportPage() {
           <p className="mt-2 text-2xl font-bold tracking-tight text-rose-950 tabular-nums">
             {formatINR(totalDueAmount, true)}
           </p>
-          <p className="mt-1 text-xs text-rose-600">Pending dues across active customers</p>
+          <p className="mt-1 text-xs text-rose-600">{summaryTotals?.asOfDate ? `As of ${summaryTotals.asOfDate} • ` : ""}Pending dues across active customers</p>
         </div>
 
         {/* Total Customer Advance Card */}

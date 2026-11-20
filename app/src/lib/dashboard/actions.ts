@@ -23,6 +23,7 @@ import {
   getSalesTrendFinancials,
   getExpenseTrendFinancials,
   getPaymentTrendFinancials,
+  getTotalCustomerOutstanding,
 } from "@/lib/financials/service";
 
 import type { SalesSummary, ExpensesSummary } from "@/types/expense";
@@ -90,16 +91,19 @@ export async function getDashboardSummary(
       total_expenses: 0,
       expense_count: 0,
     };
+    let outstandingAsOfDate = endDate || new Date().toISOString().split("T")[0];
 
     const isAdminOrSuper = context.roleKey === "admin" || context.roleKey === "super_admin";
     if (isAdminOrSuper) {
       try {
-        const [sales, expenses] = await Promise.all([
+        const [sales, expenses, custOut] = await Promise.all([
           getSalesFinancials(supabase, context.user.business_id, { startDate, endDate }),
           getExpensesFinancials(supabase, context.user.business_id, { startDate, endDate }),
+          getTotalCustomerOutstanding(supabase, context.user.business_id, endDate),
         ]);
         salesData = sales;
         expensesData = expenses;
+        outstandingAsOfDate = custOut.asOfDate;
       } catch (err) {
         console.error("Failed to fetch financial metrics for summary:", err);
       }
@@ -124,7 +128,7 @@ export async function getDashboardSummary(
 
     let inProdCount = 0;
     let readyCount = 0;
-    let deliveredCount = 0;
+    let prodCompletedCount = 0;
     if (canViewProduction) {
       try {
         let prodOrdersQuery = supabase
@@ -140,11 +144,30 @@ export async function getDashboardSummary(
           } else if (po.status === "READY_FOR_DISPATCH") {
             readyCount++;
           } else if (po.status === "COMPLETED") {
-            deliveredCount++;
+            prodCompletedCount++;
           }
         }
       } catch (err) {
         console.error("Failed to fetch production status counts:", err);
+      }
+    }
+
+    let deliveredCount = 0;
+    if (canViewDelivery || canViewOrders) {
+      try {
+        let delivQuery = supabase
+          .from("deliveries")
+          .select("id, order_id")
+          .eq("business_id", context.user.business_id)
+          .eq("status", "DELIVERED");
+        if (startDate) delivQuery = delivQuery.gte("delivered_at", `${startDate}T00:00:00Z`);
+        if (endDate) delivQuery = delivQuery.lte("delivered_at", `${endDate}T23:59:59Z`);
+        const delivRes = await delivQuery;
+        // Count distinct customer orders delivered to avoid duplicate counting across multi-dispatch orders
+        const deliveredOrderIds = new Set((delivRes.data ?? []).map((d: any) => d.order_id || d.id).filter(Boolean));
+        deliveredCount = deliveredOrderIds.size;
+      } catch (err) {
+        console.error("Failed to fetch delivered count:", err);
       }
     }
 
@@ -212,6 +235,7 @@ export async function getDashboardSummary(
       total_sales: salesData.net_sales,
       payments_received: salesData.payments_received,
       outstanding_due: salesData.outstanding,
+      outstanding_as_of_date: outstandingAsOfDate,
       total_expenses: expensesData.total_expenses,
       profit: profitNum,
       total_orders: salesData.order_count,
@@ -219,9 +243,16 @@ export async function getDashboardSummary(
       in_production: inProdCount,
       ready_for_dispatch: readyCount,
       delivered: deliveredCount,
+      production_completed: prodCompletedCount,
       low_stock_items: lowStockCount,
       overdue_deliveries: overdueCount,
       pending_returns: pendingReturnsCount,
+      gross_booked_sales: salesData.gross_booked_sales,
+      unfulfilled_pipeline: salesData.unfulfilled_pipeline,
+      gst_on_sales: salesData.gst_on_sales,
+      sales_returns: salesData.sales_returns,
+      gross_invoiced_sales: salesData.gross_invoiced_sales,
+      returns_review_required: salesData.returns_review_required,
     };
   } catch (err) {
     console.error("getDashboardSummary top-level error:", err);
