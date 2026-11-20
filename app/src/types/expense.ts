@@ -63,6 +63,12 @@ export interface SalesSummary {
   payments_received: string | number;
   outstanding: string | number;
   order_count: string | number;
+  gross_booked_sales?: string | number;
+  unfulfilled_pipeline?: string | number;
+  gst_on_sales?: string | number;
+  sales_returns?: string | number;
+  gross_invoiced_sales?: string | number;
+  returns_review_required?: boolean;
 }
 
 export interface ExpensesSummary {

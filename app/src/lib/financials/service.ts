@@ -108,6 +108,380 @@ export interface SalesFinancialOptions {
  * - Payments Received represents Cash Collection, NOT Sales Revenue.
  * - Outstanding Dues represents Accounts Receivable.
  */
+/**
+ * Calculates genuine cash collections using the authoritative payments ledger.
+ * Filters strictly for SUCCESS payments within the selected period.
+ * Automatically excludes REFUNDED, FAILED, and CANCELLED payments.
+ */
+export async function getPaymentsFinancials(
+  supabase: SupabaseClient,
+  businessId: string,
+  options?: { startDate?: string | null; endDate?: string | null; customerId?: string | null }
+): Promise<{ total_collected: number; payment_count: number }> {
+  let query = supabase
+    .from("payments")
+    .select("id, amount")
+    .eq("business_id", businessId)
+    .eq("status", "SUCCESS");
+
+  if (options?.startDate) query = query.gte("payment_date", options.startDate);
+  if (options?.endDate) query = query.lte("payment_date", options.endDate);
+  if (options?.customerId) query = query.eq("customer_id", options.customerId);
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("getPaymentsFinancials query error:", error);
+    return { total_collected: 0, payment_count: 0 };
+  }
+
+  let total = 0;
+  for (const p of data ?? []) {
+    total += Number(p.amount || 0);
+  }
+
+  return {
+    total_collected: Math.round(total * 100) / 100,
+    payment_count: data?.length ?? 0,
+  };
+}
+
+/**
+ * Calculates total customer outstanding receivables as an as-of-date balance
+ * reusing the authoritative get_customer_outstanding_report RPC.
+ * Factors in opening receivables, credits, advances, and ledger adjustments.
+ */
+export async function getTotalCustomerOutstanding(
+  supabase: SupabaseClient,
+  businessId: string,
+  asOfDate?: string | null
+): Promise<{ totalOutstanding: number; asOfDate: string }> {
+  const asOf = asOfDate || new Date().toISOString().split("T")[0];
+  const { data, error } = await supabase.rpc("get_customer_outstanding_report", {
+    p_business_id: businessId,
+    p_start_date: null,
+    p_end_date: asOf,
+    p_customer_id: null,
+    p_min_due: null,
+    p_limit: null,
+    p_offset: 0,
+  });
+
+  if (error) {
+    console.error("getTotalCustomerOutstanding RPC error:", error);
+    return { totalOutstanding: 0, asOfDate: asOf };
+  }
+
+  let totalDue = 0;
+  for (const r of data || []) {
+    totalDue += Number(r.closing_receivable ?? r.total_due ?? 0);
+  }
+
+  return {
+    totalOutstanding: Math.round(totalDue * 100) / 100,
+    asOfDate: asOf,
+  };
+}
+
+/**
+ * Calculates delivery-based recognized revenue under Option A (Accrual Fulfillment).
+ * - Recognized Revenue = Eligible Delivered Quantity × Net Unit Selling Price (excluding GST)
+ * - Excludes GST (Output Tax Liability).
+ * - Deducts applicable posted sales returns (taxable portion of credit note).
+ * - Tracks unfulfilled pipeline on confirmed orders.
+ */
+export interface DeliveryRecognizedRevenue {
+  recognized_net_sales: number;
+  delivered_taxable_sales: number;
+  delivered_gst: number;
+  gross_delivered_invoiced: number;
+  taxable_sales_returns: number;
+  gst_reversal: number;
+  cgst_reversal?: number;
+  sgst_reversal?: number;
+  igst_reversal?: number;
+  unfulfilled_pipeline: number;
+  delivered_order_count: number;
+  returns_review_required?: boolean;
+}
+
+export async function getDeliveredRecognizedRevenue(
+  supabase: SupabaseClient,
+  businessId: string,
+  options?: { startDate?: string | null; endDate?: string | null; customerId?: string | null }
+): Promise<DeliveryRecognizedRevenue> {
+  // 1. Fetch completed, non-reversed deliveries in period
+  let delivQuery = supabase
+    .from("deliveries")
+    .select("id, order_id, delivered_at")
+    .eq("business_id", businessId)
+    .eq("status", "DELIVERED")
+    .eq("is_ledger_reversed", false);
+
+  if (options?.startDate) delivQuery = delivQuery.gte("delivered_at", `${options.startDate}T00:00:00Z`);
+  if (options?.endDate) delivQuery = delivQuery.lte("delivered_at", `${options.endDate}T23:59:59Z`);
+  if (options?.customerId) delivQuery = delivQuery.eq("customer_id", options.customerId);
+
+  const { data: delivData, error: delivErr } = await delivQuery;
+  if (delivErr) {
+    console.error("getDeliveredRecognizedRevenue delivQuery error:", delivErr);
+  }
+
+  const deliveredDeliveries = delivData ?? [];
+  const deliveryIds = deliveredDeliveries.map((d: any) => d.id).filter(Boolean);
+  const orderIds = Array.from(new Set(deliveredDeliveries.map((d: any) => d.order_id).filter(Boolean)));
+
+  let deliveredTaxable = 0;
+  let deliveredGst = 0;
+
+  if (deliveryIds.length > 0) {
+    // 2. Query delivery items for completed dispatches
+    const { data: diRows, error: diErr } = await supabase
+      .from("delivery_items")
+      .select("id, delivery_id, order_item_id, delivered_quantity")
+      .in("delivery_id", deliveryIds);
+
+    if (diErr) {
+      console.error("getDeliveredRecognizedRevenue diRows error:", diErr);
+    }
+
+    const orderItemIds = Array.from(new Set((diRows || []).map((di: any) => di.order_item_id).filter(Boolean)));
+    if (orderItemIds.length > 0) {
+      const { data: oiRows, error: oiErr } = await supabase
+        .from("order_items")
+        .select("id, order_id, quantity, unit_price, discount_rate, tax_rate")
+        .in("id", orderItemIds);
+
+      if (oiErr) {
+        console.error("getDeliveredRecognizedRevenue oiRows error:", oiErr);
+      }
+
+      const oiMap = new Map((oiRows || []).map((oi: any) => [oi.id, oi]));
+
+      for (const di of diRows || []) {
+        const oi = oiMap.get(di.order_item_id);
+        if (!oi) continue;
+
+        const delivQty = Number(di.delivered_quantity || 0);
+        const uPrice = Number(oi.unit_price || 0);
+        const discRate = Number(oi.discount_rate || 0);
+        const tRate = Number(oi.tax_rate || 0);
+
+        const netDeliveredItemTaxable = Math.round(delivQty * uPrice * (1 - discRate / 100) * 100) / 100;
+        const itemDeliveredGst = Math.round(netDeliveredItemTaxable * (tRate / 100) * 100) / 100;
+
+        deliveredTaxable += netDeliveredItemTaxable;
+        deliveredGst += itemDeliveredGst;
+      }
+    }
+  }
+
+  // Calculate unfulfilled pipeline: difference between booked subtotal on confirmed orders and delivered taxable
+  let unfulfilledQuery = supabase
+    .from("orders")
+    .select("subtotal")
+    .eq("business_id", businessId)
+    .eq("status", "CONFIRMED");
+
+  if (options?.startDate) unfulfilledQuery = unfulfilledQuery.gte("order_date", options.startDate);
+  if (options?.endDate) unfulfilledQuery = unfulfilledQuery.lte("order_date", options.endDate);
+  if (options?.customerId) unfulfilledQuery = unfulfilledQuery.eq("customer_id", options.customerId);
+
+  const { data: unfulfilledOrders } = await unfulfilledQuery;
+  let totalBookedSubtotal = 0;
+  for (const o of unfulfilledOrders ?? []) {
+    totalBookedSubtotal += Number(o.subtotal || 0);
+  }
+  const unfulfilledTaxable = Math.max(0, Math.round((totalBookedSubtotal - deliveredTaxable) * 100) / 100);
+
+  // 3. Query posted goods returns in period
+  let retQuery = supabase
+    .from("goods_returns")
+    .select("id, return_number, adjustment_amount, product_id, order_item_id, delivery_id, return_date")
+    .eq("business_id", businessId)
+    .eq("status", "POSTED");
+
+  if (options?.startDate) retQuery = retQuery.gte("return_date", options.startDate);
+  if (options?.endDate) retQuery = retQuery.lte("return_date", options.endDate);
+  if (options?.customerId) retQuery = retQuery.eq("customer_id", options.customerId);
+
+  const { data: retData, error: retErr } = await retQuery;
+  if (retErr) {
+    console.error("getDeliveredRecognizedRevenue retQuery error:", retErr);
+  }
+
+  const postedReturns = retData ?? [];
+  const returnIds = postedReturns.map((r: any) => r.id);
+
+  let taxableReturns = 0;
+  let gstReversal = 0;
+  let cgstReversal = 0;
+  let sgstReversal = 0;
+  let igstReversal = 0;
+  let reviewRequired = false;
+
+  if (returnIds.length > 0) {
+    // A. Query line items of posted returns
+    const { data: griRows, error: griErr } = await supabase
+      .from("goods_return_items")
+      .select("id, goods_return_id, order_item_id, delivery_item_id, product_id, returned_quantity, unit_price, total_amount")
+      .in("goods_return_id", returnIds);
+
+    if (griErr) {
+      console.error("getDeliveredRecognizedRevenue griRows error:", griErr);
+    }
+
+    const returnItems = griRows ?? [];
+
+    // B. Collect unique IDs for authoritative tax lookup
+    const lookupOrderItemIds = Array.from(new Set([
+      ...returnItems.map((i: any) => i.order_item_id).filter(Boolean),
+      ...postedReturns.map((r: any) => r.order_item_id).filter(Boolean),
+    ]));
+
+    const lookupDeliveryItemIds = Array.from(new Set(
+      returnItems.map((i: any) => i.delivery_item_id).filter(Boolean)
+    ));
+
+    const lookupProductIds = Array.from(new Set([
+      ...returnItems.map((i: any) => i.product_id).filter(Boolean),
+      ...postedReturns.map((r: any) => r.product_id).filter(Boolean),
+    ]));
+
+    // C. Batch fetch authoritative tax rates
+    const [oiRes, diRes, pRes] = await Promise.all([
+      lookupOrderItemIds.length > 0
+        ? supabase.from("order_items").select("id, tax_rate, cgst_rate, sgst_rate, igst_rate").in("id", lookupOrderItemIds)
+        : Promise.resolve({ data: [] }),
+      lookupDeliveryItemIds.length > 0
+        ? supabase.from("delivery_items").select("id, tax_rate, cgst_amount, sgst_amount, igst_amount").in("id", lookupDeliveryItemIds)
+        : Promise.resolve({ data: [] }),
+      lookupProductIds.length > 0
+        ? supabase.from("products").select("id, tax_rate").in("id", lookupProductIds)
+        : Promise.resolve({ data: [] }),
+    ]);
+
+    const oiTaxMap = new Map((oiRes.data ?? []).map((oi: any) => [oi.id, oi]));
+    const diTaxMap = new Map((diRes.data ?? []).map((di: any) => [di.id, di]));
+    const pTaxMap = new Map((pRes.data ?? []).map((p: any) => [p.id, p]));
+
+    // Group items by return
+    const itemsByReturn = new Map<string, any[]>();
+    for (const item of returnItems) {
+      if (!itemsByReturn.has(item.goods_return_id)) itemsByReturn.set(item.goods_return_id, []);
+      itemsByReturn.get(item.goods_return_id)!.push(item);
+    }
+
+    // D. Compute taxable base and GST reversal without hardcoded rates
+    for (const ret of postedReturns) {
+      const items = itemsByReturn.get(ret.id) || [];
+      const grossAdjustment = Number(ret.adjustment_amount || 0);
+
+      if (items.length === 0) {
+        // Return without child item rows: resolve from return header
+        let taxRate: number | null = null;
+        let cgstRate = 0;
+        let sgstRate = 0;
+        let igstRate = 0;
+
+        if (ret.order_item_id && oiTaxMap.has(ret.order_item_id)) {
+          const oi = oiTaxMap.get(ret.order_item_id);
+          taxRate = Number(oi.tax_rate);
+          cgstRate = Number(oi.cgst_rate || 0);
+          sgstRate = Number(oi.sgst_rate || 0);
+          igstRate = Number(oi.igst_rate || 0);
+        } else if (ret.product_id && pTaxMap.has(ret.product_id)) {
+          const p = pTaxMap.get(ret.product_id);
+          taxRate = p.tax_rate !== null ? Number(p.tax_rate) : null;
+        }
+
+        if (taxRate === null || isNaN(taxRate)) {
+          reviewRequired = true;
+          console.warn(`[Review Required] No authoritative tax rate found for return ${ret.return_number}`);
+          continue;
+        }
+
+        const taxable = Math.round((grossAdjustment / (1 + taxRate / 100)) * 100) / 100;
+        const gst = Math.round((grossAdjustment - taxable) * 100) / 100;
+        taxableReturns += taxable;
+        gstReversal += gst;
+
+        if (cgstRate > 0 && sgstRate > 0) {
+          cgstReversal += Math.round(taxable * (cgstRate / 100) * 100) / 100;
+          sgstReversal += Math.round(taxable * (sgstRate / 100) * 100) / 100;
+        } else if (igstRate > 0) {
+          igstReversal += Math.round(taxable * (igstRate / 100) * 100) / 100;
+        }
+      } else {
+        // Resolve per line item for multi-item / mixed-rate support
+        for (const it of items) {
+          let taxRate: number | null = null;
+          let cgstRate = 0;
+          let sgstRate = 0;
+          let igstRate = 0;
+
+          if (it.order_item_id && oiTaxMap.has(it.order_item_id)) {
+            const oi = oiTaxMap.get(it.order_item_id);
+            taxRate = Number(oi.tax_rate);
+            cgstRate = Number(oi.cgst_rate || 0);
+            sgstRate = Number(oi.sgst_rate || 0);
+            igstRate = Number(oi.igst_rate || 0);
+          } else if (it.delivery_item_id && diTaxMap.has(it.delivery_item_id)) {
+            const di = diTaxMap.get(it.delivery_item_id);
+            taxRate = Number(di.tax_rate);
+          } else if (it.product_id && pTaxMap.has(it.product_id)) {
+            const p = pTaxMap.get(it.product_id);
+            taxRate = p.tax_rate !== null ? Number(p.tax_rate) : null;
+          }
+
+          if (taxRate === null || isNaN(taxRate)) {
+            reviewRequired = true;
+            console.warn(`[Review Required] No authoritative tax rate found for line item ${it.id} on return ${ret.return_number}`);
+            continue;
+          }
+
+          let lineGross = Number(it.total_amount || 0);
+          if (lineGross === 0 && Number(it.returned_quantity || 0) > 0 && grossAdjustment > 0) {
+            lineGross = grossAdjustment;
+          }
+
+          const taxable = Math.round((lineGross / (1 + taxRate / 100)) * 100) / 100;
+          const gst = Math.round((lineGross - taxable) * 100) / 100;
+          taxableReturns += taxable;
+          gstReversal += gst;
+
+          if (cgstRate > 0 && sgstRate > 0) {
+            cgstReversal += Math.round(taxable * (cgstRate / 100) * 100) / 100;
+            sgstReversal += Math.round(taxable * (sgstRate / 100) * 100) / 100;
+          } else if (igstRate > 0) {
+            igstReversal += Math.round(taxable * (igstRate / 100) * 100) / 100;
+          }
+        }
+      }
+    }
+  }
+
+  const recognizedNetSales = Math.max(0, Math.round((deliveredTaxable - taxableReturns) * 100) / 100);
+
+  return {
+    recognized_net_sales: recognizedNetSales,
+    delivered_taxable_sales: Math.round(deliveredTaxable * 100) / 100,
+    delivered_gst: Math.round(deliveredGst * 100) / 100,
+    gross_delivered_invoiced: Math.round((deliveredTaxable + deliveredGst) * 100) / 100,
+    taxable_sales_returns: Math.round(taxableReturns * 100) / 100,
+    gst_reversal: Math.round(gstReversal * 100) / 100,
+    cgst_reversal: Math.round(cgstReversal * 100) / 100,
+    sgst_reversal: Math.round(sgstReversal * 100) / 100,
+    igst_reversal: Math.round(igstReversal * 100) / 100,
+    unfulfilled_pipeline: Math.round(unfulfilledTaxable * 100) / 100,
+    delivered_order_count: orderIds.length,
+    returns_review_required: reviewRequired,
+  };
+}
+
+/**
+ * Gets aggregated sales metrics with accrual accounting filters.
+ * Returns gross sales, discounts, taxes, net sales, payments received, and receivables.
+ */
 export async function getSalesFinancials(
   supabase: SupabaseClient,
   businessId: string,
@@ -173,8 +547,7 @@ export async function getSalesFinancials(
   let discounts = 0;
   let tax = 0;
   let net_sales = 0;
-  let payments_received = 0;
-  let outstanding = 0;
+  let order_due_sum = 0;
   const order_count = data?.length ?? 0;
 
   for (const row of data ?? []) {
@@ -182,18 +555,45 @@ export async function getSalesFinancials(
     discounts += Number(row.discount_amount || 0);
     tax += Number(row.tax_amount || 0);
     net_sales += Number(row.total_amount || 0);
-    payments_received += Number(row.paid_amount || 0);
-    outstanding += Number(row.due_amount || 0);
+    order_due_sum += Number(row.due_amount || 0);
   }
+
+  // Get true cash collections from payments table (status = 'SUCCESS')
+  const pmtSummary = await getPaymentsFinancials(supabase, businessId, {
+    startDate: options?.startDate,
+    endDate: options?.endDate,
+    customerId: options?.customerId,
+  });
+
+  // Calculate true company-wide outstanding balance if not filtering by customer;
+  // if filtering by customer, use order_due_sum
+  let finalOutstanding = order_due_sum;
+  if (!options?.customerId) {
+    const custOut = await getTotalCustomerOutstanding(supabase, businessId, options?.endDate);
+    finalOutstanding = custOut.totalOutstanding;
+  }
+
+  // Option A: Delivery-Based Recognized Revenue (excluding GST and deducting posted taxable sales returns)
+  const deliveryRevenue = await getDeliveredRecognizedRevenue(supabase, businessId, {
+    startDate: options?.startDate,
+    endDate: options?.endDate,
+    customerId: options?.customerId,
+  });
 
   return {
     gross_sales: Math.round(gross_sales * 100) / 100,
     discounts: Math.round(discounts * 100) / 100,
     tax: Math.round(tax * 100) / 100,
-    net_sales: Math.round(net_sales * 100) / 100,
-    payments_received: Math.round(payments_received * 100) / 100,
-    outstanding: Math.round(outstanding * 100) / 100,
+    net_sales: deliveryRevenue.recognized_net_sales,
+    payments_received: pmtSummary.total_collected,
+    outstanding: Math.round(finalOutstanding * 100) / 100,
     order_count,
+    gross_booked_sales: Math.round(gross_sales * 100) / 100,
+    unfulfilled_pipeline: deliveryRevenue.unfulfilled_pipeline,
+    gst_on_sales: deliveryRevenue.delivered_gst,
+    sales_returns: deliveryRevenue.taxable_sales_returns,
+    gross_invoiced_sales: Math.round(net_sales * 100) / 100,
+    returns_review_required: deliveryRevenue.returns_review_required,
   };
 }
 

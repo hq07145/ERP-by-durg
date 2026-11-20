@@ -11,6 +11,7 @@ export interface DashboardSummary {
   total_sales: string | number;
   payments_received: string | number;
   outstanding_due: string | number;
+  outstanding_as_of_date?: string;
   // Expenses & Profit
   total_expenses: string | number;
   profit: string | number;
@@ -21,12 +22,20 @@ export interface DashboardSummary {
   in_production: string | number;
   ready_for_dispatch: string | number;
   delivered: string | number;
+  production_completed?: string | number;
   // Inventory
   low_stock_items: string | number;
   // Delivery
   overdue_deliveries: string | number;
   // Goods Returns
   pending_returns?: string | number;
+  // Secondary Revenue Metrics (Option A)
+  gross_booked_sales?: string | number;
+  unfulfilled_pipeline?: string | number;
+  gst_on_sales?: string | number;
+  sales_returns?: string | number;
+  gross_invoiced_sales?: string | number;
+  returns_review_required?: boolean;
 }
 
 export interface TrendDataPoint {

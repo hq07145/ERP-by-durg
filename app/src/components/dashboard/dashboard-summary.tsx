@@ -20,7 +20,7 @@ const summaryCards = [
   {
     key: "total_sales",
     label: "Net Sales (Revenue)",
-    subtext: "Accrual sales from confirmed orders",
+    subtext: "Recognized sales excluding GST and returns",
     icon: "💰",
     color: "bg-green-500",
     positive: true,
@@ -51,8 +51,8 @@ const summaryCards = [
   },
   {
     key: "profit",
-    label: "Estimated Profit",
-    subtext: "Estimate (Net Sales − OpEx; excludes COGS)",
+    label: "Operating Surplus (Pre-COGS)",
+    subtext: "Net Sales minus OpEx (excludes direct manufacturing/COGS)",
     icon: "📈",
     color: "bg-emerald-500",
     positive: true,
@@ -88,6 +88,7 @@ const summaryCards = [
   {
     key: "delivered",
     label: "Delivered",
+    subtext: "Completed customer deliveries",
     icon: "✅",
     color: "bg-teal-500",
     positive: true,
@@ -124,7 +125,7 @@ const cardPermissionMap: Record<string, string> = {
   pending_orders: "orders.view",
   in_production: "production.view",
   ready_for_dispatch: "production.view",
-  delivered: "production.view",
+  delivered: "delivery.view",
   low_stock_items: "inventory.view",
   overdue_deliveries: "delivery.view",
 };
@@ -138,6 +139,9 @@ export function DashboardSummaryCards({ summary, userPermissions, userRole }: Da
       return isAdminOrSuper;
     }
     if (!userPermissions) return true;
+    if (card.key === "delivered") {
+      return userPermissions.includes("delivery.view") || userPermissions.includes("orders.view");
+    }
     const required = cardPermissionMap[card.key];
     return !required || userPermissions.includes(required);
   });
@@ -164,7 +168,7 @@ export function DashboardSummaryCards({ summary, userPermissions, userRole }: Da
       {visibleCards.map((card) => {
         const value = summary[card.key as keyof DashboardSummary];
         const isCurrency = ["total_sales", "payments_received", "outstanding_due", "total_expenses", "profit"].includes(card.key);
-        const formattedValue = isCurrency ? formatCurrency(value) : formatNumber(value);
+        const formattedValue = isCurrency ? formatCurrency(value as string | number) : formatNumber(value as string | number);
 
         // For profit, determine color based on positive/negative
         let valueColor = "text-gray-900";
@@ -174,7 +178,14 @@ export function DashboardSummaryCards({ summary, userPermissions, userRole }: Da
           valueColor = "text-amber-600";
         }
 
-        const subtext = "subtext" in card ? (card as any).subtext : null;
+        const subtext =
+          card.key === "outstanding_due" && summary.outstanding_as_of_date
+            ? `As of ${summary.outstanding_as_of_date} (All active customer dues)`
+            : card.key === "total_sales" && summary.gross_invoiced_sales
+              ? `Recognized sales excl. GST & returns (Gross Invoiced: ₹${Number(summary.gross_invoiced_sales).toLocaleString("en-IN")})${summary.returns_review_required ? " • Review Required" : ""}`
+              : "subtext" in card
+                ? (card as any).subtext
+                : null;
 
         return (
           <div key={card.key} className="rounded-lg border border-gray-200 bg-white p-4 sm:p-5 hover:shadow-md transition-shadow">
